@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { Plus, Trash2, Users, Zap, Activity, Pencil, Save, RotateCcw, Loader2, Upload, Image as ImageIcon, Bandage, X, TrendingUp, ChevronDown, ChevronUp, RefreshCw, ArrowDownWideNarrow, ArrowUpNarrowWide, Filter } from 'lucide-react';
+import { Plus, Trash2, Users, Zap, Activity, Pencil, Save, RotateCcw, Loader2, Upload, Image as ImageIcon, Bandage, X, TrendingUp, ChevronDown, ChevronUp, RefreshCw, ArrowDownWideNarrow, ArrowUpNarrowWide, Filter, Home, Plane } from 'lucide-react';
 import { initializeApp } from 'firebase/app';
 import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from 'firebase/auth';
 import { getFirestore, doc, getDoc, setDoc } from 'firebase/firestore';
@@ -79,29 +79,23 @@ const INJURIES = {
 
 const BOOSTS = {
     None: { label: 'No Boost', type: 'None', min: 1.0, max: 1.0 },
-    MagicTruffle: { label: 'Magic Truffle (1-5%)', type: 'All', min: 1.01, max: 1.05 },
-    GoldenTruffle: { label: 'Golden Truffle (3-7%)', type: 'All', min: 1.03, max: 1.07 },
-    IridiumTruffle: { label: 'Iridium Truffle (10%)', type: 'All', min: 1.10, max: 1.10 },
-    HalftimeOrange: { label: 'Half-time Orange (3-7%)', type: 'CTL', min: 1.03, max: 1.07 },
+    Control: { label: 'Control Boost', type: 'CTL', min: 1.05, max: 1.15 },
+    Attack: { label: 'Attack Boost', type: 'ATT', min: 1.05, max: 1.15 },
+    Defense: { label: 'Defense Boost', type: 'DEF', min: 1.05, max: 1.15 },
+    Speed: { label: 'Speed Boost', type: 'SPD', min: 1.05, max: 1.15 },
 };
 
 const DR_DECAY = 0.97;
 const DR_MIN = 0.35;
 
 const calculateBoostMultiplier = (boostKey, applications = 1) => {
-    if (boostKey === 'None' || !BOOSTS[boostKey]) return 1.0;
+    if (boostKey === 'None') return 1.0;
     const boost = BOOSTS[boostKey];
     const baseBoost = (boost.min + boost.max) / 2;
 
-    // If only 1 person applies it, it's 100% effective (no decay)
     if (applications <= 1) return baseBoost;
 
-    // Decay starts from the 2nd application onwards? 
-    // Actually, usually "1 application" = 100% effective.
-    // "2 applications" = 97% effective? Or is it 0.97^2?
-    // Let's assume 1 application = 100% (multiplier 1.0)
-
-    let m = Math.pow(DR_DECAY, applications - 1); // Shifted so 1 app = 1.0
+    let m = Math.pow(DR_DECAY, applications);
     if (m < DR_MIN) m = DR_MIN;
 
     if (baseBoost >= 1.0) {
@@ -140,15 +134,12 @@ const getOfficialOvr = (stats, pos) => {
 const calculateTeamScores = (players, formationKey, activeBoost, boostApps) => {
     const form = FORMATIONS[formationKey];
 
-    const boostType = BOOSTS[activeBoost]?.type || 'None';
-    const mult = calculateBoostMultiplier(activeBoost, boostApps);
-
     const boostMults = {
-        CTL: (boostType === 'All' || boostType === 'CTL') ? mult : 1.0,
-        ATT: (boostType === 'All') ? mult : 1.0,
-        DEF: (boostType === 'All') ? mult : 1.0,
-        SPD: (boostType === 'All') ? mult : 1.0,
-        GKP: (boostType === 'All') ? mult : 1.0,
+        CTL: activeBoost === 'Control' ? calculateBoostMultiplier('Control', boostApps) : 1.0,
+        ATT: activeBoost === 'Attack' ? calculateBoostMultiplier('Attack', boostApps) : 1.0,
+        DEF: activeBoost === 'Defense' ? calculateBoostMultiplier('Defense', boostApps) : 1.0,
+        SPD: activeBoost === 'Speed' ? calculateBoostMultiplier('Speed', boostApps) : 1.0,
+        GKP: activeBoost === 'Defense' ? calculateBoostMultiplier('Defense', boostApps) : 1.0,
     };
 
     const stats = {
@@ -257,6 +248,9 @@ export default function OinkSoccerCalc() {
     const [myBoost, setMyBoost] = useState('None');
     const [myBoostApps, setMyBoostApps] = useState(1);
 
+    // New State: Home or Away
+    const [isHome, setIsHome] = useState(true); // Default to Home
+
     const [activeTab, setActiveTab] = useState('simulation');
     const [editingId, setEditingId] = useState(null);
     const [formTarget, setFormTarget] = useState('mySquad');
@@ -312,6 +306,7 @@ export default function OinkSoccerCalc() {
                     setOppForm(data.oppForm || 'Pyramid');
                     setMyBoost(data.myBoost || 'None');
                     setMyBoostApps(data.myBoostApps || 1);
+                    setIsHome(data.isHome !== undefined ? data.isHome : true);
                 } else {
                     setMySquad(initialMyTeam);
                     setMyTeam(initialMyTeam.slice(0, 5));
@@ -337,7 +332,8 @@ export default function OinkSoccerCalc() {
                 myForm: overrides.myForm !== undefined ? overrides.myForm : myForm,
                 oppForm: overrides.oppForm !== undefined ? overrides.oppForm : oppForm,
                 myBoost: overrides.myBoost !== undefined ? overrides.myBoost : myBoost,
-                myBoostApps: overrides.myBoostApps !== undefined ? overrides.myBoostApps : myBoostApps
+                myBoostApps: overrides.myBoostApps !== undefined ? overrides.myBoostApps : myBoostApps,
+                isHome: overrides.isHome !== undefined ? overrides.isHome : isHome
             });
         } catch (e) {
             console.error("Save failed", e);
@@ -351,7 +347,7 @@ export default function OinkSoccerCalc() {
         if (myStats.Count === 0 || oppStats.Count === 0) return { win: 50, possession: 50 };
 
         const totalControl = myStats.Control + oppStats.Control;
-        const myPossession = totalControl === 0 ? 0.5 : (myStats.Control / totalControl);
+        const safeMyPossession = totalControl === 0 ? 0.5 : (myStats.Control / totalControl);
 
         const calcGoalProb = (att, def) => {
             const ratio = def === 0 ? 2 : att / def;
@@ -361,9 +357,17 @@ export default function OinkSoccerCalc() {
         const myGoalProb = calcGoalProb(myStats.Attack, oppStats.Defense);
         const oppGoalProb = calcGoalProb(oppStats.Attack, myStats.Defense);
 
-        const AVG_EVENTS = getAverageEvents(myForm, oppForm);
-        const myEvents = AVG_EVENTS * myPossession;
-        const oppEvents = AVG_EVENTS * (1 - myPossession);
+        // Apply Home/Away Toggle Logic
+        let AVG_EVENTS;
+        if (isHome) {
+            AVG_EVENTS = getAverageEvents(myForm, oppForm);
+        } else {
+            // Logic flips: Opponent is Home
+            AVG_EVENTS = getAverageEvents(oppForm, myForm);
+        }
+
+        const myEvents = AVG_EVENTS * safeMyPossession;
+        const oppEvents = AVG_EVENTS * (1 - safeMyPossession);
 
         const myxG = myEvents * myGoalProb;
         const oppxG = oppEvents * oppGoalProb;
@@ -373,11 +377,11 @@ export default function OinkSoccerCalc() {
 
         return {
             win: winProb.toFixed(1),
-            myPossession: (myPossession * 100).toFixed(0),
+            myPossession: (safeMyPossession * 100).toFixed(0),
             myxG: myxG.toFixed(2),
             oppxG: oppxG.toFixed(2)
         };
-    }, [myStats, oppStats]);
+    }, [myStats, oppStats, isHome]);
 
     const formationMismatch = useMemo(() => {
         if (myTeam.length === 0) return null;
@@ -527,8 +531,6 @@ export default function OinkSoccerCalc() {
                 const playerResult = await playerResponse.json();
                 const playerJsonText = playerResult?.candidates?.[0]?.content?.parts?.[0]?.text;
 
-                console.log(`Raw Gemini response for ${file.name}:`, playerJsonText);
-
                 if (!playerJsonText) throw new Error(`API returned no player content for ${file.name}`);
 
                 const parsedResponse = JSON.parse(playerJsonText);
@@ -554,8 +556,6 @@ export default function OinkSoccerCalc() {
                         extractedPlayers.detectedContext = filenameContext;
                     }
                 }
-
-                console.log(`Parsed players for ${file.name}:`, extractedPlayers);
 
                 // 2. Formation Extraction
                 const formPayload = {
@@ -592,23 +592,20 @@ export default function OinkSoccerCalc() {
                 } catch (err) {
                     console.error(`Failed to process ${file.name}`, err);
                 }
-                // Small delay to prevent rate limiting and ensure context separation
+                // Small delay to prevent rate limiting
                 await new Promise(resolve => setTimeout(resolve, 500));
             }
 
             const allExtractedPlayers = results.flatMap(r => {
-                // Handle the new object structure with detectedContext
                 if (r.extractedPlayers && r.extractedPlayers.players) {
                     const context = r.extractedPlayers.detectedContext;
                     const players = r.extractedPlayers.players;
 
-                    // Apply context override if valid
                     if (context && ['FW', 'MF', 'DF', 'GK'].includes(context)) {
                         return players.map(p => ({ ...p, pos: context }));
                     }
                     return players;
                 }
-                // Fallback for old format or direct array
                 return Array.isArray(r.extractedPlayers) ? r.extractedPlayers : [];
             });
 
@@ -695,6 +692,11 @@ export default function OinkSoccerCalc() {
             setOppForm(val);
             saveToDb({ oppForm: val });
         }
+    };
+
+    const handleHomeToggle = (isNowHome) => {
+        setIsHome(isNowHome);
+        saveToDb({ isHome: isNowHome });
     };
 
     const handleBoostChange = (boostType) => {
@@ -905,7 +907,6 @@ export default function OinkSoccerCalc() {
                             const stats = calculateTeamScores(lineup, formKey, myBoost, myBoostApps);
 
                             // Calculate win prob against CURRENT opponent
-                            // Re-implementing simulation logic here to avoid hook dependency issues inside loop
                             const totalControl = stats.Control + oppStats.Control;
                             const myPossession = totalControl === 0 ? 0.5 : (stats.Control / totalControl);
 
@@ -917,7 +918,13 @@ export default function OinkSoccerCalc() {
                             const myGoalProb = calcGoalProb(stats.Attack, oppStats.Defense);
                             const oppGoalProb = calcGoalProb(oppStats.Attack, stats.Defense);
 
-                            const AVG_EVENTS = getAverageEvents(formKey, oppForm);
+                            let AVG_EVENTS;
+                            if (isHome) {
+                                AVG_EVENTS = getAverageEvents(formKey, oppForm);
+                            } else {
+                                AVG_EVENTS = getAverageEvents(oppForm, formKey);
+                            }
+
                             const myEvents = AVG_EVENTS * myPossession;
                             const oppEvents = AVG_EVENTS * (1 - myPossession);
 
@@ -980,13 +987,32 @@ export default function OinkSoccerCalc() {
                         < p className = "text-slate-500 font-medium mt-1" > Advanced Engine Simulator • Cloud Auto - Save Active </p>
                             </div>
 
-                            < div className = "bg-slate-800/50 px-6 py-4 rounded-2xl border border-slate-700/50 text-center min-w-[200px]" >
-                                <div className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-1" > Win Probability </div>
-                                    < div className = {`text-4xl font-black ${simulation.win > 50 ? 'text-green-400' : 'text-red-400'}`
-}>
+                            < div className = "flex flex-col md:flex-row gap-4 items-center" >
+                                {/* Home/Away Toggle */ }
+                                < div className = "bg-slate-800 p-1 rounded-lg flex border border-slate-700" >
+                                    <button
+                                        onClick={ () => handleHomeToggle(true) }
+    className = {`flex items-center gap-2 px-4 py-2 rounded text-xs font-bold transition-all ${isHome ? 'bg-blue-600 text-white shadow-lg' : 'text-slate-400 hover:text-white hover:bg-slate-700'}`
+}
+                                    >
+    <Home size={ 14 } /> HOME
+        </button>
+        < button
+onClick = {() => handleHomeToggle(false)}
+className = {`flex items-center gap-2 px-4 py-2 rounded text-xs font-bold transition-all ${!isHome ? 'bg-orange-600 text-white shadow-lg' : 'text-slate-400 hover:text-white hover:bg-slate-700'}`}
+                                    >
+    <Plane size={ 14 } /> AWAY
+        </button>
+        </div>
+
+        < div className = "bg-slate-800/50 px-6 py-4 rounded-2xl border border-slate-700/50 text-center min-w-[200px]" >
+            <div className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-1" > Win Probability </div>
+                < div className = {`text-4xl font-black ${simulation.win > 50 ? 'text-green-400' : 'text-red-400'}`
+    }>
     { simulation.win } %
     </div>
     < div className = "text-[10px] text-slate-500 mt-1" > Based on { Number(simulation.myxG) + Number(simulation.oppxG) } simulated goals </div>
+        </div>
         </div>
         </div>
 
