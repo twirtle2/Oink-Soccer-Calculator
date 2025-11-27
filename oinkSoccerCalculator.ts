@@ -22,24 +22,52 @@ const POSITIONS = {
 const FORMATIONS = {
     Pyramid: {
         name: "The Pyramid (2-1-1)",
+        style: "DEF",
         defMod: 1.04, ctlMod: 0.97, attMod: 0.94,
         structure: { GK: 1, DF: 2, MF: 1, FW: 1 }
     },
     Diamond: {
         name: "The Diamond (1-2-1)",
+        style: "BAL",
         defMod: 0.92, ctlMod: 1.015, attMod: 0.92,
         structure: { GK: 1, DF: 1, MF: 2, FW: 1 }
     },
     Y: {
         name: "The Y (1-1-2)",
+        style: "ATT",
         defMod: 0.96, ctlMod: 0.98, attMod: 1.04,
         structure: { GK: 1, DF: 1, MF: 1, FW: 2 }
     },
     Box: {
         name: "The Box (2-0-2)",
+        style: "BAL",
         defMod: 1.07, ctlMod: 1.0, attMod: 1.06,
         structure: { GK: 1, DF: 2, MF: 0, FW: 2 }
     },
+};
+
+// --- Event Count Logic (Home/Away Bias) ---
+const FORMATION_CHANCE_RANGES = {
+    "HOME:ATT|AWAY:ATT": { min: 7, max: 15 },
+    "HOME:ATT|AWAY:BAL": { min: 6, max: 12 },
+    "HOME:ATT|AWAY:DEF": { min: 5, max: 11 },
+
+    "HOME:BAL|AWAY:ATT": { min: 7, max: 12 },
+    "HOME:BAL|AWAY:BAL": { min: 4, max: 9 },
+    "HOME:BAL|AWAY:DEF": { min: 3, max: 8 },
+
+    "HOME:DEF|AWAY:ATT": { min: 6, max: 11 },
+    "HOME:DEF|AWAY:BAL": { min: 3, max: 8 },
+    "HOME:DEF|AWAY:DEF": { min: 2, max: 6 },
+};
+
+const getAverageEvents = (homeFormKey, awayFormKey) => {
+    const homeStyle = FORMATIONS[homeFormKey]?.style || 'BAL';
+    const awayStyle = FORMATIONS[awayFormKey]?.style || 'BAL';
+    const key = `HOME:${homeStyle}|AWAY:${awayStyle}`;
+
+    const range = FORMATION_CHANCE_RANGES[key] || { min: 3, max: 10 };
+    return (range.min + range.max) / 2;
 };
 
 const INJURIES = {
@@ -333,7 +361,7 @@ export default function OinkSoccerCalc() {
         const myGoalProb = calcGoalProb(myStats.Attack, oppStats.Defense);
         const oppGoalProb = calcGoalProb(oppStats.Attack, myStats.Defense);
 
-        const AVG_EVENTS = 6.5;
+        const AVG_EVENTS = getAverageEvents(myForm, oppForm);
         const myEvents = AVG_EVENTS * myPossession;
         const oppEvents = AVG_EVENTS * (1 - myPossession);
 
@@ -889,7 +917,7 @@ export default function OinkSoccerCalc() {
                             const myGoalProb = calcGoalProb(stats.Attack, oppStats.Defense);
                             const oppGoalProb = calcGoalProb(oppStats.Attack, stats.Defense);
 
-                            const AVG_EVENTS = 6.5;
+                            const AVG_EVENTS = getAverageEvents(formKey, oppForm);
                             const myEvents = AVG_EVENTS * myPossession;
                             const oppEvents = AVG_EVENTS * (1 - myPossession);
 
@@ -1440,8 +1468,8 @@ className = {`text-xs font-bold py-2 rounded border ${newPlayer.pos === k ? 'bg-
                                        key= { sev }
                                        onClick = {() => setNewPlayer({ ...newPlayer, injury: sev === 'None' ? null : sev })}
 className = {`text-[10px] font-bold py-2 rounded border ${(newPlayer.injury === sev || (!newPlayer.injury && sev === 'None'))
-        ? `${INJURIES[sev].color} border-transparent text-white`
-        : 'bg-slate-900 border-slate-700 text-slate-500 hover:bg-slate-800'
+    ? `${INJURIES[sev].color} border-transparent text-white`
+    : 'bg-slate-900 border-slate-700 text-slate-500 hover:bg-slate-800'
     }`}
                                    >
     { sev === 'None' ? 'Healthy' : sev}
