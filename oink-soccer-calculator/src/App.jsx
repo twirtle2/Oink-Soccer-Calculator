@@ -238,6 +238,30 @@ const initialMyTeam = [];
 
 const initialOpponent = [];
 
+const createImportDraftPlayer = (player = {}, index = 0) => {
+  const pos = ['GK', 'DF', 'MF', 'FW'].includes(player.pos) ? player.pos : 'FW';
+  return {
+    id: `draft-${Date.now()}-${Math.random().toString(36).slice(2, 9)}-${index}`,
+    name: player.name || '',
+    pos,
+    stats: {
+      SPD: Number.isFinite(player.stats?.SPD) ? player.stats.SPD : 50,
+      ATT: Number.isFinite(player.stats?.ATT) ? player.stats.ATT : (pos === 'GK' ? 0 : 50),
+      CTL: Number.isFinite(player.stats?.CTL) ? player.stats.CTL : 50,
+      DEF: Number.isFinite(player.stats?.DEF) ? player.stats.DEF : 50,
+      GKP: Number.isFinite(player.stats?.GKP) ? player.stats.GKP : (pos === 'GK' ? 50 : 0),
+    },
+  };
+};
+
+const ensureDraftSize = (rows, size = 5) => {
+  const next = [...rows];
+  while (next.length < size) {
+    next.push(createImportDraftPlayer({ name: '', pos: 'FW', stats: { SPD: 50, ATT: 50, CTL: 50, DEF: 50, GKP: 0 } }, next.length));
+  }
+  return next.slice(0, size);
+};
+
 
 export default function OinkSoccerCalc() {
   const { wallets } = useWallet();
@@ -247,6 +271,9 @@ export default function OinkSoccerCalc() {
   const [uploading, setUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
   const [uploadStatus, setUploadStatus] = useState(null);
+  const [showImportReview, setShowImportReview] = useState(false);
+  const [importDraftPlayers, setImportDraftPlayers] = useState([]);
+  const [importDraftFormation, setImportDraftFormation] = useState('Pyramid');
   const [walletSyncing, setWalletSyncing] = useState(false);
 
   const [mySquad, setMySquad] = useState(persistedState.mySquad || initialMyTeam); // Full roster
@@ -413,24 +440,6 @@ export default function OinkSoccerCalc() {
     return null;
   }, [myTeam, myForm]);
 
-  const retryFetch = async (url, options, maxRetries = 5) => {
-    let lastError = null;
-    for (let i = 0; i < maxRetries; i++) {
-      try {
-        const response = await fetch(url, options);
-        if (!response.ok) {
-          throw new Error(`HTTP error! status: ${response.status}`);
-        }
-        return response;
-      } catch (error) {
-        lastError = error;
-        const delay = Math.pow(2, i) * 1000;
-        await new Promise(resolve => setTimeout(resolve, delay));
-      }
-    }
-    throw lastError;
-  };
-
   const handleSyncWalletAssets = useCallback(async (addressesOverride = connectedAddresses) => {
     const addressesToSync = Array.from(new Set((addressesOverride || []).filter(Boolean)));
     if (addressesToSync.length === 0 || walletSyncing) {
@@ -490,6 +499,68 @@ export default function OinkSoccerCalc() {
     void handleSyncWalletAssets(connectedAddresses);
   }, [connectedAddressKey, connectedAddresses, handleSyncWalletAssets, walletSyncing]);
 
+  const handleImportDraftChange = (id, key, value) => {
+    setImportDraftPlayers((prev) =>
+      prev.map((row) => (row.id === id ? { ...row, [key]: value } : row)),
+    );
+  };
+
+  const handleImportDraftStatChange = (id, statKey, value) => {
+    const parsed = Number.parseInt(value, 10);
+    const clamped = Number.isFinite(parsed) ? Math.max(0, Math.min(100, parsed)) : 0;
+
+    setImportDraftPlayers((prev) =>
+      prev.map((row) => {
+        if (row.id !== id) return row;
+        return {
+          ...row,
+          stats: {
+            ...row.stats,
+            [statKey]: clamped,
+          },
+        };
+      }),
+    );
+  };
+
+  const handleApplyImportDraft = () => {
+    const normalized = ensureDraftSize(importDraftPlayers, 5).map((row, idx) => {
+      const pos = ['GK', 'DF', 'MF', 'FW'].includes(row.pos) ? row.pos : 'FW';
+      const stats = {
+        SPD: Math.max(0, Math.min(100, Number.parseInt(row.stats?.SPD, 10) || 50)),
+        ATT: Math.max(0, Math.min(100, Number.parseInt(row.stats?.ATT, 10) || (pos === 'GK' ? 0 : 50))),
+        CTL: Math.max(0, Math.min(100, Number.parseInt(row.stats?.CTL, 10) || 50)),
+        DEF: Math.max(0, Math.min(100, Number.parseInt(row.stats?.DEF, 10) || 50)),
+        GKP: Math.max(0, Math.min(100, Number.parseInt(row.stats?.GKP, 10) || (pos === 'GK' ? 50 : 0))),
+      };
+
+      return {
+        id: Date.now() + Math.random() + idx,
+        name: row.name?.trim() || `Opponent ${idx + 1}`,
+        pos,
+        stats,
+        ovr: getOfficialOvr(stats, pos),
+        injury: null,
+        source: 'upload',
+      };
+    });
+
+    const nextFormation = Object.keys(FORMATIONS).includes(importDraftFormation) ? importDraftFormation : 'Pyramid';
+    setOppForm(nextFormation);
+    setOpponentTeam(normalized);
+    saveToDb({ opponentTeam: normalized, oppForm: nextFormation });
+    setShowImportReview(false);
+    setUploadStatus({
+      tone: 'success',
+      message: `Applied ${normalized.length} reviewed opponent players in ${FORMATIONS[nextFormation].name}.`,
+    });
+  };
+
+  const handleCancelImportDraft = () => {
+    setShowImportReview(false);
+    setImportDraftPlayers([]);
+  };
+
   const handleImageUpload = async (e) => {
     const files = Array.from(e.target.files);
     if (files.length === 0) return;
@@ -497,289 +568,43 @@ export default function OinkSoccerCalc() {
     setUploading(true);
     setUploadProgress(0);
     setUploadStatus({ tone: 'info', message: `Processing ${files.length} screenshot(s)...` });
-    const apiKey = import.meta.env.VITE_GEMINI_API_KEY || "";
 
     try {
-      if (!apiKey) {
-        const localResult = await parseOpponentScreenshotsLocally(files, (done, total) => {
-          setUploadProgress(Math.round((done / total) * 100));
-        });
+      const localResult = await parseOpponentScreenshotsLocally(files, (done, total) => {
+        setUploadProgress(Math.round((done / total) * 100));
+      });
 
-        if (localResult.players.length === 0) {
-          throw new Error('No players were detected from the uploaded screenshot(s). Try a clearer image with visible player cards and stats.');
-        }
+      const detectedRows = localResult.players.slice(0, 5).map((player, index) => createImportDraftPlayer(player, index));
+      const nextDraft = ensureDraftSize(detectedRows, 5);
+      const nextFormation = Object.keys(FORMATIONS).includes(localResult.detectedFormationKey)
+        ? localResult.detectedFormationKey
+        : 'Pyramid';
 
-        const localPlayers = localResult.players.map((p) => ({
-          id: Date.now() + Math.random(),
-          name: p.name || `Unknown ${p.pos || 'FW'}`,
-          pos: p.pos || 'FW',
-          stats: {
-            SPD: p.stats?.SPD || 50,
-            ATT: p.stats?.ATT || ((p.pos || 'FW') === 'GK' ? 0 : 50),
-            CTL: p.stats?.CTL || 50,
-            DEF: p.stats?.DEF || 50,
-            GKP: p.stats?.GKP || ((p.pos || 'FW') === 'GK' ? 50 : 0),
-          },
-          ovr: getOfficialOvr(
-            {
-              SPD: p.stats?.SPD || 50,
-              ATT: p.stats?.ATT || ((p.pos || 'FW') === 'GK' ? 0 : 50),
-              CTL: p.stats?.CTL || 50,
-              DEF: p.stats?.DEF || 50,
-              GKP: p.stats?.GKP || ((p.pos || 'FW') === 'GK' ? 50 : 0),
-            },
-            p.pos || 'FW',
-          ),
-          injury: null,
-          source: 'upload',
-        }));
+      setImportDraftPlayers(nextDraft);
+      setImportDraftFormation(nextFormation);
+      setShowImportReview(true);
 
-        setOppForm(localResult.detectedFormationKey || 'Pyramid');
-        setOpponentTeam(localPlayers);
-        saveToDb({ opponentTeam: localPlayers, oppForm: localResult.detectedFormationKey || 'Pyramid' });
+      if (localResult.players.length === 0) {
         setUploadStatus({
-          tone: 'success',
-          message: `Updated opponent with ${localPlayers.length} player(s) via local OCR in ${FORMATIONS[localResult.detectedFormationKey || 'Pyramid']?.name || 'Pyramid'}${localResult.failedFiles > 0 ? ` (${localResult.failedFiles} file(s) failed)` : ''}.`,
+          tone: 'error',
+          message: 'Auto-detection missed this screenshot. Update the 5 rows below and click Apply Opponent.',
         });
-        return;
+      } else {
+        setUploadStatus({
+          tone: 'info',
+          message: `Detected ${localResult.players.length} player(s) with free local OCR. Review and click Apply Opponent.`,
+        });
       }
-
-      let completedCount = 0;
-      const totalFiles = files.length;
-      let failedFiles = 0;
-
-      const processFile = async (file) => {
-        const base64Data = await new Promise((resolve, reject) => {
-          const reader = new FileReader();
-          reader.readAsDataURL(file);
-          reader.onload = () => resolve(reader.result.split(',')[1]);
-          reader.onerror = error => reject(error);
-        });
-
-        const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`;
-
-        // 1. Player Extraction
-        const playerPayload = {
-          contents: [{
-            parts: [
-              {
-                text: `Analyze this soccer game screenshot (Filename: ${file.name}). It contains player cards.
-                  
-                  STEP 1: IDENTIFY CONTEXT
-                  Look for any active tabs, section headers, or titles that indicate a specific position group (e.g., "Forwards", "Midfielders", "Defenders", "Goalkeepers").
-                  - If "Forwards" or "FW" is selected/visible -> Context is "FW"
-                  - If "Midfielders" or "MF" is selected/visible -> Context is "MF"
-                  - If "Defenders" or "DF" is selected/visible -> Context is "DF"
-                  - If "Goalkeepers" or "GK" is selected/visible -> Context is "GK"
-                  - Otherwise -> Context is "Mixed"
-
-                  STEP 2: EXTRACT PLAYERS
-                  For EACH player card visible, extract the exact numbers.
-                  
-                  POSITION LOGIC:
-                  - If Context is "FW", "MF", "DF", or "GK", FORCE that position for all players found.
-                  - If Context is "Mixed", look at individual cards for position indicators (e.g. "ST"->FW, "CB"->DF).
-
-                  NAME HANDLING: If a name appears as "BOT #1234", check if there is a real player name visible elsewhere on the card. If only "BOT" is visible, use "BOT #1234".
-                  
-                  EXTRACT:
-                  - Name
-                  - Position (FW, MF, DF, GK)
-                  - Stats: Look for the following values:
-                     - SPD (Speed)
-                     - ATT (Attack)
-                     - CTL (Control)
-                     - DEF (Defense)
-                     - GKP (Goalkeeper)
-                  
-                  Ensure you capture the correct value for each stat. Do not guess.
-                  
-                  Return a JSON object with "detectedContext" and "players" array.`
-              },
-              { inlineData: { mimeType: file.type, data: base64Data } }
-            ]
-          }],
-          generationConfig: {
-            responseMimeType: "application/json",
-            responseSchema: {
-              type: "OBJECT",
-              properties: {
-                "detectedContext": { "type": "STRING", "enum": ["FW", "MF", "DF", "GK", "Mixed"] },
-                "players": {
-                  type: "ARRAY",
-                  items: {
-                    type: "OBJECT",
-                    properties: {
-                      "name": { "type": "STRING" },
-                      "pos": { "type": "STRING" },
-                      "stats": {
-                        type: "OBJECT",
-                        properties: {
-                          "SPD": { "type": "INTEGER" },
-                          "ATT": { "type": "INTEGER" },
-                          "CTL": { "type": "INTEGER" },
-                          "DEF": { "type": "INTEGER" },
-                          "GKP": { "type": "INTEGER" }
-                        },
-                        required: ["SPD", "ATT", "CTL", "DEF", "GKP"]
-                      }
-                    },
-                    required: ["name", "pos", "stats"]
-                  }
-                }
-              },
-              required: ["detectedContext", "players"]
-            }
-          }
-        };
-
-        const playerResponse = await retryFetch(apiUrl, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(playerPayload)
-        });
-        const playerResult = await playerResponse.json();
-        const playerJsonText = playerResult?.candidates?.[0]?.content?.parts?.[0]?.text;
-
-        console.log(`Raw Gemini response for ${file.name}:`, playerJsonText);
-
-        if (!playerJsonText) throw new Error(`API returned no player content for ${file.name}`);
-
-        const parsedResponse = JSON.parse(playerJsonText);
-
-        // Check filename for explicit position context
-        let filenameContext = null;
-        const upperName = file.name.toUpperCase();
-        if (upperName.includes('GK')) filenameContext = 'GK';
-        else if (upperName.includes('DF')) filenameContext = 'DF';
-        else if (upperName.includes('MF')) filenameContext = 'MF';
-        else if (upperName.includes('FW')) filenameContext = 'FW';
-
-        // Normalize to object format and apply filename context
-        let extractedPlayers;
-        if (Array.isArray(parsedResponse)) {
-          extractedPlayers = {
-            detectedContext: filenameContext || 'Mixed',
-            players: parsedResponse
-          };
-        } else {
-          extractedPlayers = parsedResponse;
-          if (filenameContext) {
-            extractedPlayers.detectedContext = filenameContext;
-          }
-        }
-
-        console.log(`Parsed players for ${file.name}:`, extractedPlayers);
-
-        // 2. Formation Extraction
-        const formPayload = {
-          contents: [{
-            parts: [
-              {
-                text: `Analyze this soccer team formation screenshot. Identify the formation type (e.g., Pyramid (2-1-1), Diamond (1-2-1), Y (1-1-2), or Box (2-0-2)). Return ONLY a single string matching one of the keys: 'Pyramid', 'Diamond', 'Y', or 'Box'. If the formation cannot be determined, return 'Pyramid'.`
-              },
-              { inlineData: { mimeType: file.type, data: base64Data } }
-            ]
-          }],
-        };
-
-        const formResponse = await retryFetch(apiUrl, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(formPayload)
-        });
-        const formResult = await formResponse.json();
-        const formText = formResult?.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || 'Pyramid';
-        const detectedFormationKey = Object.keys(FORMATIONS).includes(formText) ? formText : 'Pyramid';
-
-        completedCount++;
-        setUploadProgress(Math.round((completedCount / totalFiles) * 100));
-
-        return { extractedPlayers, detectedFormationKey };
-      };
-
-      const results = [];
-      for (const file of files) {
-        try {
-          const result = await processFile(file);
-          results.push(result);
-        } catch (err) {
-          console.error(`Failed to process ${file.name}`, err);
-          failedFiles += 1;
-        }
-        // Small delay to prevent rate limiting and ensure context separation
-        await new Promise(resolve => setTimeout(resolve, 500));
-      }
-
-      const allExtractedPlayers = results.flatMap(r => {
-        // Handle the new object structure with detectedContext
-        if (r.extractedPlayers && r.extractedPlayers.players) {
-          const context = r.extractedPlayers.detectedContext;
-          const players = r.extractedPlayers.players;
-
-          // Apply context override if valid
-          if (context && ['FW', 'MF', 'DF', 'GK'].includes(context)) {
-            return players.map(p => ({ ...p, pos: context }));
-          }
-          return players;
-        }
-        // Fallback for old format or direct array
-        return Array.isArray(r.extractedPlayers) ? r.extractedPlayers : [];
-      });
-
-      const lastFormation = results.length > 0 ? results[results.length - 1].detectedFormationKey : 'Pyramid';
-
-      // 3. Process & Update
-      const processedPlayers = allExtractedPlayers.map(p => {
-        const pos = (p.pos || 'FW').toUpperCase().substring(0, 2);
-        const stats = {
-          SPD: p.stats.SPD || 50,
-          ATT: p.stats.ATT || (pos === 'GK' ? 0 : 50),
-          CTL: p.stats.CTL || 50,
-          DEF: p.stats.DEF || 50,
-          GKP: p.stats.GKP || (pos === 'GK' ? 50 : 0)
-        };
-        return {
-          id: Date.now() + Math.random(),
-          name: p.name || `Unknown ${pos}`,
-          pos: pos,
-          stats: stats,
-          ovr: getOfficialOvr(stats, pos),
-          injury: null,
-          source: 'upload'
-        };
-      });
-
-      // Deduplicate within the new batch
-      const uniqueProcessedPlayers = [];
-      const batchSignatures = new Set();
-
-      processedPlayers.forEach(p => {
-        const signature = `${p.name}-${p.pos}-${p.stats.SPD}-${p.stats.ATT}-${p.stats.CTL}-${p.stats.DEF}-${p.stats.GKP}`;
-        if (!batchSignatures.has(signature)) {
-          batchSignatures.add(signature);
-          uniqueProcessedPlayers.push(p);
-        }
-      });
-
-      if (uniqueProcessedPlayers.length === 0) {
-        throw new Error('No players were detected from the uploaded screenshot(s). Try a clearer image with visible player cards and stats.');
-      }
-
-      setOppForm(lastFormation);
-      setOpponentTeam(uniqueProcessedPlayers);
-      saveToDb({ opponentTeam: uniqueProcessedPlayers, oppForm: lastFormation });
-      setUploadStatus({
-        tone: 'success',
-        message: `Updated opponent with ${uniqueProcessedPlayers.length} player(s) in ${FORMATIONS[lastFormation]?.name || lastFormation}${failedFiles > 0 ? ` (${failedFiles} file(s) failed)` : ''}.`,
-      });
-
     } catch (err) {
       console.error("Screenshot import failed:", err);
       setUploadStatus({
         tone: 'error',
-        message: err instanceof Error ? err.message : 'Screenshot import failed.',
+        message: err instanceof Error ? err.message : 'Screenshot import failed. Fill manual entries below.',
       });
+      const fallbackDraft = ensureDraftSize([], 5);
+      setImportDraftPlayers(fallbackDraft);
+      setImportDraftFormation('Pyramid');
+      setShowImportReview(true);
     } finally {
       setUploading(false);
       e.target.value = null;
@@ -1514,6 +1339,81 @@ export default function OinkSoccerCalc() {
                   }`}
                 >
                   {uploadStatus.message}
+                </div>
+              )}
+
+              {showImportReview && (
+                <div className="mt-4 rounded-xl border border-slate-600 bg-slate-900/60 p-3 space-y-3">
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="text-xs font-bold text-slate-200 uppercase">Review Opponent Import</div>
+                    <select
+                      value={importDraftFormation}
+                      onChange={(e) => setImportDraftFormation(e.target.value)}
+                      className="bg-slate-900 border border-slate-700 text-[11px] rounded px-2 py-1 text-white focus:outline-none focus:border-blue-500"
+                    >
+                      {Object.keys(FORMATIONS).map((k) => (
+                        <option key={k} value={k}>
+                          {FORMATIONS[k].name}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div className="max-h-[340px] overflow-y-auto space-y-2 pr-1">
+                    {importDraftPlayers.map((row, idx) => (
+                      <div key={row.id} className="rounded-lg border border-slate-700/70 bg-slate-800/60 p-2 space-y-2">
+                        <div className="flex items-center gap-2">
+                          <span className="text-[10px] font-bold text-slate-400 w-4">{idx + 1}</span>
+                          <input
+                            type="text"
+                            value={row.name}
+                            onChange={(e) => handleImportDraftChange(row.id, 'name', e.target.value)}
+                            placeholder={`Opponent ${idx + 1}`}
+                            className="flex-1 bg-slate-900 border border-slate-700 rounded px-2 py-1 text-xs text-white focus:outline-none focus:border-green-500"
+                          />
+                          <select
+                            value={row.pos}
+                            onChange={(e) => handleImportDraftChange(row.id, 'pos', e.target.value)}
+                            className="bg-slate-900 border border-slate-700 text-xs rounded px-2 py-1 text-white focus:outline-none focus:border-green-500"
+                          >
+                            {Object.keys(POSITIONS).map((k) => (
+                              <option key={k} value={k}>{k}</option>
+                            ))}
+                          </select>
+                        </div>
+                        <div className="grid grid-cols-5 gap-1">
+                          {['SPD', 'ATT', 'CTL', 'DEF', 'GKP'].map((statKey) => (
+                            <div key={statKey}>
+                              <label className="block text-[9px] font-bold text-slate-500 mb-1">{statKey}</label>
+                              <input
+                                type="number"
+                                min="0"
+                                max="100"
+                                value={row.stats[statKey]}
+                                onChange={(e) => handleImportDraftStatChange(row.id, statKey, e.target.value)}
+                                className="w-full bg-slate-900 border border-slate-700 rounded px-1.5 py-1 text-[11px] text-white font-mono focus:outline-none focus:border-blue-500"
+                              />
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-2">
+                    <button
+                      onClick={handleApplyImportDraft}
+                      className="rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold py-2 transition-colors"
+                    >
+                      Apply Opponent
+                    </button>
+                    <button
+                      onClick={handleCancelImportDraft}
+                      className="rounded-lg border border-slate-600 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-bold py-2 transition-colors"
+                    >
+                      Discard Draft
+                    </button>
+                  </div>
                 </div>
               )}
             </div>
