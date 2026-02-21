@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { Plus, Trash2, Users, Zap, Activity, Pencil, Save, RotateCcw, Loader2, Upload, Image as ImageIcon, Bandage, X, TrendingUp, ChevronDown, ChevronUp, RefreshCw, ArrowDownWideNarrow, ArrowUpNarrowWide } from 'lucide-react';
 import { useWallet } from '@txnlab/use-wallet-react';
-import WalletPanel from './components/WalletPanel';
+import WalletConnector from './components/WalletConnector';
 import { loadCalculatorState, saveCalculatorState } from './lib/storage';
 import { loadPlayableCatalog } from './lib/playableCatalog';
 import { fetchHeldAssetIdsForAddresses } from './lib/indexer';
@@ -1021,29 +1021,29 @@ export default function OinkSoccerCalc() {
       <div className="max-w-6xl mx-auto p-4 md:p-8 space-y-8" >
 
         {/* Header */}
-        < div className="flex flex-col md:flex-row items-center justify-between gap-6 pb-8 border-b border-slate-800" >
+        < div className="flex flex-col md:flex-row items-start justify-between gap-6 pb-8 border-b border-slate-800" >
           <div>
             <h1 className="text-4xl font-black text-white flex items-center gap-3 tracking-tight" >
               <span className="text-green-500" > OINK </span> ANALYZER
             </h1>
             < p className="text-slate-500 font-medium mt-1" > Advanced Engine Simulator • Wallet + Local Storage </p>
           </div>
-
-          < div className="bg-slate-800/50 px-6 py-4 rounded-2xl border border-slate-700/50 text-center min-w-[200px]" >
-            <div className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-1" > Win Probability </div>
-            < div className={`text-4xl font-black ${simulation.win > 50 ? 'text-green-400' : 'text-red-400'}`
-            }>
-              {simulation.win} %
+          <div className="flex flex-col items-end gap-3 w-full md:w-auto">
+            <WalletConnector
+              onSync={handleSyncWalletAssets}
+              isSyncing={walletSyncing}
+              syncMeta={walletSyncMeta}
+            />
+            < div className="bg-slate-800/50 px-6 py-4 rounded-2xl border border-slate-700/50 text-center min-w-[200px] w-full md:w-auto" >
+              <div className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-1" > Win Probability </div>
+              < div className={`text-4xl font-black ${simulation.win > 50 ? 'text-green-400' : 'text-red-400'}`
+              }>
+                {simulation.win} %
+              </div>
+              < div className="text-[10px] text-slate-500 mt-1" > Based on {Number(simulation.myxG) + Number(simulation.oppxG)} simulated goals </div>
             </div>
-            < div className="text-[10px] text-slate-500 mt-1" > Based on {Number(simulation.myxG) + Number(simulation.oppxG)} simulated goals </div>
           </div>
         </div>
-
-        <WalletPanel
-          onSync={handleSyncWalletAssets}
-          isSyncing={walletSyncing}
-          syncMeta={walletSyncMeta}
-        />
 
         {/* Top Bar */}
         <div className="flex flex-col xl:flex-row items-center justify-between gap-4 bg-slate-800 p-4 rounded-xl" >
