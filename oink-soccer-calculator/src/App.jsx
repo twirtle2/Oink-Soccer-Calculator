@@ -702,11 +702,6 @@ export default function OinkSoccerCalc() {
     setSuggestions({});
   };
 
-  const connectedWalletCount = connectedAddresses.length;
-  const walletBadgeLabel = connectedWalletCount > 0
-    ? `${connectedWalletCount} wallet${connectedWalletCount > 1 ? 's' : ''} connected`
-    : 'No wallet connected';
-
   const tabItems = useMemo(() => ([
     { key: 'squad', icon: '👥', label: 'Squad' },
     { key: 'opponent', icon: '⚔️', label: 'Opponent' },
@@ -793,13 +788,6 @@ export default function OinkSoccerCalc() {
             <div className="text-[11px] text-[#6b7a94]">Season {catalogSeason ?? 'Unknown'}</div>
           </div>
           <div className="flex items-center gap-2">
-            <div className="hidden items-center gap-2 rounded-md border border-[#1e2a3a] bg-[#161c28] px-3 py-1.5 text-xs text-[#9aa5bb] sm:inline-flex">
-              <span className="relative flex h-2 w-2">
-                <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-[#00e676]/70" />
-                <span className="relative inline-flex h-2 w-2 rounded-full bg-[#00e676]" />
-              </span>
-              {walletBadgeLabel}
-            </div>
             <WalletConnector
               onSync={handleSyncWalletAssets}
               isSyncing={walletSyncing}
