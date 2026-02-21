@@ -66,12 +66,12 @@ export default function WalletConnector({ onSync, isSyncing, syncMeta }) {
     <div className="relative z-50" ref={popoverRef}>
       <button
         onClick={() => setOpen((prev) => !prev)}
-        className="inline-flex items-center gap-2 rounded-2xl border-2 border-slate-200/80 bg-slate-900 px-4 py-2 text-sm font-bold text-white shadow-glow transition hover:border-green-300"
+        className="inline-flex items-center gap-2 rounded-2xl border border-slate-400/70 bg-slate-900/90 px-4 py-2 text-sm font-bold text-white shadow-glow transition hover:border-emerald-300"
       >
-        <Wallet size={16} className="text-slate-100" />
+        <Wallet size={16} className="text-emerald-300" />
         {buttonLabel}
         {connectedAddresses.length > 0 && (
-          <span className="rounded-full bg-green-500/20 px-1.5 py-0.5 text-[10px] font-black text-green-300">
+          <span className="rounded-full border border-emerald-500/40 bg-emerald-500/20 px-1.5 py-0.5 text-[10px] font-black text-emerald-300">
             {connectedAddresses.length}
           </span>
         )}
@@ -79,14 +79,16 @@ export default function WalletConnector({ onSync, isSyncing, syncMeta }) {
       </button>
 
       {open && (
-        <div className="absolute right-0 mt-2 w-[520px] max-w-[95vw] overflow-hidden rounded-2xl border border-slate-300/60 bg-slate-100 shadow-2xl">
-          <div className="flex items-center justify-between border-b border-slate-300 bg-white px-4 py-3">
-            <div className="text-base font-black text-slate-800">Connect Wallet</div>
+        <div className="absolute right-0 mt-2 w-[520px] max-w-[95vw] overflow-hidden rounded-2xl border border-slate-600/80 bg-slate-900/95 shadow-2xl backdrop-blur-xl">
+          <div className="flex items-center justify-between border-b border-slate-700 bg-slate-900/90 px-4 py-3">
+            <div className="text-base font-black text-slate-100">Connect Wallet</div>
             <button
               onClick={onSync}
               disabled={!canSync}
-              className={`inline-flex items-center gap-1 rounded-xl px-3 py-1.5 text-xs font-bold ${
-                canSync ? 'bg-slate-900 text-white hover:bg-slate-800' : 'bg-slate-200 text-slate-500'
+              className={`inline-flex items-center gap-1 rounded-xl border px-3 py-1.5 text-xs font-bold ${
+                canSync
+                  ? 'border-emerald-500/40 bg-emerald-500/20 text-emerald-200 hover:bg-emerald-500/30'
+                  : 'border-slate-700 bg-slate-800 text-slate-500'
               }`}
             >
               <RefreshCw size={12} className={isSyncing ? 'animate-spin' : ''} />
@@ -96,22 +98,25 @@ export default function WalletConnector({ onSync, isSyncing, syncMeta }) {
 
           <div>
             {wallets.map((wallet) => (
-              <div key={wallet.walletKey} className="flex items-center justify-between border-b border-slate-300 bg-slate-100 px-4 py-4">
+              <div
+                key={wallet.walletKey}
+                className="flex items-center justify-between border-b border-slate-700/70 bg-slate-900/40 px-4 py-4 transition-colors hover:bg-slate-800/40"
+              >
                 <div className="flex items-center gap-3">
                   {wallet.metadata.icon ? (
                     <img
                       src={wallet.metadata.icon}
                       alt={wallet.metadata.name}
-                      className="h-10 w-10 rounded-full border border-slate-300 bg-white p-1.5"
+                      className="h-10 w-10 rounded-full border border-slate-600/80 bg-slate-950 p-1.5"
                     />
                   ) : (
-                    <div className="flex h-10 w-10 items-center justify-center rounded-full border border-slate-300 bg-white">
-                      <Wallet size={16} className="text-slate-500" />
+                    <div className="flex h-10 w-10 items-center justify-center rounded-full border border-slate-600/80 bg-slate-950">
+                      <Wallet size={16} className="text-slate-300" />
                     </div>
                   )}
                   <div>
-                    <div className="text-2xl font-semibold leading-tight text-slate-700">{wallet.metadata.name}</div>
-                    <div className="text-[11px] text-slate-500">
+                    <div className="text-2xl font-semibold leading-tight text-slate-100">{wallet.metadata.name}</div>
+                    <div className="text-[11px] text-slate-400">
                       {wallet.accounts.length > 0 ? `${wallet.accounts.length} account(s)` : 'No accounts'}
                     </div>
                   </div>
@@ -123,17 +128,17 @@ export default function WalletConnector({ onSync, isSyncing, syncMeta }) {
                     disabled={wallet.isConnected}
                     className={`inline-flex min-w-[130px] items-center justify-center gap-2 rounded-xl border px-4 py-2 text-base font-bold ${
                       wallet.isConnected
-                        ? 'border-slate-300 bg-slate-200 text-slate-500'
-                        : 'border-slate-300 bg-white text-slate-700 hover:bg-slate-50'
+                        ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-200'
+                        : 'border-slate-600 bg-slate-800 text-slate-100 hover:border-emerald-400/60 hover:text-emerald-200'
                     }`}
                   >
-                    <PlusCircle size={18} className={wallet.isConnected ? 'text-slate-400' : 'text-green-500'} />
+                    <PlusCircle size={18} className={wallet.isConnected ? 'text-emerald-300' : 'text-emerald-400'} />
                     {wallet.isConnected ? 'Connected' : 'Connect'}
                   </button>
                   {wallet.isConnected && (
                     <button
                       onClick={() => handleDisconnect(wallet)}
-                      className="rounded-xl border border-slate-300 bg-slate-200 px-3 py-2 text-xs font-bold text-slate-600 hover:bg-slate-300"
+                      className="rounded-xl border border-slate-600 bg-slate-800 px-3 py-2 text-xs font-bold text-slate-300 hover:border-red-400/60 hover:text-red-300"
                     >
                       Disconnect
                     </button>
@@ -143,15 +148,15 @@ export default function WalletConnector({ onSync, isSyncing, syncMeta }) {
             ))}
           </div>
 
-          <div className="space-y-2 bg-slate-900 px-4 py-3">
-            <div className="rounded-lg border border-slate-700 bg-slate-800/40 p-2">
+          <div className="space-y-2 bg-slate-950/60 px-4 py-3">
+            <div className="rounded-lg border border-slate-700/80 bg-slate-800/40 p-2">
               <div className="mb-1 text-[10px] font-bold uppercase tracking-wide text-slate-500">Connected Accounts</div>
               {connectedAddresses.length === 0 ? (
                 <div className="text-[11px] text-slate-400">No wallet connected.</div>
               ) : (
                 <div className="flex flex-wrap gap-1">
                   {connectedAddresses.map((address) => (
-                    <span key={address} className="rounded bg-slate-700 px-2 py-1 font-mono text-[10px] text-slate-200">
+                    <span key={address} className="rounded border border-slate-600 bg-slate-700/70 px-2 py-1 font-mono text-[10px] text-slate-200">
                       {shortenAddress(address)}
                     </span>
                   ))}
@@ -160,15 +165,15 @@ export default function WalletConnector({ onSync, isSyncing, syncMeta }) {
             </div>
 
             <div className="grid grid-cols-3 gap-2 text-[11px] text-slate-300">
-              <div className="rounded border border-slate-700 bg-slate-800/40 p-2">
+              <div className="rounded border border-slate-700/80 bg-slate-800/40 p-2">
                 <div className="text-[10px] uppercase text-slate-500">Last Sync</div>
                 <div>{syncMeta?.lastSyncedAt ? new Date(syncMeta.lastSyncedAt).toLocaleTimeString() : 'Never'}</div>
               </div>
-              <div className="rounded border border-slate-700 bg-slate-800/40 p-2">
+              <div className="rounded border border-slate-700/80 bg-slate-800/40 p-2">
                 <div className="text-[10px] uppercase text-slate-500">Matched</div>
                 <div>{syncMeta?.matchedCount ?? 0}</div>
               </div>
-              <div className="rounded border border-slate-700 bg-slate-800/40 p-2">
+              <div className="rounded border border-slate-700/80 bg-slate-800/40 p-2">
                 <div className="text-[10px] uppercase text-slate-500">Ignored</div>
                 <div>{syncMeta?.unmatchedCount ?? 0}</div>
               </div>

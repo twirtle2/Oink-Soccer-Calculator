@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { Plus, Trash2, Users, Zap, Activity, Pencil, Save, RotateCcw, Loader2, Upload, Image as ImageIcon, Bandage, X, TrendingUp, ChevronDown, ChevronUp, RefreshCw, ArrowDownWideNarrow, ArrowUpNarrowWide } from 'lucide-react';
 import { useWallet } from '@txnlab/use-wallet-react';
 import WalletConnector from './components/WalletConnector';
@@ -241,6 +241,7 @@ const initialOpponent = [];
 export default function OinkSoccerCalc() {
   const { wallets } = useWallet();
   const persistedState = useMemo(() => loadCalculatorState(), []);
+  const autoSyncedAddressKeyRef = useRef('');
 
   const [uploading, setUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
@@ -293,13 +294,18 @@ export default function OinkSoccerCalc() {
     return Array.from(addresses);
   }, [wallets]);
 
+  const connectedAddressKey = useMemo(
+    () => [...connectedAddresses].sort().join('|'),
+    [connectedAddresses],
+  );
+
   useEffect(() => {
     // Auto set form target based on tab
     if (activeTab === 'myTeam') setFormTarget('mySquad');
     if (activeTab === 'opponent') setFormTarget('opponent');
   }, [activeTab]);
 
-  const saveToDb = (overrides = {}) => {
+  const saveToDb = useCallback((overrides = {}) => {
     saveCalculatorState({
       mySquad: overrides.mySquad !== undefined ? overrides.mySquad : mySquad,
       myTeam: overrides.myTeam !== undefined ? overrides.myTeam : myTeam,
@@ -311,7 +317,7 @@ export default function OinkSoccerCalc() {
       homeAdvantage: overrides.homeAdvantage !== undefined ? overrides.homeAdvantage : homeAdvantage,
       walletSyncMeta: overrides.walletSyncMeta !== undefined ? overrides.walletSyncMeta : walletSyncMeta,
     });
-  };
+  }, [mySquad, myTeam, opponentTeam, myForm, oppForm, myBoost, myBoostApps, homeAdvantage, walletSyncMeta]);
 
   useEffect(() => {
     saveCalculatorState({
@@ -423,8 +429,9 @@ export default function OinkSoccerCalc() {
     throw lastError;
   };
 
-  const handleSyncWalletAssets = async () => {
-    if (connectedAddresses.length === 0 || walletSyncing) {
+  const handleSyncWalletAssets = useCallback(async (addressesOverride = connectedAddresses) => {
+    const addressesToSync = Array.from(new Set((addressesOverride || []).filter(Boolean)));
+    if (addressesToSync.length === 0 || walletSyncing) {
       return;
     }
 
@@ -438,7 +445,7 @@ export default function OinkSoccerCalc() {
     try {
       const [catalogByAssetId, heldAssetIds] = await Promise.all([
         loadPlayableCatalog(),
-        fetchHeldAssetIdsForAddresses(connectedAddresses),
+        fetchHeldAssetIdsForAddresses(addressesToSync),
       ]);
 
       const { walletPlayers, matchedCount, unmatchedCount } = buildWalletPlayers(heldAssetIds, catalogByAssetId);
@@ -465,7 +472,21 @@ export default function OinkSoccerCalc() {
     } finally {
       setWalletSyncing(false);
     }
-  };
+  }, [connectedAddresses, mySquad, myTeam, saveToDb, walletSyncMeta, walletSyncing]);
+
+  useEffect(() => {
+    if (!connectedAddressKey) {
+      autoSyncedAddressKeyRef.current = '';
+      return;
+    }
+
+    if (walletSyncing || autoSyncedAddressKeyRef.current === connectedAddressKey) {
+      return;
+    }
+
+    autoSyncedAddressKeyRef.current = connectedAddressKey;
+    void handleSyncWalletAssets(connectedAddresses);
+  }, [connectedAddressKey, connectedAddresses, handleSyncWalletAssets, walletSyncing]);
 
   const handleImageUpload = async (e) => {
     const files = Array.from(e.target.files);
