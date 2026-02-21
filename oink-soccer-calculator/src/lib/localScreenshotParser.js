@@ -5,16 +5,22 @@ const FORMATION_CANDIDATES = [
   { key: 'Box', regex: /(\bBOX\b|2\s*[-:]\s*0\s*[-:]\s*2)/i },
 ];
 
+const STAT_KEYS = ['DEF', 'CTL', 'ATT', 'SPD', 'GKP'];
+
 const OCR_FIXUPS = [
   [/CT1/g, 'CTL'],
   [/CT\|/g, 'CTL'],
   [/SP0/g, 'SPD'],
   [/ATTI/g, 'ATT'],
   [/GKP\./g, 'GKP'],
-  [/SPDO/g, 'SPD'],
+  [/SPO/g, 'SPD'],
 ];
 
-const STAT_KEYS = ['DEF', 'CTL', 'ATT', 'SPD', 'GKP'];
+const OCR_OPTIONS = {
+  tessedit_pageseg_mode: 6,
+  preserve_interword_spaces: '1',
+  tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789:|.- ',
+};
 
 const normalizeText = (value = '') => {
   let text = value.toUpperCase();
@@ -26,7 +32,19 @@ const normalizeText = (value = '') => {
 
 const clampStat = (value) => Math.max(0, Math.min(100, value));
 
-const normalizeToken = (token = '') => normalizeText(token).replace(/[^A-Z0-9]/g, '');
+const normalizeToken = (value = '') => normalizeText(value).replace(/[^A-Z0-9]/g, '');
+
+const parseNumberToken = (value = '') => {
+  const digits = normalizeText(value).replace(/[OQ]/g, '0').replace(/[IL]/g, '1').replace(/[^0-9]/g, '');
+  if (!digits) return null;
+  let parsed = Number.parseInt(digits, 10);
+  if (!Number.isFinite(parsed)) return null;
+  if (parsed > 100 && digits.length >= 2) {
+    parsed = Number.parseInt(digits.slice(-2), 10);
+  }
+  if (!Number.isFinite(parsed)) return null;
+  return clampStat(parsed);
+};
 
 const statKeyFromToken = (token = '') => {
   if (!token) return null;
@@ -34,51 +52,31 @@ const statKeyFromToken = (token = '') => {
   if (fixed.includes('DEF')) return 'DEF';
   if (fixed.includes('CTL') || fixed.includes('CTI')) return 'CTL';
   if (fixed.includes('ATT') || fixed.includes('ATI')) return 'ATT';
-  if (fixed.includes('SPD') || fixed.includes('SPO')) return 'SPD';
+  if (fixed.includes('SPD')) return 'SPD';
   if (fixed.includes('GKP') || fixed.includes('GKE')) return 'GKP';
   return null;
 };
 
-const parseNumberToken = (token = '') => {
-  const digits = normalizeText(token).replace(/[OQ]/g, '0').replace(/[IL]/g, '1').replace(/[^0-9]/g, '');
-  if (!digits) return null;
-  let value = Number.parseInt(digits, 10);
-  if (!Number.isFinite(value)) return null;
-  if (value > 100 && digits.length >= 2) {
-    value = Number.parseInt(digits.slice(-2), 10);
-  }
-  if (!Number.isFinite(value)) return null;
-  return clampStat(value);
-};
-
-const detectFormationKey = (fullText) => {
-  const source = normalizeText(fullText);
-  for (const candidate of FORMATION_CANDIDATES) {
-    if (candidate.regex.test(source)) {
-      return candidate.key;
-    }
-  }
-  return 'Pyramid';
-};
-
-const cleanName = (line = '') => {
-  return normalizeText(line)
+const cleanName = (value = '') =>
+  normalizeText(value)
     .replace(/[^A-Z0-9.'\- ]+/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();
-};
 
 const isLikelyNameLine = (line = '') => {
-  if (!line) return false;
   const text = normalizeText(line).trim();
   if (!text) return false;
   if (text.includes(':') || text.includes('|')) return false;
   if (STAT_KEYS.some((key) => text.includes(key))) return false;
   if (text.includes('THE DIAMOND') || text.includes('THE PYRAMID') || text.includes('THE BOX') || text.includes('THE Y')) return false;
-  if (text.includes('CONNECT WALLET') || text.includes('SYNC')) return false;
   if (!/[A-Z]/.test(text)) return false;
   if (/^\d+$/.test(text)) return false;
   return text.length >= 3;
+};
+
+const hasEnoughStats = (stats = {}) => {
+  const count = STAT_KEYS.filter((key) => Number.isFinite(stats[key])).length;
+  return count >= 3 && Number.isFinite(stats.SPD);
 };
 
 const inferPosition = (stats = {}, explicitPos = null) => {
@@ -94,59 +92,49 @@ const inferPosition = (stats = {}, explicitPos = null) => {
   return 'MF';
 };
 
-const hasEnoughStats = (stats = {}) => {
-  const count = STAT_KEYS.filter((key) => Number.isFinite(stats[key])).length;
-  return count >= 3 && Number.isFinite(stats.SPD);
-};
-
-const normalizeOcrLines = (dataOrText) => {
-  if (!dataOrText) return [];
-  if (typeof dataOrText === 'string') {
-    return normalizeText(dataOrText).split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
-  }
-  const rawLines = [];
-  if (Array.isArray(dataOrText.lines)) {
-    for (const line of dataOrText.lines) {
-      if (line?.text) rawLines.push(line.text);
+const detectFormationKey = (fullText) => {
+  const source = normalizeText(fullText);
+  for (const candidate of FORMATION_CANDIDATES) {
+    if (candidate.regex.test(source)) {
+      return candidate.key;
     }
   }
-  if (typeof dataOrText.text === 'string' && rawLines.length === 0) {
-    rawLines.push(...dataOrText.text.split(/\r?\n/));
-  }
-  return rawLines.map((line) => normalizeText(line).trim()).filter(Boolean);
+  return 'Pyramid';
 };
 
 const parseRowsFromWords = (words = []) => {
   const rows = [];
   for (const word of words) {
     const text = word?.text?.trim();
-    const box = word?.bbox;
-    if (!text || !box) continue;
-    const x0 = Number(box.x0);
-    const x1 = Number(box.x1);
-    const y0 = Number(box.y0);
-    const y1 = Number(box.y1);
+    const bbox = word?.bbox;
+    if (!text || !bbox) continue;
+
+    const x0 = Number(bbox.x0);
+    const x1 = Number(bbox.x1);
+    const y0 = Number(bbox.y0);
+    const y1 = Number(bbox.y1);
     if (![x0, x1, y0, y1].every(Number.isFinite)) continue;
+
     const cx = (x0 + x1) / 2;
     const cy = (y0 + y1) / 2;
+    let target = null;
+    let bestDy = Number.POSITIVE_INFINITY;
 
-    let bestRow = null;
-    let bestDelta = Number.POSITIVE_INFINITY;
     for (const row of rows) {
-      const delta = Math.abs(cy - row.cy);
-      if (delta <= 12 && delta < bestDelta) {
-        bestDelta = delta;
-        bestRow = row;
+      const dy = Math.abs(row.cy - cy);
+      if (dy <= 12 && dy < bestDy) {
+        bestDy = dy;
+        target = row;
       }
     }
 
-    if (!bestRow) {
-      bestRow = { words: [], cy };
-      rows.push(bestRow);
+    if (!target) {
+      target = { words: [], cy };
+      rows.push(target);
     }
 
-    bestRow.words.push({ text, cx, x0, x1, y0, y1 });
-    bestRow.cy = (bestRow.cy * (bestRow.words.length - 1) + cy) / bestRow.words.length;
+    target.words.push({ text, x0, x1, y0, y1, cx });
+    target.cy = (target.cy * (target.words.length - 1) + cy) / target.words.length;
   }
 
   for (const row of rows) {
@@ -161,223 +149,84 @@ const parseRowsFromWords = (words = []) => {
   return rows;
 };
 
-const extractStatRowsFromRows = (rows = []) => {
-  const statRows = [];
+const extractStatsFromRows = (rows = []) => {
+  const stats = {};
 
   for (const row of rows) {
     for (let i = 0; i < row.words.length; i += 1) {
-      const word = row.words[i];
-      const key = statKeyFromToken(normalizeToken(word.text));
+      const key = statKeyFromToken(normalizeToken(row.words[i].text));
       if (!key) continue;
 
       let value = null;
-      for (let j = i + 1; j < Math.min(i + 5, row.words.length); j += 1) {
-        const n = parseNumberToken(row.words[j].text);
-        if (n === null) continue;
-        value = n;
-        break;
+      for (let j = i + 1; j < Math.min(row.words.length, i + 5); j += 1) {
+        value = parseNumberToken(row.words[j].text);
+        if (value !== null) break;
       }
 
       if (value === null) {
         const match = normalizeText(row.text).match(new RegExp(`${key}\\s*[:;.\\-]?\\s*(\\d{1,3})`));
-        if (match) {
-          value = clampStat(Number.parseInt(match[1], 10));
-        }
+        if (match) value = clampStat(Number.parseInt(match[1], 10));
       }
 
       if (value !== null) {
-        statRows.push({ key, value, x: word.cx, y: row.cy });
+        stats[key] = value;
       }
     }
   }
 
-  return statRows;
+  return stats;
 };
 
-const extractPosMarkersFromRows = (rows = []) => {
-  const markers = [];
-  for (const row of rows) {
-    for (const word of row.words) {
-      const token = normalizeToken(word.text);
-      if (token === 'GK' || token === 'DF' || token === 'MF' || token === 'FW') {
-        markers.push({ pos: token, x: word.cx, y: row.cy });
-      }
+const parseStatsFromText = (text = '') => {
+  const source = normalizeText(text);
+  const stats = {};
+  for (const key of STAT_KEYS) {
+    const match = source.match(new RegExp(`${key}\\s*[:;.\\-]?\\s*(\\d{1,3})`));
+    if (!match) continue;
+    const value = clampStat(Number.parseInt(match[1], 10));
+    if (Number.isFinite(value)) {
+      stats[key] = value;
     }
   }
-  return markers;
+  return stats;
 };
 
-const extractNameCandidatesFromRows = (rows = []) => {
-  const names = [];
+const extractNameFromRows = (rows = []) => {
   for (const row of rows) {
     if (!isLikelyNameLine(row.text)) continue;
     const name = cleanName(row.text);
-    if (!name) continue;
-    names.push({ name, x: row.cx, y: row.cy });
+    if (name.length >= 3) return name;
   }
-  return names;
+  return null;
 };
 
-const buildCardGroupsFromStatRows = (statRows = []) => {
-  const sorted = [...statRows].sort((a, b) => (a.y - b.y) || (a.x - b.x));
-  const groups = [];
-
-  for (const statRow of sorted) {
-    let best = null;
-    let bestScore = Number.POSITIVE_INFINITY;
-
-    for (const group of groups) {
-      const dx = Math.abs(statRow.x - group.cx);
-      const dy = Math.abs(statRow.y - group.lastY);
-      if (dx > 140 || dy > 140) continue;
-      const score = dx + (dy * 0.6);
-      if (score < bestScore) {
-        bestScore = score;
-        best = group;
-      }
-    }
-
-    if (!best) {
-      best = {
-        rows: [],
-        stats: {},
-        cx: statRow.x,
-        minY: statRow.y,
-        maxY: statRow.y,
-        lastY: statRow.y,
-        explicitPos: null,
-        name: null,
-      };
-      groups.push(best);
-    }
-
-    best.rows.push(statRow);
-    best.stats[statRow.key] = statRow.value;
-    best.cx = (best.cx * (best.rows.length - 1) + statRow.x) / best.rows.length;
-    best.minY = Math.min(best.minY, statRow.y);
-    best.maxY = Math.max(best.maxY, statRow.y);
-    best.lastY = statRow.y;
-  }
-
-  return groups.filter((group) => hasEnoughStats(group.stats));
+const extractPosFromText = (text = '') => {
+  const match = normalizeText(text).match(/\b(GK|DF|MF|FW)\b/);
+  return match ? match[1] : null;
 };
 
-const assignPositionsToGroups = (groups = [], posMarkers = []) => {
-  for (const marker of posMarkers) {
-    let best = null;
-    let bestScore = Number.POSITIVE_INFINITY;
-    for (const group of groups) {
-      if (Math.abs(marker.x - group.cx) > 150) continue;
-      if (marker.y < group.minY - 60 || marker.y > group.maxY + 220) continue;
-      const score = Math.abs(marker.x - group.cx) + Math.abs(marker.y - (group.maxY + 70)) * 0.5;
-      if (score < bestScore) {
-        bestScore = score;
-        best = group;
-      }
-    }
-    if (best) {
-      best.explicitPos = marker.pos;
-    }
-  }
-};
-
-const assignNamesToGroups = (groups = [], nameCandidates = []) => {
-  for (const group of groups) {
-    let best = null;
-    let bestScore = Number.POSITIVE_INFINITY;
-    for (const candidate of nameCandidates) {
-      if (candidate.y >= group.minY) continue;
-      const dy = group.minY - candidate.y;
-      if (dy > 240) continue;
-      const dx = Math.abs(candidate.x - group.cx);
-      if (dx > 220) continue;
-      const score = dy + (dx * 0.7) - (candidate.name.length * 0.15);
-      if (score < bestScore) {
-        bestScore = score;
-        best = candidate;
-      }
-    }
-    if (best) {
-      group.name = best.name;
-    }
-  }
-};
-
-const toPlayerFromGroup = (group, index) => {
-  const pos = inferPosition(group.stats, group.explicitPos);
-  const stats = {
-    SPD: group.stats.SPD || 50,
-    ATT: pos === 'GK' ? (group.stats.ATT || 0) : (group.stats.ATT || 50),
-    CTL: group.stats.CTL || 50,
-    DEF: group.stats.DEF || 50,
-    GKP: pos === 'GK' ? (group.stats.GKP || 50) : (group.stats.GKP || 0),
+const normalizePlayer = (name, stats, explicitPos, index) => {
+  if (!hasEnoughStats(stats)) return null;
+  const pos = inferPosition(stats, explicitPos);
+  const normalizedStats = {
+    SPD: stats.SPD || 50,
+    ATT: pos === 'GK' ? (stats.ATT || 0) : (stats.ATT || 50),
+    CTL: stats.CTL || 50,
+    DEF: stats.DEF || 50,
+    GKP: pos === 'GK' ? (stats.GKP || 50) : (stats.GKP || 0),
   };
   return {
-    name: group.name || `Opponent ${index + 1}`,
+    name: name || `Opponent ${index + 1}`,
     pos,
-    stats,
+    stats: normalizedStats,
   };
-};
-
-const parsePlayersBySequentialLines = (lines = []) => {
-  const players = [];
-  const seen = new Set();
-  let current = null;
-  let autoIndex = 1;
-
-  const flush = () => {
-    if (!current || !hasEnoughStats(current.stats)) return;
-    const pos = inferPosition(current.stats, current.pos);
-    const stats = {
-      SPD: current.stats.SPD || 50,
-      ATT: pos === 'GK' ? (current.stats.ATT || 0) : (current.stats.ATT || 50),
-      CTL: current.stats.CTL || 50,
-      DEF: current.stats.DEF || 50,
-      GKP: pos === 'GK' ? (current.stats.GKP || 50) : (current.stats.GKP || 0),
-    };
-    const name = current.name || `Opponent ${autoIndex}`;
-    const signature = `${name}-${pos}-${stats.SPD}-${stats.ATT}-${stats.CTL}-${stats.DEF}-${stats.GKP}`;
-    if (!seen.has(signature)) {
-      seen.add(signature);
-      players.push({ name, pos, stats });
-      autoIndex += 1;
-    }
-  };
-
-  for (const line of lines) {
-    const text = normalizeText(line);
-    const statMatches = [...text.matchAll(/\b(DEF|CTL|ATT|SPD|GKP)\b\s*[:;.\-]?\s*(\d{1,3})/g)];
-    const posMatch = text.match(/\b(GK|DF|MF|FW)\b/);
-
-    if (isLikelyNameLine(text) && statMatches.length === 0 && !posMatch) {
-      flush();
-      current = { name: cleanName(text), stats: {}, pos: null };
-      continue;
-    }
-
-    if (statMatches.length > 0 || posMatch) {
-      if (!current) current = { name: null, stats: {}, pos: null };
-      if (posMatch && !current.pos) current.pos = posMatch[1];
-      for (const match of statMatches) {
-        current.stats[match[1]] = clampStat(Number.parseInt(match[2], 10));
-      }
-      continue;
-    }
-
-    if (current && text.length === 0) {
-      flush();
-      current = null;
-    }
-  }
-
-  flush();
-  return players;
 };
 
 const dedupePlayers = (players = []) => {
-  const deduped = [];
   const seen = new Set();
+  const deduped = [];
   for (const player of players) {
+    if (!player) continue;
     const signature = `${player.name}-${player.pos}-${player.stats.SPD}-${player.stats.ATT}-${player.stats.CTL}-${player.stats.DEF}-${player.stats.GKP}`;
     if (seen.has(signature)) continue;
     seen.add(signature);
@@ -386,69 +235,283 @@ const dedupePlayers = (players = []) => {
   return deduped;
 };
 
-const parsePlayersFromOcrData = (ocrData) => {
-  const linePlayers = parsePlayersBySequentialLines(normalizeOcrLines(ocrData));
+const parsePlayersFromWholeText = (text = '') => {
+  const lines = normalizeText(text).split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  const players = [];
+  let current = null;
 
-  const words = Array.isArray(ocrData?.words) ? ocrData.words : [];
-  if (words.length === 0) {
-    return linePlayers;
+  const flush = () => {
+    if (!current) return;
+    const player = normalizePlayer(current.name, current.stats, current.pos, players.length);
+    if (player) players.push(player);
+  };
+
+  for (const line of lines) {
+    const hasStat = STAT_KEYS.some((key) => line.includes(key));
+    const pos = extractPosFromText(line);
+
+    if (isLikelyNameLine(line) && !hasStat && !pos) {
+      flush();
+      current = { name: cleanName(line), stats: {}, pos: null };
+      continue;
+    }
+
+    if (hasStat || pos) {
+      if (!current) current = { name: null, stats: {}, pos: null };
+      current.stats = { ...current.stats, ...parseStatsFromText(line) };
+      if (pos && !current.pos) current.pos = pos;
+    }
   }
 
-  const rows = parseRowsFromWords(words);
-  const statRows = extractStatRowsFromRows(rows);
-  const groups = buildCardGroupsFromStatRows(statRows);
-  assignPositionsToGroups(groups, extractPosMarkersFromRows(rows));
-  assignNamesToGroups(groups, extractNameCandidatesFromRows(rows));
-
-  const groupedPlayers = groups
-    .sort((a, b) => (a.minY - b.minY) || (a.cx - b.cx))
-    .map((group, idx) => toPlayerFromGroup(group, idx));
-
-  const merged = dedupePlayers([...groupedPlayers, ...linePlayers]);
-  if (merged.length === 0) return linePlayers;
-  return merged;
+  flush();
+  return dedupePlayers(players);
 };
 
-const buildHighContrastBlob = async (file) => {
-  if (typeof createImageBitmap !== 'function' || typeof document === 'undefined') {
-    return null;
+const toCanvasFromFile = async (file, maxWidth = 1800) => {
+  if (typeof document === 'undefined') {
+    throw new Error('Browser canvas APIs are unavailable.');
   }
 
-  const bitmap = await createImageBitmap(file);
-  const targetWidth = Math.min(2200, Math.round(bitmap.width * 1.6));
-  const scale = targetWidth / bitmap.width;
-  const targetHeight = Math.max(1, Math.round(bitmap.height * scale));
+  let source = null;
+  let shouldClose = false;
+  if (typeof createImageBitmap === 'function') {
+    source = await createImageBitmap(file);
+    shouldClose = true;
+  } else {
+    source = await new Promise((resolve, reject) => {
+      const url = URL.createObjectURL(file);
+      const img = new Image();
+      img.onload = () => {
+        URL.revokeObjectURL(url);
+        resolve(img);
+      };
+      img.onerror = () => {
+        URL.revokeObjectURL(url);
+        reject(new Error('Failed to load image'));
+      };
+      img.src = url;
+    });
+  }
+
+  const scale = Math.min(1, maxWidth / source.width);
+  const width = Math.max(1, Math.round(source.width * scale));
+  const height = Math.max(1, Math.round(source.height * scale));
 
   const canvas = document.createElement('canvas');
-  canvas.width = targetWidth;
-  canvas.height = targetHeight;
+  canvas.width = width;
+  canvas.height = height;
   const ctx = canvas.getContext('2d', { willReadFrequently: true });
-  if (!ctx) {
-    bitmap.close();
-    return null;
-  }
+  if (!ctx) throw new Error('Could not create canvas context.');
 
   ctx.imageSmoothingEnabled = false;
-  ctx.drawImage(bitmap, 0, 0, targetWidth, targetHeight);
-  bitmap.close();
+  ctx.drawImage(source, 0, 0, width, height);
 
-  const imageData = ctx.getImageData(0, 0, targetWidth, targetHeight);
+  if (shouldClose && typeof source.close === 'function') {
+    source.close();
+  }
+
+  return canvas;
+};
+
+const detectCardBoxesFromCanvas = (canvas, maskFn) => {
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
+  if (!ctx) return [];
+
+  const { width, height } = canvas;
+  const image = ctx.getImageData(0, 0, width, height);
+  const data = image.data;
+  const pixelCount = width * height;
+  const mask = new Uint8Array(pixelCount);
+
+  for (let i = 0, p = 0; i < pixelCount; i += 1, p += 4) {
+    const r = data[p];
+    const g = data[p + 1];
+    const b = data[p + 2];
+    mask[i] = maskFn(r, g, b) ? 1 : 0;
+  }
+
+  const visited = new Uint8Array(pixelCount);
+  const boxes = [];
+  const minArea = Math.max(5000, Math.round(pixelCount * 0.0025));
+  const maxArea = Math.round(pixelCount * 0.18);
+
+  for (let start = 0; start < pixelCount; start += 1) {
+    if (!mask[start] || visited[start]) continue;
+
+    const stack = [start];
+    visited[start] = 1;
+    let area = 0;
+    let minX = width;
+    let maxX = 0;
+    let minY = height;
+    let maxY = 0;
+
+    while (stack.length > 0) {
+      const idx = stack.pop();
+      const y = Math.floor(idx / width);
+      const x = idx - (y * width);
+      area += 1;
+      if (x < minX) minX = x;
+      if (x > maxX) maxX = x;
+      if (y < minY) minY = y;
+      if (y > maxY) maxY = y;
+
+      if (x > 0) {
+        const left = idx - 1;
+        if (mask[left] && !visited[left]) {
+          visited[left] = 1;
+          stack.push(left);
+        }
+      }
+      if (x < width - 1) {
+        const right = idx + 1;
+        if (mask[right] && !visited[right]) {
+          visited[right] = 1;
+          stack.push(right);
+        }
+      }
+      if (y > 0) {
+        const up = idx - width;
+        if (mask[up] && !visited[up]) {
+          visited[up] = 1;
+          stack.push(up);
+        }
+      }
+      if (y < height - 1) {
+        const down = idx + width;
+        if (mask[down] && !visited[down]) {
+          visited[down] = 1;
+          stack.push(down);
+        }
+      }
+    }
+
+    if (area < minArea || area > maxArea) continue;
+    const boxWidth = maxX - minX + 1;
+    const boxHeight = maxY - minY + 1;
+    const ratio = boxWidth / Math.max(1, boxHeight);
+    if (ratio < 0.2 || ratio > 1.2) continue;
+    if (boxHeight < 120 || boxWidth < 70) continue;
+
+    const padX = Math.round(boxWidth * 0.08);
+    const padTop = Math.round(boxHeight * 0.12);
+    const padBottom = Math.round(boxHeight * 0.15);
+
+    boxes.push({
+      x0: Math.max(0, minX - padX),
+      x1: Math.min(width - 1, maxX + padX),
+      y0: Math.max(0, minY - padTop),
+      y1: Math.min(height - 1, maxY + padBottom),
+    });
+  }
+
+  return boxes;
+};
+
+const mergeBoxes = (boxes = []) => {
+  const working = [...boxes];
+  const out = [];
+
+  while (working.length > 0) {
+    let current = working.pop();
+    let merged = true;
+
+    while (merged) {
+      merged = false;
+      for (let i = working.length - 1; i >= 0; i -= 1) {
+        const next = working[i];
+        const overlapX = Math.max(0, Math.min(current.x1, next.x1) - Math.max(current.x0, next.x0));
+        const overlapY = Math.max(0, Math.min(current.y1, next.y1) - Math.max(current.y0, next.y0));
+        const overlapArea = overlapX * overlapY;
+        const nearX = Math.abs(((current.x0 + current.x1) / 2) - ((next.x0 + next.x1) / 2)) < 40;
+        const nearY = Math.abs(((current.y0 + current.y1) / 2) - ((next.y0 + next.y1) / 2)) < 50;
+
+        if (overlapArea > 0 || (nearX && nearY)) {
+          current = {
+            x0: Math.min(current.x0, next.x0),
+            y0: Math.min(current.y0, next.y0),
+            x1: Math.max(current.x1, next.x1),
+            y1: Math.max(current.y1, next.y1),
+          };
+          working.splice(i, 1);
+          merged = true;
+        }
+      }
+    }
+
+    out.push(current);
+  }
+
+  return out
+    .filter((box) => (box.x1 - box.x0 + 1) > 80 && (box.y1 - box.y0 + 1) > 120)
+    .sort((a, b) => ((a.y0 - b.y0) || (a.x0 - b.x0)));
+};
+
+const getCardBoxesFromCanvas = (canvas) => {
+  const strictMask = (r, g, b) =>
+    r > 95 && g > 80 && b < 120 && (r + g) > 230 && (r - b) > 30 && (g - b) > 25;
+  const looseMask = (r, g, b) =>
+    r > 75 && g > 65 && b < 140 && (r + g) > 200 && (r - b) > 15;
+
+  const strict = mergeBoxes(detectCardBoxesFromCanvas(canvas, strictMask));
+  if (strict.length >= 4) return strict.slice(0, 7);
+  const loose = mergeBoxes(detectCardBoxesFromCanvas(canvas, looseMask));
+  return (loose.length > strict.length ? loose : strict).slice(0, 7);
+};
+
+const cropCanvas = (sourceCanvas, box) => {
+  const width = box.x1 - box.x0 + 1;
+  const height = box.y1 - box.y0 + 1;
+  const canvas = document.createElement('canvas');
+  canvas.width = width;
+  canvas.height = height;
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
+  if (!ctx) return null;
+  ctx.imageSmoothingEnabled = false;
+  ctx.drawImage(sourceCanvas, box.x0, box.y0, width, height, 0, 0, width, height);
+  return canvas;
+};
+
+const makeHighContrastCanvas = (canvas) => {
+  const out = document.createElement('canvas');
+  out.width = canvas.width;
+  out.height = canvas.height;
+  const ctx = out.getContext('2d', { willReadFrequently: true });
+  if (!ctx) return null;
+
+  ctx.drawImage(canvas, 0, 0);
+  const imageData = ctx.getImageData(0, 0, out.width, out.height);
   const data = imageData.data;
+
   for (let i = 0; i < data.length; i += 4) {
     const gray = (data[i] * 0.299) + (data[i + 1] * 0.587) + (data[i + 2] * 0.114);
-    const boosted = (gray - 128) * 1.9 + 128;
-    const value = boosted > 150 ? 255 : 0;
+    const boosted = ((gray - 128) * 2.0) + 128;
+    const value = boosted > 152 ? 255 : 0;
     data[i] = value;
     data[i + 1] = value;
     data[i + 2] = value;
     data[i + 3] = 255;
   }
-  ctx.putImageData(imageData, 0, 0);
 
-  const blob = await new Promise((resolve) => {
-    canvas.toBlob((result) => resolve(result), 'image/png');
-  });
-  return blob;
+  ctx.putImageData(imageData, 0, 0);
+  return out;
+};
+
+const parsePlayerFromCardOcr = (ocrData, index) => {
+  const rows = parseRowsFromWords(Array.isArray(ocrData?.words) ? ocrData.words : []);
+  const text = normalizeText(ocrData?.text || '');
+  const name = extractNameFromRows(rows) || (() => {
+    const lines = text.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+    const line = lines.find((item) => isLikelyNameLine(item));
+    return line ? cleanName(line) : null;
+  })();
+
+  const stats = {
+    ...parseStatsFromText(text),
+    ...extractStatsFromRows(rows),
+  };
+  const explicitPos = extractPosFromText(text);
+  return normalizePlayer(name, stats, explicitPos, index);
 };
 
 const resolveRecognize = async () => {
@@ -460,12 +523,6 @@ const resolveRecognize = async () => {
   return recognize;
 };
 
-const OCR_OPTIONS = {
-  tessedit_pageseg_mode: 6,
-  preserve_interword_spaces: '1',
-  tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789:|.- ',
-};
-
 export const parseOpponentScreenshotsLocally = async (files, onProgress) => {
   const recognize = await resolveRecognize();
   const allPlayers = [];
@@ -475,27 +532,41 @@ export const parseOpponentScreenshotsLocally = async (files, onProgress) => {
 
   for (const file of files) {
     try {
-      const firstPass = await recognize(file, 'eng', OCR_OPTIONS);
-      let mergedText = firstPass?.data?.text || '';
-      let players = parsePlayersFromOcrData(firstPass?.data || mergedText);
+      const canvas = await toCanvasFromFile(file);
+      const fullOcr = await recognize(canvas, 'eng', OCR_OPTIONS);
+      const fullText = fullOcr?.data?.text || '';
+      formationVotes.push(detectFormationKey(fullText));
 
-      if (players.length === 0) {
-        const highContrastBlob = await buildHighContrastBlob(file);
-        if (highContrastBlob) {
-          const secondPass = await recognize(highContrastBlob, 'eng', OCR_OPTIONS);
-          const secondText = secondPass?.data?.text || '';
-          mergedText = `${mergedText}\n${secondText}`;
-          players = parsePlayersFromOcrData(secondPass?.data || secondText);
+      const cardBoxes = getCardBoxesFromCanvas(canvas);
+      const cardPlayers = [];
+
+      for (let i = 0; i < cardBoxes.length; i += 1) {
+        const cardCanvas = cropCanvas(canvas, cardBoxes[i]);
+        if (!cardCanvas) continue;
+
+        let ocrResult = await recognize(cardCanvas, 'eng', OCR_OPTIONS);
+        let player = parsePlayerFromCardOcr(ocrResult?.data, i);
+
+        if (!player) {
+          const contrast = makeHighContrastCanvas(cardCanvas);
+          if (contrast) {
+            ocrResult = await recognize(contrast, 'eng', OCR_OPTIONS);
+            player = parsePlayerFromCardOcr(ocrResult?.data, i);
+          }
+        }
+
+        if (player) {
+          cardPlayers.push(player);
         }
       }
 
-      if (players.length === 0) {
+      const fallbackPlayers = parsePlayersFromWholeText(fullText);
+      const merged = dedupePlayers([...cardPlayers, ...fallbackPlayers]);
+      if (merged.length === 0) {
         failedFiles += 1;
       } else {
-        allPlayers.push(...players);
+        allPlayers.push(...merged);
       }
-
-      formationVotes.push(detectFormationKey(mergedText));
     } catch (error) {
       console.error('Local OCR failed for file:', file?.name, error);
       failedFiles += 1;
