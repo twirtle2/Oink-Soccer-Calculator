@@ -498,7 +498,7 @@ export default function OinkSoccerCalc() {
 
       setUploadStatus({
         tone: 'success',
-        message: `Imported ${imported.players.length} active players from ${imported.teamLabel}.${formationText}`,
+        message: `Imported ${imported.players.length} opponent lineup players from ${imported.teamLabel}.${formationText}`,
       });
     } catch (err) {
       setUploadStatus({
@@ -1190,10 +1190,10 @@ export default function OinkSoccerCalc() {
               <div className="rounded-xl border border-slate-700 bg-slate-900/50 p-3 space-y-3">
                 <div className="flex items-center gap-2 text-sm font-bold text-white">
                   <Link2 size={14} className="text-cyan-400" />
-                  Import From Team URL
+                  Import Opponent Team URL
                 </div>
                 <p className="text-[11px] text-slate-400">
-                  Paste a Lost Pigs team URL or a teamId like <span className="font-mono">AlgorandAsset:1197834124</span>.
+                  Paste your opponent&apos;s Lost Pigs team URL (or a teamId like <span className="font-mono">AlgorandAsset:1197834124</span>).
                 </p>
                 <div className="flex gap-2">
                   <input
@@ -1206,7 +1206,7 @@ export default function OinkSoccerCalc() {
                         void handleImportTeamUrl();
                       }
                     }}
-                    placeholder="https://www.thelostpigs.com/oink-soccer/team?teamId=..."
+                    placeholder="Paste opponent URL: https://www.thelostpigs.com/oink-soccer/team?teamId=..."
                     className="flex-1 min-w-0 bg-slate-800 border border-slate-600 rounded px-3 py-2 text-xs text-white placeholder:text-slate-500 focus:outline-none focus:border-cyan-400"
                     disabled={importingTeamUrl}
                   />
