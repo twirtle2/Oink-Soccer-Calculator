@@ -245,6 +245,7 @@ export default function OinkSoccerCalc() {
 
   const [uploading, setUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
+  const [uploadStatus, setUploadStatus] = useState(null);
   const [walletSyncing, setWalletSyncing] = useState(false);
 
   const [mySquad, setMySquad] = useState(persistedState.mySquad || initialMyTeam); // Full roster
@@ -494,16 +495,17 @@ export default function OinkSoccerCalc() {
 
     setUploading(true);
     setUploadProgress(0);
+    setUploadStatus({ tone: 'info', message: `Processing ${files.length} screenshot(s)...` });
     const apiKey = import.meta.env.VITE_GEMINI_API_KEY || "";
-    const target = formTarget;
 
     try {
       if (!apiKey) {
-        throw new Error('VITE_GEMINI_API_KEY is not configured');
+        throw new Error('Screenshot scanning is unavailable: VITE_GEMINI_API_KEY is not configured for this deployment.');
       }
 
       let completedCount = 0;
       const totalFiles = files.length;
+      let failedFiles = 0;
 
       const processFile = async (file) => {
         const base64Data = await new Promise((resolve, reject) => {
@@ -662,6 +664,7 @@ export default function OinkSoccerCalc() {
           results.push(result);
         } catch (err) {
           console.error(`Failed to process ${file.name}`, err);
+          failedFiles += 1;
         }
         // Small delay to prevent rate limiting and ensure context separation
         await new Promise(resolve => setTimeout(resolve, 500));
@@ -718,41 +721,24 @@ export default function OinkSoccerCalc() {
         }
       });
 
-      // Set Formation
-      if (target === 'mySquad') {
-        setMyForm(lastFormation);
-      } else {
-        setOppForm(lastFormation);
+      if (uniqueProcessedPlayers.length === 0) {
+        throw new Error('No players were detected from the uploaded screenshot(s). Try a clearer image with visible player cards and stats.');
       }
 
-      if (target === 'mySquad') {
-        // Filter out players that already exist in mySquad
-        const existingSignatures = new Set(mySquad.map(p => `${p.name}-${p.pos}-${p.stats.SPD}-${p.stats.ATT}-${p.stats.CTL}-${p.stats.DEF}-${p.stats.GKP}`));
-
-        const newUniquePlayers = uniqueProcessedPlayers.filter(p => {
-          const signature = `${p.name}-${p.pos}-${p.stats.SPD}-${p.stats.ATT}-${p.stats.CTL}-${p.stats.DEF}-${p.stats.GKP}`;
-          return !existingSignatures.has(signature);
-        });
-
-        const newSquad = [...mySquad, ...newUniquePlayers];
-        setMySquad(newSquad);
-
-        let newActive = [...myTeam];
-        if (newActive.length < 5) {
-          const needed = 5 - newActive.length;
-          const fillers = newUniquePlayers.slice(0, needed);
-          newActive = [...newActive, ...fillers];
-          setMyTeam(newActive);
-        }
-        saveToDb({ mySquad: newSquad, myTeam: newActive, myForm: lastFormation });
-
-      } else {
-        setOpponentTeam(uniqueProcessedPlayers);
-        saveToDb({ opponentTeam: uniqueProcessedPlayers, oppForm: lastFormation });
-      }
+      setOppForm(lastFormation);
+      setOpponentTeam(uniqueProcessedPlayers);
+      saveToDb({ opponentTeam: uniqueProcessedPlayers, oppForm: lastFormation });
+      setUploadStatus({
+        tone: 'success',
+        message: `Updated opponent with ${uniqueProcessedPlayers.length} player(s) in ${FORMATIONS[lastFormation]?.name || lastFormation}${failedFiles > 0 ? ` (${failedFiles} file(s) failed)` : ''}.`,
+      });
 
     } catch (err) {
       console.error("Screenshot import failed:", err);
+      setUploadStatus({
+        tone: 'error',
+        message: err instanceof Error ? err.message : 'Screenshot import failed.',
+      });
     } finally {
       setUploading(false);
       e.target.value = null;
@@ -1395,7 +1381,7 @@ export default function OinkSoccerCalc() {
                       {
                         benchPlayers.length === 0 && (
                           <div className="p-6 text-center border-2 border-dashed border-slate-700 rounded-xl text-slate-500 text-sm" >
-                            {mySquad.length === 0 ? "No bench players. Upload a screenshot to build your squad!" : "No players match your filter."}
+                            {mySquad.length === 0 ? "No bench players yet. Sync wallet assets or add manual players." : "No players match your filter."}
                           </div>
                         )
                       }
@@ -1439,7 +1425,7 @@ export default function OinkSoccerCalc() {
               <div className="flex justify-between items-center mb-3" >
                 <h3 className="font-bold text-white flex items-center gap-2 text-sm" >
                   <ImageIcon size={16} className="text-blue-400" />
-                  Smart Screenshot Scanner
+                  Opponent Screenshot Scanner
                 </h3>
                 {uploading && <Loader2 size={14} className="animate-spin text-blue-400" />}
               </div>
@@ -1468,14 +1454,27 @@ export default function OinkSoccerCalc() {
                   <div className="flex flex-col items-center gap-2" >
                     <Upload size={20} className={uploading ? "text-blue-400 animate-bounce" : "text-slate-400"} />
                     <span className="text-[10px] font-bold uppercase text-slate-400" >
-                      {uploading ? "Analyzing..." : `Upload to ${formTarget === 'mySquad' ? 'MY SQUAD' : 'OPPONENT'}`}
+                      {uploading ? "Analyzing..." : 'Upload Opponent Screenshot'}
                     </span>
                     < p className="text-[9px] text-slate-600" >
-                      {formTarget === 'mySquad' ? 'Adds players to your wallet.' : 'Replaces opponent team.'}
+                      Replaces opponent team.
                     </p>
                   </div>
                 </div>
               </div>
+              {uploadStatus && (
+                <div
+                  className={`mt-3 rounded-lg border p-2 text-[11px] ${
+                    uploadStatus.tone === 'success'
+                      ? 'border-emerald-500/40 bg-emerald-900/20 text-emerald-200'
+                      : uploadStatus.tone === 'error'
+                        ? 'border-red-500/40 bg-red-900/20 text-red-200'
+                        : 'border-blue-500/40 bg-blue-900/20 text-blue-200'
+                  }`}
+                >
+                  {uploadStatus.message}
+                </div>
+              )}
             </div>
 
             {/* Collapsible Manual Form */}

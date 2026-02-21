@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { ChevronDown, PlusCircle, RefreshCw, Wallet } from 'lucide-react';
 import { useWallet } from '@txnlab/use-wallet-react';
+import { lookupNfdByAddress } from '../lib/nfd';
 
 const shortenAddress = (address) => {
   if (!address || address.length < 12) {
@@ -13,6 +14,7 @@ export default function WalletConnector({ onSync, isSyncing, syncMeta }) {
   const { wallets } = useWallet();
   const [open, setOpen] = useState(false);
   const [error, setError] = useState(null);
+  const [primaryIdentity, setPrimaryIdentity] = useState(null);
   const popoverRef = useRef(null);
 
   const connectedWallets = useMemo(
@@ -27,8 +29,10 @@ export default function WalletConnector({ onSync, isSyncing, syncMeta }) {
         addresses.add(account.address);
       }
     }
-    return Array.from(addresses);
+    return Array.from(addresses).sort();
   }, [connectedWallets]);
+
+  const primaryAddress = connectedAddresses[0] || null;
 
   useEffect(() => {
     const handleClickOutside = (event) => {
@@ -40,6 +44,20 @@ export default function WalletConnector({ onSync, isSyncing, syncMeta }) {
     document.addEventListener('mousedown', handleClickOutside);
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
+
+  useEffect(() => {
+    if (!primaryAddress) {
+      setPrimaryIdentity(null);
+      return;
+    }
+
+    const controller = new AbortController();
+    lookupNfdByAddress(primaryAddress, controller.signal)
+      .then((identity) => setPrimaryIdentity(identity))
+      .catch(() => setPrimaryIdentity(null));
+
+    return () => controller.abort();
+  }, [primaryAddress]);
 
   const handleConnect = async (wallet) => {
     setError(null);
@@ -60,7 +78,9 @@ export default function WalletConnector({ onSync, isSyncing, syncMeta }) {
   };
 
   const canSync = connectedAddresses.length > 0 && !isSyncing;
-  const buttonLabel = 'Connect Wallet';
+  const buttonLabel = connectedAddresses.length > 0
+    ? (primaryIdentity?.name || 'Wallet Connected')
+    : 'Connect Wallet';
 
   return (
     <div className="relative z-50" ref={popoverRef}>
@@ -68,8 +88,16 @@ export default function WalletConnector({ onSync, isSyncing, syncMeta }) {
         onClick={() => setOpen((prev) => !prev)}
         className="inline-flex items-center gap-2 rounded-2xl border border-slate-400/70 bg-slate-900/90 px-4 py-2 text-sm font-bold text-white shadow-glow transition hover:border-emerald-300"
       >
-        <Wallet size={16} className="text-emerald-300" />
-        {buttonLabel}
+        {primaryIdentity?.avatarUrl ? (
+          <img
+            src={primaryIdentity.avatarUrl}
+            alt={primaryIdentity.name || 'Connected wallet avatar'}
+            className="h-5 w-5 rounded-full border border-emerald-400/40 bg-slate-800 object-cover"
+          />
+        ) : (
+          <Wallet size={16} className="text-emerald-300" />
+        )}
+        <span className="max-w-[170px] truncate">{buttonLabel}</span>
         {connectedAddresses.length > 0 && (
           <span className="rounded-full border border-emerald-500/40 bg-emerald-500/20 px-1.5 py-0.5 text-[10px] font-black text-emerald-300">
             {connectedAddresses.length}
