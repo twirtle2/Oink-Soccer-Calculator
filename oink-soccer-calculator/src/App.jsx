@@ -320,11 +320,13 @@ export default function OinkSoccerCalc() {
     && myBoostState.boosts.length > 0
   ), [myBoostState]);
 
-  const myBoostContext = useMemo(() => (
+  const mySimulationBoostContext = useMemo(() => (
     hasLiveMyTeamBoosts
       ? myBoostState
       : createManualFallbackBoostState(myBoost, myBoostApps, myBoostState.fetchError)
   ), [hasLiveMyTeamBoosts, myBoost, myBoostApps, myBoostState]);
+
+  const myDisplayBoostState = myBoostState;
 
   const oppBoostContext = useMemo(() => (
     oppBoostState.source === 'live'
@@ -552,7 +554,7 @@ export default function OinkSoccerCalc() {
     });
   }, [mySquad, myTeam, opponentTeam, myForm, oppForm, myBoost, myBoostApps, homeAdvantage, walletSyncMeta]);
 
-  const myStats = useMemo(() => calculateTeamScores(myTeam, myForm, myBoostContext), [myTeam, myForm, myBoostContext]);
+  const myStats = useMemo(() => calculateTeamScores(myTeam, myForm, mySimulationBoostContext), [myTeam, myForm, mySimulationBoostContext]);
   const oppStats = useMemo(() => calculateTeamScores(opponentTeam, oppForm, oppBoostContext), [opponentTeam, oppForm, oppBoostContext]);
 
   const simulation = useMemo(() => {
@@ -911,7 +913,7 @@ export default function OinkSoccerCalc() {
               const lineup = [...gks, ...dfs, ...mfs, ...fws];
 
               // Calculate stats for this lineup
-              const stats = calculateTeamScores(lineup, formKey, myBoostContext);
+              const stats = calculateTeamScores(lineup, formKey, mySimulationBoostContext);
 
               // Calculate win prob against CURRENT opponent
               // Re-implementing simulation logic here to avoid hook dependency issues inside loop
@@ -1471,7 +1473,7 @@ export default function OinkSoccerCalc() {
             <div className="grid grid-cols-1 gap-3 min-[780px]:grid-cols-2">
               <BoostStateCard
                 title="My Team Boost State"
-                boostState={myBoostContext}
+                boostState={myDisplayBoostState}
                 loading={boostStatesLoading}
               />
               <BoostStateCard
