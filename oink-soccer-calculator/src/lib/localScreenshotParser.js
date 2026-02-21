@@ -31,16 +31,14 @@ const detectFormationKey = (fullText) => {
   return 'Pyramid';
 };
 
-const extractStat = (line, key) => {
-  const match = line.match(new RegExp(`${key}\\s*[:;\\-]?\\s*(\\d{1,3})`));
-  if (!match) {
-    return null;
-  }
-  const val = Number.parseInt(match[1], 10);
-  if (!Number.isFinite(val)) {
-    return null;
-  }
-  return Math.max(0, Math.min(100, val));
+const extractStatPairs = (line) => {
+  const matches = [...line.matchAll(/\b(DEF|CTL|ATT|SPD|GKP)\b\s*[:;.\-]?\s*(\d{1,3})/g)];
+  return matches
+    .map((match) => ({
+      key: match[1],
+      val: Math.max(0, Math.min(100, Number.parseInt(match[2], 10))),
+    }))
+    .filter((entry) => Number.isFinite(entry.val));
 };
 
 const isLikelyNameLine = (line) => {
@@ -48,6 +46,7 @@ const isLikelyNameLine = (line) => {
   if (line.includes(':')) return false;
   if (line.includes('|')) return false;
   if (line.includes('THE DIAMOND') || line.includes('THE PYRAMID') || line.includes('THE BOX') || line.includes('THE Y')) return false;
+  if (line.includes('CONNECT WALLET') || line.includes('SYNC')) return false;
   if (!/[A-Z]/.test(line)) return false;
   return line.length >= 3;
 };
@@ -59,67 +58,117 @@ const cleanName = (line) => {
     .trim();
 };
 
-const parsePlayersFromOcrText = (rawText) => {
-  const text = normalizeText(rawText);
-  const lines = text
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter(Boolean);
+const inferPosition = (stats = {}, explicitPos = null) => {
+  if (explicitPos && ['GK', 'DF', 'MF', 'FW'].includes(explicitPos)) {
+    return explicitPos;
+  }
+  if ((stats.GKP || 0) >= 55) return 'GK';
+  const att = stats.ATT || 0;
+  const ctl = stats.CTL || 0;
+  const def = stats.DEF || 0;
+  if (att >= ctl && att >= def) return 'FW';
+  if (def >= ctl && def >= att) return 'DF';
+  return 'MF';
+};
 
+const hasEnoughStats = (stats = {}) => {
+  const count = ['SPD', 'ATT', 'CTL', 'DEF', 'GKP'].filter((key) => Number.isFinite(stats[key])).length;
+  return count >= 3 && Number.isFinite(stats.SPD);
+};
+
+const normalizeOcrLines = (dataOrText) => {
+  if (!dataOrText) return [];
+  if (typeof dataOrText === 'string') {
+    return normalizeText(dataOrText).split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  }
+
+  const rawLines = [];
+  if (Array.isArray(dataOrText.lines)) {
+    for (const line of dataOrText.lines) {
+      if (line?.text) rawLines.push(line.text);
+    }
+  }
+  if (typeof dataOrText.text === 'string' && rawLines.length === 0) {
+    rawLines.push(...dataOrText.text.split(/\r?\n/));
+  }
+  return rawLines.map((line) => normalizeText(line).trim()).filter(Boolean);
+};
+
+const finalizeCandidate = (candidate, players, seen, autoIndex) => {
+  if (!candidate || !hasEnoughStats(candidate.stats)) {
+    return autoIndex;
+  }
+
+  const pos = inferPosition(candidate.stats, candidate.pos);
+  const normalizedStats = {
+    SPD: candidate.stats.SPD || 50,
+    ATT: pos === 'GK' ? (candidate.stats.ATT || 0) : (candidate.stats.ATT || 50),
+    CTL: candidate.stats.CTL || 50,
+    DEF: candidate.stats.DEF || 50,
+    GKP: pos === 'GK' ? (candidate.stats.GKP || 50) : (candidate.stats.GKP || 0),
+  };
+  const name = candidate.name || `Opponent ${autoIndex}`;
+
+  const signature = `${name}-${pos}-${normalizedStats.SPD}-${normalizedStats.ATT}-${normalizedStats.CTL}-${normalizedStats.DEF}-${normalizedStats.GKP}`;
+  if (seen.has(signature)) {
+    return autoIndex;
+  }
+  seen.add(signature);
+
+  players.push({
+    name,
+    pos,
+    stats: normalizedStats,
+  });
+  return autoIndex + 1;
+};
+
+const parsePlayersFromOcrData = (ocrData) => {
+  const lines = normalizeOcrLines(ocrData);
   const players = [];
   const seen = new Set();
 
-  for (let i = 0; i < lines.length; i += 1) {
-    const line = lines[i];
-    const posMatch = line.match(/\b(GK|DF|MF|FW)\b\s*[\|/\\]?\s*(\d{2,3})?/);
-    if (!posMatch) {
+  let current = null;
+  let autoIndex = 1;
+  let consecutiveNonDataLines = 0;
+
+  for (const line of lines) {
+    const posMatch = line.match(/\b(GK|DF|MF|FW)\b/);
+    const statPairs = extractStatPairs(line);
+    const isName = isLikelyNameLine(line);
+
+    if (isName && statPairs.length === 0 && !posMatch) {
+      consecutiveNonDataLines += 1;
+      autoIndex = finalizeCandidate(current, players, seen, autoIndex);
+      current = { name: cleanName(line), stats: {}, pos: null };
       continue;
     }
 
-    const pos = posMatch[1];
-    let name = null;
-    const stats = {};
-    const start = Math.max(0, i - 12);
-
-    for (let j = i - 1; j >= start; j -= 1) {
-      const prev = lines[j];
-      if (!stats.DEF) stats.DEF = extractStat(prev, 'DEF');
-      if (!stats.CTL) stats.CTL = extractStat(prev, 'CTL');
-      if (!stats.ATT) stats.ATT = extractStat(prev, 'ATT');
-      if (!stats.SPD) stats.SPD = extractStat(prev, 'SPD');
-      if (!stats.GKP) stats.GKP = extractStat(prev, 'GKP');
-
-      if (!name && isLikelyNameLine(prev)) {
-        name = cleanName(prev);
+    if (statPairs.length > 0 || posMatch) {
+      consecutiveNonDataLines = 0;
+      if (!current) current = { name: null, stats: {}, pos: null };
+      if (posMatch && !current.pos) current.pos = posMatch[1];
+      for (const { key, val } of statPairs) {
+        current.stats[key] = val;
       }
-    }
-
-    if (!name) {
       continue;
     }
 
-    if (!stats.SPD || (!stats.ATT && pos !== 'GK') || (!stats.GKP && pos === 'GK')) {
-      continue;
+    consecutiveNonDataLines += 1;
+    if (consecutiveNonDataLines >= 2) {
+      autoIndex = finalizeCandidate(current, players, seen, autoIndex);
+      current = null;
+      consecutiveNonDataLines = 0;
     }
+  }
 
-    const normalizedStats = {
-      SPD: stats.SPD || 50,
-      ATT: pos === 'GK' ? (stats.ATT || 0) : (stats.ATT || 50),
-      CTL: stats.CTL || 50,
-      DEF: stats.DEF || 50,
-      GKP: pos === 'GK' ? (stats.GKP || 50) : (stats.GKP || 0),
-    };
+  autoIndex = finalizeCandidate(current, players, seen, autoIndex);
 
-    const signature = `${name}-${pos}-${normalizedStats.SPD}-${normalizedStats.ATT}-${normalizedStats.CTL}-${normalizedStats.DEF}-${normalizedStats.GKP}`;
-    if (seen.has(signature)) {
-      continue;
-    }
-    seen.add(signature);
-
-    players.push({
-      name,
-      pos,
-      stats: normalizedStats,
+  // Fallback pass: if names are mostly missing, keep parsed stats but ensure unique auto names.
+  const unnamedCount = players.filter((player) => player.name.startsWith('Opponent ')).length;
+  if (players.length > 0 && unnamedCount === players.length) {
+    players.forEach((player, idx) => {
+      player.name = `Opponent ${idx + 1}`;
     });
   }
 
@@ -146,7 +195,7 @@ export const parseOpponentScreenshotsLocally = async (files, onProgress) => {
     try {
       const result = await recognize(file, 'eng');
       const text = result?.data?.text || '';
-      const players = parsePlayersFromOcrText(text);
+      const players = parsePlayersFromOcrData(result?.data || text);
       if (players.length > 0) {
         allPlayers.push(...players);
       }
