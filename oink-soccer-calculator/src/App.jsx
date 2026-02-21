@@ -913,7 +913,7 @@ export default function OinkSoccerCalc() {
                       <option key={k} value={k}>{FORMATIONS[k].name}</option>
                     ))}
                   </select>
-                  <div className="space-y-2">
+                  <div className="space-y-3">
                     {myTeam.map((p) => (
                       <PlayerRow
                         key={p.id}
@@ -986,7 +986,7 @@ export default function OinkSoccerCalc() {
                       </div>
                     )}
                   </div>
-                  <div className="space-y-2">
+                  <div className="space-y-3">
                     {opponentTeam.map((p) => (
                       <PlayerRow
                         key={p.id}
@@ -1101,7 +1101,7 @@ export default function OinkSoccerCalc() {
                   </button>
                 </div>
               </div>
-              <div className="space-y-2">
+              <div className="space-y-3">
                 {benchPlayers.map((p) => (
                   <PlayerRow
                     key={p.id}
@@ -1358,7 +1358,7 @@ function AssetAvatar({ player }) {
     }
 
     const controller = new AbortController();
-    resolvePlayerImage(player, controller.signal).then((resolved) => {
+    resolvePlayerImage({ assetId: player.assetId, imageUrl: player.imageUrl }, controller.signal).then((resolved) => {
       if (!cancelled) {
         setImageSrc(resolved || null);
       }
@@ -1368,22 +1368,58 @@ function AssetAvatar({ player }) {
       cancelled = true;
       controller.abort();
     };
-  }, [player]);
+  }, [player.assetId, player.imageUrl, player.id]);
 
-  if (imageSrc) {
-    return (
-      <img
-        src={imageSrc}
-        alt={player.name}
-        className="h-10 w-10 rounded-md border border-slate-600/80 bg-slate-900 object-cover"
-        loading="lazy"
-      />
-    );
-  }
+  const badgeClass = player.pos === 'GK'
+    ? 'bg-[#b8860b] text-white'
+    : player.pos === 'DF'
+      ? 'bg-[#1e5fa8] text-white'
+      : player.pos === 'MF'
+        ? 'bg-[#1a7a3a] text-white'
+        : 'bg-[#cc3333] text-white';
 
   return (
-    <div className="flex h-10 w-10 items-center justify-center rounded-md border border-slate-600/80 bg-slate-900 text-[10px] font-bold text-slate-500">
-      NFT
+    <div className="relative h-[52px] w-[52px] shrink-0">
+      {imageSrc ? (
+        <img
+          src={imageSrc}
+          alt={player.name}
+          className="h-full w-full rounded-[9px] border border-[#253040] bg-[#161c28] object-cover"
+          loading="lazy"
+        />
+      ) : (
+        <div className="flex h-full w-full items-center justify-center rounded-[9px] border border-[#253040] bg-[#161c28] text-[10px] font-bold text-[#9aa5bb]">
+          NFT
+        </div>
+      )}
+      <div
+        className={`absolute -bottom-1 -right-1 rounded-[4px] px-1.5 py-0.5 font-['Barlow_Condensed'] text-[10px] font-bold leading-none ${badgeClass}`}
+        style={{ border: '1.5px solid #111620' }}
+      >
+        {player.pos}
+      </div>
+    </div>
+  );
+}
+
+function StatCell({ label, baseValue, boostedValue, isLast }) {
+  const base = Number(baseValue ?? 0);
+  const boosted = Number(boostedValue ?? base);
+  const delta = boosted - base;
+  const isUp = delta > 0;
+  const isDown = delta < 0;
+  const separator = delta === 0 ? '—' : '→';
+  const boostedClass = isUp ? 'text-[#00e676]' : isDown ? 'text-[#ff4444]' : 'text-[#6b7a94]';
+
+  return (
+    <div className={`relative px-4 py-2.5 ${isLast ? '' : 'border-r border-[#1e2a3a]'}`}>
+      {isUp && <div className="absolute right-2.5 top-2 h-1.5 w-1.5 rounded-full bg-[#00e676] shadow-[0_0_6px_#00e676]" />}
+      <div className="mb-1 text-[9px] font-bold uppercase tracking-[0.15em] text-[#6b7a94]">{label}</div>
+      <div className="flex items-baseline gap-1.5">
+        <span className="font-['Barlow_Condensed'] text-[22px] font-bold leading-none text-[#e8edf5]">{base}</span>
+        <span className={`text-xs ${delta === 0 ? 'text-[#1e2a3a]' : 'text-[#253040]'}`}>{separator}</span>
+        <span className={`font-['Barlow_Condensed'] text-base font-bold leading-none ${boostedClass}`}>{boosted}</span>
+      </div>
     </div>
   );
 }
@@ -1395,26 +1431,20 @@ function PlayerRow({ player, onEdit, onDelete, isEditing, onInjuryChange, isActi
   const scores = {
     CTL: getControlScore(player.stats, player.pos, injuryMod),
     ATT: getAttackScore(player.stats, player.pos, injuryMod),
-    DEF: getDefenseScore(player.stats, player.pos, injuryMod)
+    DEF: getDefenseScore(player.stats, player.pos, injuryMod),
   };
-
-  const defLabel = player.pos === 'GK' ? 'GKP' : 'DEF';
-  const defRaw = player.pos === 'GK' ? player.stats.GKP : player.stats.DEF;
 
   const handleInjurySelect = (sev) => {
     onInjuryChange(sev === 'None' ? null : sev);
     setInjuryMenuOpen(false);
-  }
+  };
 
-  const posStyle = POSITIONS[player.pos] || { color: 'from-slate-500 to-slate-600', label: 'Unknown', short: '??' };
   const source = player.source || 'manual';
   const sourceBadgeClass = source === 'wallet'
-    ? 'bg-green-900/50 text-green-300 border-green-500/30'
+    ? 'bg-[rgba(41,121,255,0.12)] text-[#5b9cff] border-[rgba(41,121,255,0.3)]'
     : source === 'team-url'
-      ? 'bg-cyan-900/50 text-cyan-300 border-cyan-500/30'
-    : source === 'upload'
-      ? 'bg-blue-900/50 text-blue-300 border-blue-500/30'
-      : 'bg-slate-700/60 text-slate-300 border-slate-500/30';
+      ? 'bg-[rgba(0,229,204,0.1)] text-[#00e5cc] border-[rgba(0,229,204,0.3)]'
+      : 'bg-[#1a2133] text-[#9aa5bb] border-[#253040]';
   const sourceLabel = source === 'wallet'
     ? 'Wallet'
     : source === 'team-url'
@@ -1423,108 +1453,94 @@ function PlayerRow({ player, onEdit, onDelete, isEditing, onInjuryChange, isActi
         ? 'Upload'
         : 'Manual';
 
+  const statCells = player.pos === 'GK'
+    ? [
+      { key: 'ctl', label: 'Control', base: player.stats.CTL, boosted: scores.CTL },
+      { key: 'gkp', label: 'GK Power', base: player.stats.GKP, boosted: scores.DEF },
+    ]
+    : [
+      { key: 'ctl', label: 'Control', base: player.stats.CTL, boosted: scores.CTL },
+      { key: 'att', label: 'Attack', base: player.stats.ATT, boosted: scores.ATT },
+      { key: 'def', label: 'Defense', base: player.stats.DEF, boosted: scores.DEF },
+    ];
+
+  const canSwap = typeof onSwap === 'function' && (isActive || isBench);
+
   return (
-    <div className={`relative bg-slate-800 p-3 rounded-xl border flex items-center justify-between group transition-colors ${isEditing ? 'border-yellow-500 bg-yellow-500/5' : 'border-slate-700 hover:border-slate-600'} ${injuryMenuOpen ? 'z-50' : 'z-0'}`
-    }>
-
-      {
-        player.injury && (
-          <div className="absolute left-0 top-0 bottom-0 w-1 bg-red-500 z-10 rounded-l-xl"> </div>
-        )
-      }
-
-      < div className="flex items-center gap-3 z-10 pl-2 flex-1 cursor-pointer" onClick={onSwap} >
+    <div className={`relative overflow-hidden rounded-xl border bg-[#111620] transition-colors ${isEditing ? 'border-[#ffab00]' : 'border-[#1e2a3a] hover:border-[#253040]'} ${injuryMenuOpen ? 'z-50' : 'z-0'}`}>
+      <div
+        className={`flex items-center gap-3.5 px-4 pb-3 pt-3.5 ${canSwap ? 'cursor-pointer' : ''}`}
+        onClick={canSwap ? onSwap : undefined}
+      >
         <AssetAvatar player={player} />
-        <div className={`w-8 h-8 rounded flex items-center justify-center text-xs font-bold bg-gradient-to-br ${posStyle.color} text-white shadow-lg relative`}>
-          {player.pos}
-          {isActive && <div className="absolute -top-1 -right-1 w-2 h-2 bg-green-500 rounded-full border border-slate-800" > </div>}
+        <div className="min-w-0 flex-1">
+          <div className="truncate text-[15px] font-bold text-[#e8edf5]">{player.name}</div>
+          <div className="mt-1 flex items-center gap-1.5">
+            <span className="inline-flex items-center gap-1 text-xs font-semibold text-[#9aa5bb]">
+              <Zap size={11} /> {player.stats.SPD}
+            </span>
+            <span className={`rounded-[3px] border px-2 py-0.5 text-[10px] font-bold ${sourceBadgeClass}`}>{sourceLabel}</span>
+            {player.injury && INJURIES[player.injury] && (
+              <span className="rounded-[3px] border border-[rgba(255,68,68,0.35)] bg-[rgba(255,68,68,0.12)] px-2 py-0.5 text-[10px] font-bold text-[#ff4444]">
+                {INJURIES[player.injury].label}
+              </span>
+            )}
+          </div>
         </div>
-        < div >
-          <div className="font-bold text-slate-200 text-sm flex items-center gap-2" >
-            {player.name}
-            {isEditing && <span className="text-[10px] bg-yellow-500 text-black px-1 rounded font-bold" > EDITING </span>}
-            <span className={`text-[10px] border px-1.5 rounded font-bold ${sourceBadgeClass}`}>{sourceLabel}</span>
-            {player.injury && INJURIES[player.injury] && <span className="text-[10px] bg-red-900/50 text-red-400 border border-red-500/30 px-1.5 rounded flex items-center gap-1" > <Activity size={10} /> {INJURIES[player.injury].label}</span >}
-          </div>
-
-          < div className="flex flex-wrap gap-x-4 gap-y-1 mt-1" >
-            <div className="text-[10px] font-mono flex items-center gap-1 bg-slate-900/50 px-1.5 py-0.5 rounded border border-slate-700/50 text-slate-400" >
-              <Zap size={10} /> {player.stats.SPD}
-            </div>
-            < StatDisplay label="CTL" raw={player.stats.CTL} boosted={scores.CTL} injured={!!player.injury} />
-            {
-              player.pos !== 'GK' && (
-                <StatDisplay label="ATT" raw={player.stats.ATT} boosted={scores.ATT} injured={!!player.injury
-                } />
-              )}
-            <StatDisplay label={defLabel} raw={defRaw} boosted={scores.DEF} injured={!!player.injury} />
-          </div>
+        <div className="shrink-0 text-right">
+          <div className="text-[9px] font-bold uppercase tracking-[0.15em] text-[#6b7a94]">OVR</div>
+          <div className="font-['Barlow_Condensed'] text-[36px] font-black leading-none text-[#e8edf5]">{player.ovr}</div>
         </div>
       </div>
 
-      {/* Action Section */}
-      <div className="flex items-center gap-3 z-10" >
-        <div className="text-right hidden sm:block" >
-          <div className="text-[10px] font-bold text-slate-500" > OVR </div>
-          < div className={`text-lg font-black leading-none ${player.injury ? 'text-red-400' : 'text-white'}`}> {player.ovr} </div>
-        </div>
+      <div className={`grid border-t border-[#1e2a3a] ${player.pos === 'GK' ? 'grid-cols-2' : 'grid-cols-3'}`}>
+        {statCells.map((cell, index) => (
+          <StatCell
+            key={cell.key}
+            label={cell.label}
+            baseValue={cell.base}
+            boostedValue={cell.boosted}
+            isLast={index === statCells.length - 1}
+          />
+        ))}
+      </div>
 
-        < div className="flex gap-1 relative" >
-          {/* Swap Button (Visual only, row click does swap) */}
-          {
-            (isActive || isBench) && (
-              <button onClick={onSwap} className={`p-2 rounded transition-colors ${isActive ? 'text-green-400 bg-green-900/20 hover:bg-green-900/40' : 'text-slate-600 hover:text-green-400 hover:bg-slate-700'}`
-              } title={isActive ? "Remove from lineup" : "Add to lineup"} >
-                <RefreshCw size={14} />
+      <div className="relative flex items-center justify-end gap-4 border-t border-[#1e2a3a] px-4 py-2">
+        <button
+          onClick={() => setInjuryMenuOpen(!injuryMenuOpen)}
+          className="inline-flex items-center gap-1 text-xs font-medium text-[#6b7a94] transition-colors hover:text-[#e8edf5]"
+        >
+          <Plus size={13} /> Stats
+        </button>
+        <button
+          onClick={onEdit}
+          className="inline-flex items-center gap-1 text-xs font-medium text-[#6b7a94] transition-colors hover:text-[#e8edf5]"
+        >
+          <Pencil size={13} /> Edit
+        </button>
+        <button
+          onClick={onDelete}
+          className="inline-flex items-center gap-1 text-xs font-medium text-[#6b7a94] transition-colors hover:text-[#ff4444]"
+        >
+          <Trash2 size={13} /> Remove
+        </button>
+
+        {injuryMenuOpen && (
+          <div className="absolute right-4 top-full mt-2 min-w-[150px] rounded-lg border border-[#1e2a3a] bg-[#111620] p-1 shadow-2xl ring-1 ring-white/10">
+            <div className="mb-1 border-b border-[#1e2a3a] px-2 py-1 text-[10px] font-bold uppercase tracking-[0.08em] text-[#6b7a94]">Set Condition</div>
+            {Object.keys(INJURIES).map((sev) => (
+              <button
+                key={sev}
+                onClick={() => handleInjurySelect(sev)}
+                className={`flex w-full items-center justify-between rounded px-2 py-2 text-xs hover:bg-[#161c28] ${player.injury === sev || (!player.injury && sev === 'None') ? 'bg-[#161c28]' : ''}`}
+              >
+                <span className={INJURIES[sev].text}>{INJURIES[sev].label}</span>
+                {(player.injury === sev || (!player.injury && sev === 'None')) && <span className="h-1.5 w-1.5 rounded-full bg-current" />}
               </button>
-            )}
-
-          <button
-            onClick={() => setInjuryMenuOpen(!injuryMenuOpen)}
-            className={`p-2 rounded transition-colors ${player.injury ? 'text-red-400 bg-red-900/20' : 'text-slate-600 hover:text-red-400 hover:bg-slate-700'}`}
-          >
-            {injuryMenuOpen ? <X size={14} /> : <Bandage size={14} />}
-          </button>
-
-          {
-            injuryMenuOpen && (
-              <div className="absolute right-0 top-full mt-2 bg-slate-900 border border-slate-700 rounded-lg shadow-2xl p-1 flex flex-col gap-1 min-w-[140px] z-[100] animate-in fade-in zoom-in-95 duration-200 ring-1 ring-white/10" >
-                <div className="px-2 py-1 text-[10px] font-bold text-slate-500 uppercase border-b border-slate-800 mb-1" > Set Condition </div>
-                {
-                  Object.keys(INJURIES).map(sev => (
-                    <button
-                      key={sev}
-                      onClick={() => handleInjurySelect(sev)}
-                      className={`text-xs text-left px-2 py-2 rounded hover:bg-slate-800 flex items-center justify-between group/item ${player.injury === sev || (!player.injury && sev === 'None') ? 'bg-slate-800' : ''}`
-                      }
-                    >
-                      <span className={INJURIES[sev].text}> {INJURIES[sev].label} </span>
-                      {(player.injury === sev || (!player.injury && sev === 'None')) && <div className="w-1.5 h-1.5 rounded-full bg-current" > </div>}
-                    </button>
-                  ))}
-              </div>
-            )}
-
-          <button onClick={onEdit} className="p-2 text-slate-500 hover:text-yellow-400 hover:bg-slate-700 rounded transition-colors" title="Edit Player" >
-            <Pencil size={14} />
-          </button>
-          < button onClick={onDelete} className="p-2 text-slate-500 hover:text-red-400 hover:bg-slate-700 rounded transition-colors" title="Delete Player" >
-            <Trash2 size={14} />
-          </button>
-        </div>
+            ))}
+          </div>
+        )}
       </div>
-    </div>
-  )
-}
-
-function StatDisplay({ label, raw, boosted, injured }) {
-  return (
-    <div className={`text-[10px] font-mono flex items-center gap-1 bg-slate-900/50 px-1.5 py-0.5 rounded border ${injured ? 'border-red-900/30' : 'border-slate-700/50'}`
-    }>
-      <span className="text-slate-500 font-bold" > {label} </span>
-      < span className="text-slate-300" > {raw} </span>
-      < span className="text-slate-600" >→</span>
-      < span className={`${injured ? 'text-red-400' : (boosted > raw ? "text-green-400 font-bold" : "text-slate-200")}`}> {boosted} </span>
     </div>
   );
 }
