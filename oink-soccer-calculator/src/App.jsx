@@ -314,11 +314,17 @@ export default function OinkSoccerCalc() {
     [getLeagueIdForTeamId, opponentTeamIdForBoosts, selectedLeagueId],
   );
 
-  const myBoostContext = useMemo(() => (
+  const hasLiveMyTeamBoosts = useMemo(() => (
     myBoostState.source === 'live'
+    && Array.isArray(myBoostState.boosts)
+    && myBoostState.boosts.length > 0
+  ), [myBoostState]);
+
+  const myBoostContext = useMemo(() => (
+    hasLiveMyTeamBoosts
       ? myBoostState
       : createManualFallbackBoostState(myBoost, myBoostApps, myBoostState.fetchError)
-  ), [myBoost, myBoostApps, myBoostState]);
+  ), [hasLiveMyTeamBoosts, myBoost, myBoostApps, myBoostState]);
 
   const oppBoostContext = useMemo(() => (
     oppBoostState.source === 'live'
@@ -1018,7 +1024,7 @@ export default function OinkSoccerCalc() {
     closeInjuryModal();
   }, [closeInjuryModal, handleInjuryChange, injuryModalState, mySquad, opponentTeam]);
 
-  const manualBoostFallbackActive = myBoostContext.source !== 'live';
+  const manualBoostFallbackActive = !hasLiveMyTeamBoosts;
 
   const annotation = useMemo(() => {
     const worstDelta = Math.min(controlDelta, defenseDelta, attackDelta);
@@ -1456,7 +1462,7 @@ export default function OinkSoccerCalc() {
                 </div>
                 <div className="mt-2 text-xs text-[#6b7a94]">
                   {manualBoostFallbackActive
-                    ? 'Manual boosts are active because live boost data is unavailable for your team.'
+                    ? 'Manual boosts are enabled for simulation because no live active boost is currently applied.'
                     : 'Live boost data is active. Manual boosts are disabled until fallback is needed.'}
                 </div>
               </div>
