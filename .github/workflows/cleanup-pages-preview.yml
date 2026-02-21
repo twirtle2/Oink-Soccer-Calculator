@@ -1,0 +1,57 @@
+name: Cleanup GitHub Pages PR Preview
+
+on:
+  pull_request:
+    types:
+      - closed
+
+permissions:
+  contents: write
+
+jobs:
+  cleanup-preview:
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    steps:
+      - name: Remove preview directory from gh-pages
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.number }}
+        run: |
+          set -euo pipefail
+
+          REPO_URL="https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          TARGET_DIR="/tmp/gh-pages"
+          PREVIEW_DIR="pr-preview/pr-${PR_NUMBER}"
+
+          if ! git ls-remote --exit-code --heads "https://github.com/${GITHUB_REPOSITORY}.git" gh-pages >/dev/null 2>&1; then
+            echo "gh-pages branch does not exist; nothing to clean up."
+            exit 0
+          fi
+
+          rm -rf "${TARGET_DIR}"
+          git clone --no-checkout "${REPO_URL}" "${TARGET_DIR}"
+          cd "${TARGET_DIR}"
+
+          git fetch origin gh-pages
+          git checkout -B gh-pages origin/gh-pages
+
+          if [ ! -d "${PREVIEW_DIR}" ]; then
+            echo "Preview directory ${PREVIEW_DIR} does not exist; nothing to clean up."
+            exit 0
+          fi
+
+          rm -rf "${PREVIEW_DIR}"
+          rmdir --ignore-fail-on-non-empty pr-preview || true
+          touch .nojekyll
+
+          if [ -z "$(git status --porcelain)" ]; then
+            echo "No cleanup changes to publish."
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "chore: cleanup PR #${PR_NUMBER} preview"
+          git push origin gh-pages

@@ -6,7 +6,13 @@ import { loadCalculatorState, saveCalculatorState } from './lib/storage';
 import { loadPlayableCatalog } from './lib/playableCatalog';
 import { fetchHeldAssetIdsForAddresses } from './lib/indexer';
 import { buildWalletPlayers, mergeWalletPlayers } from './lib/walletSync';
-import { importOpponentFromTeamInput } from './lib/lostPigsTeamImport';
+import {
+  fetchLeagueTableTeams,
+  fetchLeagueTeamsIndex,
+  findTeamsByName,
+  importOpponentFromTeamInput,
+  resolveOwnedTeamLeagues,
+} from './lib/lostPigsTeamImport';
 import { resolvePlayerImage } from './lib/assetImages';
 import {
   BOOSTS,
@@ -197,6 +203,15 @@ export default function OinkSoccerCalc() {
   const [importingTeamUrl, setImportingTeamUrl] = useState(false);
   const [uploadStatus, setUploadStatus] = useState(null);
   const [teamUrlInput, setTeamUrlInput] = useState('');
+  const [leagueIndex, setLeagueIndex] = useState(null);
+  const [leagueIndexLoading, setLeagueIndexLoading] = useState(false);
+  const [selectedLeagueId, setSelectedLeagueId] = useState('');
+  const [selectedLeagueName, setSelectedLeagueName] = useState('');
+  const [leagueTeams, setLeagueTeams] = useState([]);
+  const [leagueTeamsLoading, setLeagueTeamsLoading] = useState(false);
+  const [detectedMyTeamIds, setDetectedMyTeamIds] = useState([]);
+  const [opponentSearchInput, setOpponentSearchInput] = useState('');
+  const [selectedOpponentTeamId, setSelectedOpponentTeamId] = useState('');
   const [catalogSeason, setCatalogSeason] = useState(null);
   const [walletSyncing, setWalletSyncing] = useState(false);
 
@@ -258,6 +273,20 @@ export default function OinkSoccerCalc() {
     [connectedAddresses],
   );
 
+  const leagueOptions = useMemo(() => {
+    const byLeague = leagueIndex?.byLeague || {};
+    const leagueNames = leagueIndex?.leagueNames || {};
+    return Object.keys(byLeague)
+      .sort((a, b) => Number(a) - Number(b))
+      .map((id) => ({ id, label: leagueNames[id] || `League ${id}` }));
+  }, [leagueIndex]);
+
+  const filteredOpponentOptions = useMemo(() => {
+    const blocked = new Set(detectedMyTeamIds);
+    const candidates = (leagueTeams || []).filter((team) => !blocked.has(team.teamId));
+    return findTeamsByName(candidates, opponentSearchInput).slice(0, 25);
+  }, [detectedMyTeamIds, leagueTeams, opponentSearchInput]);
+
   useEffect(() => {
     let cancelled = false;
     void loadPlayableCatalog()
@@ -276,6 +305,108 @@ export default function OinkSoccerCalc() {
       cancelled = true;
     };
   }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLeagueIndexLoading(true);
+
+    void fetchLeagueTeamsIndex()
+      .then((index) => {
+        if (cancelled) return;
+        setLeagueIndex(index);
+      })
+      .catch((error) => {
+        if (cancelled) return;
+        const message = error instanceof Error ? error.message : 'Failed to load league teams.';
+        setUploadStatus({ tone: 'error', message });
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setLeagueIndexLoading(false);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!leagueIndex) return;
+
+    let cancelled = false;
+
+    const detectMyLeague = async () => {
+      if (connectedAddresses.length === 0) {
+        if (!cancelled) {
+          setDetectedMyTeamIds([]);
+        }
+        return;
+      }
+
+      try {
+        const heldAssetIds = await fetchHeldAssetIdsForAddresses(connectedAddresses);
+        if (cancelled) return;
+
+        const resolved = resolveOwnedTeamLeagues(heldAssetIds, leagueIndex);
+        setDetectedMyTeamIds(resolved.ownedTeamIds);
+
+        if (!selectedLeagueId && resolved.preferredLeagueId) {
+          setSelectedLeagueId(resolved.preferredLeagueId);
+        }
+      } catch (_) {
+        if (!cancelled) {
+          setDetectedMyTeamIds([]);
+        }
+      }
+    };
+
+    void detectMyLeague();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [connectedAddresses, leagueIndex, selectedLeagueId]);
+
+  useEffect(() => {
+    if (!selectedLeagueId) {
+      setLeagueTeams([]);
+      setSelectedLeagueName('');
+      return;
+    }
+
+    let cancelled = false;
+    setLeagueTeamsLoading(true);
+
+    void fetchLeagueTableTeams(selectedLeagueId)
+      .then((payload) => {
+        if (cancelled) return;
+        setLeagueTeams(payload.teams);
+        setSelectedLeagueName(payload.leagueName);
+      })
+      .catch((error) => {
+        if (cancelled) return;
+        const message = error instanceof Error ? error.message : 'Failed to load league table teams.';
+        setUploadStatus({ tone: 'error', message });
+        setLeagueTeams([]);
+        setSelectedLeagueName('');
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setLeagueTeamsLoading(false);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedLeagueId]);
+
+  useEffect(() => {
+    if (!selectedOpponentTeamId) return;
+    if (filteredOpponentOptions.some((team) => team.teamId === selectedOpponentTeamId)) return;
+    setSelectedOpponentTeamId('');
+  }, [filteredOpponentOptions, selectedOpponentTeamId]);
 
   const saveToDb = useCallback((overrides = {}) => {
     saveCalculatorState({
@@ -419,18 +550,14 @@ export default function OinkSoccerCalc() {
     void handleSyncWalletAssets(connectedAddresses);
   }, [connectedAddressKey, connectedAddresses, handleSyncWalletAssets, walletSyncing]);
 
-  const handleImportTeamUrl = useCallback(async () => {
+  const importOpponentFromInput = useCallback(async (teamInput) => {
     if (importingTeamUrl) return;
-    if (!teamUrlInput.trim()) {
-      setUploadStatus({ tone: 'error', message: 'Enter a Lost Pigs team URL or teamId first.' });
-      return;
-    }
 
     setImportingTeamUrl(true);
     setUploadStatus({ tone: 'info', message: 'Fetching opponent lineup from Lost Pigs API...' });
 
     try {
-      const imported = await importOpponentFromTeamInput(teamUrlInput);
+      const imported = await importOpponentFromTeamInput(teamInput);
       const nextFormation = imported.formationKey && FORMATIONS[imported.formationKey]
         ? imported.formationKey
         : oppForm;
@@ -450,12 +577,29 @@ export default function OinkSoccerCalc() {
     } catch (err) {
       setUploadStatus({
         tone: 'error',
-        message: err instanceof Error ? err.message : 'Team URL import failed.',
+        message: err instanceof Error ? err.message : 'Team import failed.',
       });
     } finally {
       setImportingTeamUrl(false);
     }
-  }, [importingTeamUrl, oppForm, saveToDb, teamUrlInput]);
+  }, [importingTeamUrl, oppForm, saveToDb]);
+
+  const handleImportTeamUrl = useCallback(async () => {
+    if (!teamUrlInput.trim()) {
+      setUploadStatus({ tone: 'error', message: 'Enter a Lost Pigs team URL or teamId first.' });
+      return;
+    }
+    await importOpponentFromInput(teamUrlInput.trim());
+  }, [importOpponentFromInput, teamUrlInput]);
+
+  const handleImportSelectedOpponent = useCallback(async () => {
+    const candidateTeamId = selectedOpponentTeamId || filteredOpponentOptions[0]?.teamId;
+    if (!candidateTeamId) {
+      setUploadStatus({ tone: 'error', message: 'Select an opponent team first.' });
+      return;
+    }
+    await importOpponentFromInput(candidateTeamId);
+  }, [filteredOpponentOptions, importOpponentFromInput, selectedOpponentTeamId]);
 
   const handleFormChange = (type, val) => {
     if (type === 'my') {
@@ -1018,30 +1162,114 @@ export default function OinkSoccerCalc() {
           <section id="tab-opponent" className="space-y-4">
             <div className="rounded-[10px] border border-[#1e2a3a] bg-[#161c28] p-4">
               <div className="mb-1 text-sm font-bold">⟳ Import Opponent</div>
-              <div className="mb-3 text-xs text-[#6b7a94]">Paste a Lost Pigs team URL or teamId.</div>
-              <div className="flex gap-2">
+              <div className="mb-3 text-xs text-[#6b7a94]">Search opponents by team name in the same league as your club.</div>
+
+              <div className="grid grid-cols-1 gap-2 sm:grid-cols-[180px,1fr,auto]">
+                <select
+                  value={selectedLeagueId}
+                  onChange={(e) => {
+                    setSelectedLeagueId(e.target.value);
+                    setSelectedOpponentTeamId('');
+                    setOpponentSearchInput('');
+                  }}
+                  disabled={importingTeamUrl || leagueIndexLoading}
+                  className="rounded-md border border-[#1e2a3a] bg-[#111620] px-3 py-2 text-sm text-[#e8edf5] outline-none focus:border-[#2979ff]"
+                >
+                  <option value="">{leagueIndexLoading ? 'Loading leagues...' : 'Select league'}</option>
+                  {leagueOptions.map((league) => (
+                    <option key={league.id} value={league.id}>{league.label}</option>
+                  ))}
+                </select>
+
                 <input
                   type="text"
-                  value={teamUrlInput}
-                  onChange={(e) => setTeamUrlInput(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter') {
-                      e.preventDefault();
-                      void handleImportTeamUrl();
-                    }
+                  value={opponentSearchInput}
+                  onChange={(e) => {
+                    setOpponentSearchInput(e.target.value);
+                    setSelectedOpponentTeamId('');
                   }}
-                  placeholder="https://www.thelostpigs.com/oink-soccer/team?teamId=..."
-                  className="min-w-0 flex-1 rounded-md border border-[#1e2a3a] bg-[#111620] px-3 py-2 text-sm text-[#e8edf5] outline-none focus:border-[#2979ff]"
-                  disabled={importingTeamUrl}
+                  placeholder={selectedLeagueId ? 'Search opponent by team name...' : 'Select a league first'}
+                  className="min-w-0 rounded-md border border-[#1e2a3a] bg-[#111620] px-3 py-2 text-sm text-[#e8edf5] outline-none focus:border-[#2979ff]"
+                  disabled={importingTeamUrl || !selectedLeagueId || leagueTeamsLoading}
                 />
+
                 <button
-                  onClick={() => void handleImportTeamUrl()}
-                  disabled={importingTeamUrl}
+                  onClick={() => void handleImportSelectedOpponent()}
+                  disabled={importingTeamUrl || !selectedLeagueId || leagueTeamsLoading || filteredOpponentOptions.length === 0}
                   className="rounded-md bg-[#2979ff] px-4 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:bg-slate-700"
                 >
-                  {importingTeamUrl ? 'Loading...' : 'Import'}
+                  {importingTeamUrl ? 'Loading...' : 'Import Selected'}
                 </button>
               </div>
+
+              <div className="mt-2 rounded-md border border-[#1e2a3a] bg-[#111620] p-2">
+                <div className="mb-1 text-[11px] uppercase tracking-[0.1em] text-[#6b7a94]">
+                  {selectedLeagueId
+                    ? `Teams${selectedLeagueName ? ` • ${selectedLeagueName}` : ''}`
+                    : 'Teams'}
+                </div>
+
+                {leagueTeamsLoading && (
+                  <div className="text-xs text-[#9aa5bb]">Loading league teams...</div>
+                )}
+
+                {!leagueTeamsLoading && !selectedLeagueId && (
+                  <div className="text-xs text-[#9aa5bb]">Choose a league to browse opponent teams.</div>
+                )}
+
+                {!leagueTeamsLoading && selectedLeagueId && filteredOpponentOptions.length === 0 && (
+                  <div className="text-xs text-[#9aa5bb]">
+                    {opponentSearchInput.trim() ? 'No teams match your search.' : 'No opponent teams available.'}
+                  </div>
+                )}
+
+                {!leagueTeamsLoading && selectedLeagueId && filteredOpponentOptions.length > 0 && (
+                  <div className="max-h-40 space-y-1 overflow-auto pr-1">
+                    {filteredOpponentOptions.map((team) => (
+                      <button
+                        key={team.teamId}
+                        onClick={() => setSelectedOpponentTeamId(team.teamId)}
+                        className={`w-full rounded-md border px-2 py-1.5 text-left text-xs transition ${
+                          selectedOpponentTeamId === team.teamId
+                            ? 'border-[#2979ff] bg-[#0f1f39] text-[#9fc6ff]'
+                            : 'border-[#1e2a3a] bg-[#141a26] text-[#d0d7e5] hover:border-[#2f3f59]'
+                        }`}
+                      >
+                        <div className="font-semibold">{team.teamName}</div>
+                        <div className="text-[10px] text-[#7f8aa3]">{team.teamId}</div>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              <div className="mt-3 border-t border-[#1e2a3a] pt-3">
+                <div className="mb-2 text-xs font-semibold text-[#9aa5bb]">Manual fallback: URL or teamId</div>
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    value={teamUrlInput}
+                    onChange={(e) => setTeamUrlInput(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        e.preventDefault();
+                        void handleImportTeamUrl();
+                      }
+                    }}
+                    placeholder="https://www.thelostpigs.com/oink-soccer/team?teamId=..."
+                    className="min-w-0 flex-1 rounded-md border border-[#1e2a3a] bg-[#111620] px-3 py-2 text-sm text-[#e8edf5] outline-none focus:border-[#2979ff]"
+                    disabled={importingTeamUrl}
+                  />
+                  <button
+                    onClick={() => void handleImportTeamUrl()}
+                    disabled={importingTeamUrl}
+                    className="rounded-md bg-[#24344f] px-4 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:bg-slate-700"
+                  >
+                    {importingTeamUrl ? 'Loading...' : 'Import URL'}
+                  </button>
+                </div>
+              </div>
+
               {uploadStatus && (
                 <div className={`mt-2 rounded-md border px-2 py-1.5 text-xs ${
                   uploadStatus.tone === 'success'
