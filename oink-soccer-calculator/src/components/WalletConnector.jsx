@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { ChevronDown, RefreshCw, Wallet } from 'lucide-react';
+import { ChevronDown, PlusCircle, RefreshCw, Wallet } from 'lucide-react';
 import { useWallet } from '@txnlab/use-wallet-react';
 
 const shortenAddress = (address) => {
@@ -60,33 +60,33 @@ export default function WalletConnector({ onSync, isSyncing, syncMeta }) {
   };
 
   const canSync = connectedAddresses.length > 0 && !isSyncing;
-  const buttonLabel = connectedAddresses.length > 0 ? `Connect (${connectedAddresses.length})` : 'Connect';
+  const buttonLabel = 'Connect Wallet';
 
   return (
     <div className="relative z-50" ref={popoverRef}>
       <button
         onClick={() => setOpen((prev) => !prev)}
-        className="inline-flex items-center gap-2 rounded-xl border border-slate-600 bg-slate-900/80 px-4 py-2 text-sm font-bold text-white shadow-glow transition hover:border-green-400/60 hover:bg-slate-800"
+        className="inline-flex items-center gap-2 rounded-2xl border-2 border-slate-200/80 bg-slate-900 px-4 py-2 text-sm font-bold text-white shadow-glow transition hover:border-green-300"
       >
-        <Wallet size={14} className="text-green-400" />
+        <Wallet size={16} className="text-slate-100" />
         {buttonLabel}
+        {connectedAddresses.length > 0 && (
+          <span className="rounded-full bg-green-500/20 px-1.5 py-0.5 text-[10px] font-black text-green-300">
+            {connectedAddresses.length}
+          </span>
+        )}
         <ChevronDown size={14} className={`transition-transform ${open ? 'rotate-180' : ''}`} />
       </button>
 
       {open && (
-        <div className="absolute right-0 mt-2 w-[360px] max-w-[90vw] rounded-2xl border border-slate-700 bg-slate-900/95 p-4 shadow-2xl backdrop-blur">
-          <div className="mb-3 flex items-center justify-between gap-2">
-            <div>
-              <h3 className="text-sm font-bold text-white">Wallet Connector</h3>
-              <p className="text-[11px] text-slate-400">
-                Connect multiple wallets. Playable assets from all connected wallets are included.
-              </p>
-            </div>
+        <div className="absolute right-0 mt-2 w-[520px] max-w-[95vw] overflow-hidden rounded-2xl border border-slate-300/60 bg-slate-100 shadow-2xl">
+          <div className="flex items-center justify-between border-b border-slate-300 bg-white px-4 py-3">
+            <div className="text-base font-black text-slate-800">Connect Wallet</div>
             <button
               onClick={onSync}
               disabled={!canSync}
-              className={`inline-flex items-center gap-1 rounded-lg px-2.5 py-1.5 text-[11px] font-bold transition ${
-                canSync ? 'bg-green-600 text-white hover:bg-green-500' : 'bg-slate-700 text-slate-500'
+              className={`inline-flex items-center gap-1 rounded-xl px-3 py-1.5 text-xs font-bold ${
+                canSync ? 'bg-slate-900 text-white hover:bg-slate-800' : 'bg-slate-200 text-slate-500'
               }`}
             >
               <RefreshCw size={12} className={isSyncing ? 'animate-spin' : ''} />
@@ -94,75 +94,92 @@ export default function WalletConnector({ onSync, isSyncing, syncMeta }) {
             </button>
           </div>
 
-          <div className="space-y-2">
+          <div>
             {wallets.map((wallet) => (
-              <div key={wallet.walletKey} className="rounded-lg border border-slate-700 bg-slate-800/40 p-2">
-                <div className="mb-1 flex items-center justify-between">
-                  <span className="text-xs font-bold text-slate-200">{wallet.metadata.name}</span>
-                  {wallet.isConnected && <span className="text-[10px] font-bold text-green-400">CONNECTED</span>}
+              <div key={wallet.walletKey} className="flex items-center justify-between border-b border-slate-300 bg-slate-100 px-4 py-4">
+                <div className="flex items-center gap-3">
+                  {wallet.metadata.icon ? (
+                    <img
+                      src={wallet.metadata.icon}
+                      alt={wallet.metadata.name}
+                      className="h-10 w-10 rounded-full border border-slate-300 bg-white p-1.5"
+                    />
+                  ) : (
+                    <div className="flex h-10 w-10 items-center justify-center rounded-full border border-slate-300 bg-white">
+                      <Wallet size={16} className="text-slate-500" />
+                    </div>
+                  )}
+                  <div>
+                    <div className="text-2xl font-semibold leading-tight text-slate-700">{wallet.metadata.name}</div>
+                    <div className="text-[11px] text-slate-500">
+                      {wallet.accounts.length > 0 ? `${wallet.accounts.length} account(s)` : 'No accounts'}
+                    </div>
+                  </div>
                 </div>
-                <div className="mb-2 text-[10px] text-slate-400">
-                  {wallet.accounts.length > 0 ? `${wallet.accounts.length} account(s)` : 'No accounts'}
-                </div>
-                <div className="flex gap-1">
+
+                <div className="flex items-center gap-2">
                   <button
                     onClick={() => handleConnect(wallet)}
                     disabled={wallet.isConnected}
-                    className={`flex-1 rounded py-1 text-[10px] font-bold ${
-                      wallet.isConnected ? 'bg-slate-700 text-slate-500' : 'bg-blue-600 text-white hover:bg-blue-500'
+                    className={`inline-flex min-w-[130px] items-center justify-center gap-2 rounded-xl border px-4 py-2 text-base font-bold ${
+                      wallet.isConnected
+                        ? 'border-slate-300 bg-slate-200 text-slate-500'
+                        : 'border-slate-300 bg-white text-slate-700 hover:bg-slate-50'
                     }`}
                   >
-                    Connect
+                    <PlusCircle size={18} className={wallet.isConnected ? 'text-slate-400' : 'text-green-500'} />
+                    {wallet.isConnected ? 'Connected' : 'Connect'}
                   </button>
-                  <button
-                    onClick={() => handleDisconnect(wallet)}
-                    disabled={!wallet.isConnected}
-                    className={`flex-1 rounded py-1 text-[10px] font-bold ${
-                      wallet.isConnected ? 'bg-slate-600 text-white hover:bg-slate-500' : 'bg-slate-700 text-slate-500'
-                    }`}
-                  >
-                    Disconnect
-                  </button>
+                  {wallet.isConnected && (
+                    <button
+                      onClick={() => handleDisconnect(wallet)}
+                      className="rounded-xl border border-slate-300 bg-slate-200 px-3 py-2 text-xs font-bold text-slate-600 hover:bg-slate-300"
+                    >
+                      Disconnect
+                    </button>
+                  )}
                 </div>
               </div>
             ))}
           </div>
 
-          <div className="mt-3 rounded-lg border border-slate-700 bg-slate-800/40 p-2">
-            <div className="mb-1 text-[10px] font-bold uppercase tracking-wide text-slate-500">Connected Accounts</div>
-            {connectedAddresses.length === 0 ? (
-              <div className="text-[11px] text-slate-400">No wallet connected.</div>
-            ) : (
-              <div className="flex flex-wrap gap-1">
-                {connectedAddresses.map((address) => (
-                  <span key={address} className="rounded bg-slate-700 px-2 py-1 font-mono text-[10px] text-slate-200">
-                    {shortenAddress(address)}
-                  </span>
-                ))}
+          <div className="space-y-2 bg-slate-900 px-4 py-3">
+            <div className="rounded-lg border border-slate-700 bg-slate-800/40 p-2">
+              <div className="mb-1 text-[10px] font-bold uppercase tracking-wide text-slate-500">Connected Accounts</div>
+              {connectedAddresses.length === 0 ? (
+                <div className="text-[11px] text-slate-400">No wallet connected.</div>
+              ) : (
+                <div className="flex flex-wrap gap-1">
+                  {connectedAddresses.map((address) => (
+                    <span key={address} className="rounded bg-slate-700 px-2 py-1 font-mono text-[10px] text-slate-200">
+                      {shortenAddress(address)}
+                    </span>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <div className="grid grid-cols-3 gap-2 text-[11px] text-slate-300">
+              <div className="rounded border border-slate-700 bg-slate-800/40 p-2">
+                <div className="text-[10px] uppercase text-slate-500">Last Sync</div>
+                <div>{syncMeta?.lastSyncedAt ? new Date(syncMeta.lastSyncedAt).toLocaleTimeString() : 'Never'}</div>
+              </div>
+              <div className="rounded border border-slate-700 bg-slate-800/40 p-2">
+                <div className="text-[10px] uppercase text-slate-500">Matched</div>
+                <div>{syncMeta?.matchedCount ?? 0}</div>
+              </div>
+              <div className="rounded border border-slate-700 bg-slate-800/40 p-2">
+                <div className="text-[10px] uppercase text-slate-500">Ignored</div>
+                <div>{syncMeta?.unmatchedCount ?? 0}</div>
+              </div>
+            </div>
+
+            {(error || syncMeta?.lastError) && (
+              <div className="rounded border border-red-700/40 bg-red-900/20 p-2 text-[11px] text-red-300">
+                {error || syncMeta.lastError}
               </div>
             )}
           </div>
-
-          <div className="mt-2 grid grid-cols-3 gap-2 text-[11px] text-slate-300">
-            <div className="rounded border border-slate-700 bg-slate-800/40 p-2">
-              <div className="text-[10px] uppercase text-slate-500">Last Sync</div>
-              <div>{syncMeta?.lastSyncedAt ? new Date(syncMeta.lastSyncedAt).toLocaleTimeString() : 'Never'}</div>
-            </div>
-            <div className="rounded border border-slate-700 bg-slate-800/40 p-2">
-              <div className="text-[10px] uppercase text-slate-500">Matched</div>
-              <div>{syncMeta?.matchedCount ?? 0}</div>
-            </div>
-            <div className="rounded border border-slate-700 bg-slate-800/40 p-2">
-              <div className="text-[10px] uppercase text-slate-500">Ignored</div>
-              <div>{syncMeta?.unmatchedCount ?? 0}</div>
-            </div>
-          </div>
-
-          {(error || syncMeta?.lastError) && (
-            <div className="mt-2 rounded border border-red-700/40 bg-red-900/20 p-2 text-[11px] text-red-300">
-              {error || syncMeta.lastError}
-            </div>
-          )}
         </div>
       )}
     </div>
