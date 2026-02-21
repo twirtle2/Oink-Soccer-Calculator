@@ -33,6 +33,12 @@ const normalizeTeamId = (value = '') => {
   return `AlgorandAsset:${match[1]}`;
 };
 
+const teamIdToAssetId = (teamId) => {
+  const normalized = normalizeTeamId(teamId);
+  if (!normalized) return null;
+  return normalized.replace(/^AlgorandAsset:/i, '');
+};
+
 const deriveFormationKey = (formationLabel = '') => {
   if (!formationLabel) return null;
   for (const candidate of FORMATION_CANDIDATES) {
@@ -173,6 +179,128 @@ const fetchTeamPayload = async (teamId) => {
     throw new Error(`Lost Pigs API error: ${details}`);
   }
   throw new Error(`Lost Pigs API returned ${response.status}.`);
+};
+
+const fetchJsonOrThrow = async (path, notFoundMessage) => {
+  const response = await fetch(`${LOST_PIGS_API_BASE}${path}`);
+  if (response.ok) {
+    return response.json();
+  }
+
+  if (response.status === 404 && notFoundMessage) {
+    throw new Error(notFoundMessage);
+  }
+
+  let details = '';
+  try {
+    const body = await response.json();
+    details = body?.message || body?.code || '';
+  } catch (_) {
+    details = '';
+  }
+
+  if (details) {
+    throw new Error(`Lost Pigs API error: ${details}`);
+  }
+  throw new Error(`Lost Pigs API returned ${response.status}.`);
+};
+
+export const fetchLeagueTeamsIndex = async () => {
+  const payload = await fetchJsonOrThrow('/soccer/league/teams');
+  const teamsByLeague = payload?.teams_by_league || {};
+  const byLeague = {};
+  const allTeams = [];
+
+  for (const [leagueId, teams] of Object.entries(teamsByLeague)) {
+    const normalized = (teams || [])
+      .map((team) => {
+        const teamId = normalizeTeamId(team?.id);
+        if (!teamId) return null;
+        return {
+          leagueId: String(leagueId),
+          teamId,
+          teamName: team?.name || teamId,
+        };
+      })
+      .filter(Boolean)
+      .sort((a, b) => a.teamName.localeCompare(b.teamName));
+
+    byLeague[String(leagueId)] = normalized;
+    allTeams.push(...normalized);
+  }
+
+  return { byLeague, allTeams };
+};
+
+export const fetchLeagueTableTeams = async (leagueId) => {
+  const payload = await fetchJsonOrThrow(
+    `/soccer/league/${encodeURIComponent(String(leagueId))}/table`,
+    'League table not found.',
+  );
+
+  const rows = payload?.rows || [];
+  const teams = rows
+    .map((row) => {
+      const teamId = normalizeTeamId(row?.team_id);
+      if (!teamId) return null;
+      return {
+        leagueId: String(leagueId),
+        teamId,
+        teamName: row?.team_name || teamId,
+      };
+    })
+    .filter(Boolean)
+    .sort((a, b) => a.teamName.localeCompare(b.teamName));
+
+  return {
+    leagueId: String(leagueId),
+    leagueName: payload?.league?.name || `League ${leagueId}`,
+    teams,
+  };
+};
+
+export const resolveOwnedTeamLeagues = (heldAssetIds, leagueIndex) => {
+  const assets = heldAssetIds instanceof Set
+    ? heldAssetIds
+    : new Set(Array.from(heldAssetIds || []));
+
+  const ownedTeams = (leagueIndex?.allTeams || []).filter((team) => {
+    const assetId = teamIdToAssetId(team.teamId);
+    return assetId ? assets.has(String(assetId)) : false;
+  });
+
+  const ownedTeamIds = ownedTeams.map((team) => team.teamId);
+  const ownedLeagueIds = Array.from(new Set(ownedTeams.map((team) => team.leagueId)));
+  const preferredLeagueId = ownedLeagueIds
+    .slice()
+    .sort((a, b) => Number(a) - Number(b))[0] || null;
+
+  return { ownedTeams, ownedTeamIds, ownedLeagueIds, preferredLeagueId };
+};
+
+export const findTeamsByName = (teams, query) => {
+  const safeTeams = Array.isArray(teams) ? teams : [];
+  const q = String(query || '').trim().toLowerCase();
+  if (!q) {
+    return safeTeams;
+  }
+
+  return safeTeams
+    .map((team) => {
+      const name = String(team?.teamName || '').toLowerCase();
+      let score = 0;
+      if (name === q) score = 4;
+      else if (name.startsWith(q)) score = 3;
+      else if (name.includes(q)) score = 2;
+      else score = 0;
+      return { team, score };
+    })
+    .filter((entry) => entry.score > 0)
+    .sort((a, b) => {
+      if (b.score !== a.score) return b.score - a.score;
+      return a.team.teamName.localeCompare(b.team.teamName);
+    })
+    .map((entry) => entry.team);
 };
 
 export const importOpponentFromTeamInput = async (input) => {
