@@ -1,12 +1,12 @@
 import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
-import { Plus, Trash2, Users, Zap, Activity, Pencil, Save, RotateCcw, Loader2, Upload, Image as ImageIcon, Bandage, X, TrendingUp, ChevronDown, ChevronUp, RefreshCw, ArrowDownWideNarrow, ArrowUpNarrowWide } from 'lucide-react';
+import { Plus, Trash2, Users, Zap, Activity, Pencil, Save, RotateCcw, Loader2, Bandage, X, TrendingUp, ChevronDown, ChevronUp, RefreshCw, ArrowDownWideNarrow, ArrowUpNarrowWide, Link2 } from 'lucide-react';
 import { useWallet } from '@txnlab/use-wallet-react';
 import WalletConnector from './components/WalletConnector';
 import { loadCalculatorState, saveCalculatorState } from './lib/storage';
 import { loadPlayableCatalog } from './lib/playableCatalog';
 import { fetchHeldAssetIdsForAddresses } from './lib/indexer';
 import { buildWalletPlayers, mergeWalletPlayers } from './lib/walletSync';
-import { parseOpponentScreenshotsLocally } from './lib/localScreenshotParser';
+import { importOpponentFromTeamInput } from './lib/lostPigsTeamImport';
 
 // --- Game Constants ---
 const POSITIONS = {
@@ -238,42 +238,15 @@ const initialMyTeam = [];
 
 const initialOpponent = [];
 
-const createImportDraftPlayer = (player = {}, index = 0) => {
-  const pos = ['GK', 'DF', 'MF', 'FW'].includes(player.pos) ? player.pos : 'FW';
-  return {
-    id: `draft-${Date.now()}-${Math.random().toString(36).slice(2, 9)}-${index}`,
-    name: player.name || '',
-    pos,
-    stats: {
-      SPD: Number.isFinite(player.stats?.SPD) ? player.stats.SPD : 50,
-      ATT: Number.isFinite(player.stats?.ATT) ? player.stats.ATT : (pos === 'GK' ? 0 : 50),
-      CTL: Number.isFinite(player.stats?.CTL) ? player.stats.CTL : 50,
-      DEF: Number.isFinite(player.stats?.DEF) ? player.stats.DEF : 50,
-      GKP: Number.isFinite(player.stats?.GKP) ? player.stats.GKP : (pos === 'GK' ? 50 : 0),
-    },
-  };
-};
-
-const ensureDraftSize = (rows, size = 5) => {
-  const next = [...rows];
-  while (next.length < size) {
-    next.push(createImportDraftPlayer({ name: '', pos: 'FW', stats: { SPD: 50, ATT: 50, CTL: 50, DEF: 50, GKP: 0 } }, next.length));
-  }
-  return next.slice(0, size);
-};
-
 
 export default function OinkSoccerCalc() {
   const { wallets } = useWallet();
   const persistedState = useMemo(() => loadCalculatorState(), []);
   const autoSyncedAddressKeyRef = useRef('');
 
-  const [uploading, setUploading] = useState(false);
-  const [uploadProgress, setUploadProgress] = useState(0);
+  const [importingTeamUrl, setImportingTeamUrl] = useState(false);
   const [uploadStatus, setUploadStatus] = useState(null);
-  const [showImportReview, setShowImportReview] = useState(false);
-  const [importDraftPlayers, setImportDraftPlayers] = useState([]);
-  const [importDraftFormation, setImportDraftFormation] = useState('Pyramid');
+  const [teamUrlInput, setTeamUrlInput] = useState('');
   const [walletSyncing, setWalletSyncing] = useState(false);
 
   const [mySquad, setMySquad] = useState(persistedState.mySquad || initialMyTeam); // Full roster
@@ -499,117 +472,43 @@ export default function OinkSoccerCalc() {
     void handleSyncWalletAssets(connectedAddresses);
   }, [connectedAddressKey, connectedAddresses, handleSyncWalletAssets, walletSyncing]);
 
-  const handleImportDraftChange = (id, key, value) => {
-    setImportDraftPlayers((prev) =>
-      prev.map((row) => (row.id === id ? { ...row, [key]: value } : row)),
-    );
-  };
+  const handleImportTeamUrl = useCallback(async () => {
+    if (importingTeamUrl) return;
+    if (!teamUrlInput.trim()) {
+      setUploadStatus({ tone: 'error', message: 'Enter a Lost Pigs team URL or teamId first.' });
+      return;
+    }
 
-  const handleImportDraftStatChange = (id, statKey, value) => {
-    const parsed = Number.parseInt(value, 10);
-    const clamped = Number.isFinite(parsed) ? Math.max(0, Math.min(100, parsed)) : 0;
-
-    setImportDraftPlayers((prev) =>
-      prev.map((row) => {
-        if (row.id !== id) return row;
-        return {
-          ...row,
-          stats: {
-            ...row.stats,
-            [statKey]: clamped,
-          },
-        };
-      }),
-    );
-  };
-
-  const handleApplyImportDraft = () => {
-    const normalized = ensureDraftSize(importDraftPlayers, 5).map((row, idx) => {
-      const pos = ['GK', 'DF', 'MF', 'FW'].includes(row.pos) ? row.pos : 'FW';
-      const stats = {
-        SPD: Math.max(0, Math.min(100, Number.parseInt(row.stats?.SPD, 10) || 50)),
-        ATT: Math.max(0, Math.min(100, Number.parseInt(row.stats?.ATT, 10) || (pos === 'GK' ? 0 : 50))),
-        CTL: Math.max(0, Math.min(100, Number.parseInt(row.stats?.CTL, 10) || 50)),
-        DEF: Math.max(0, Math.min(100, Number.parseInt(row.stats?.DEF, 10) || 50)),
-        GKP: Math.max(0, Math.min(100, Number.parseInt(row.stats?.GKP, 10) || (pos === 'GK' ? 50 : 0))),
-      };
-
-      return {
-        id: Date.now() + Math.random() + idx,
-        name: row.name?.trim() || `Opponent ${idx + 1}`,
-        pos,
-        stats,
-        ovr: getOfficialOvr(stats, pos),
-        injury: null,
-        source: 'upload',
-      };
-    });
-
-    const nextFormation = Object.keys(FORMATIONS).includes(importDraftFormation) ? importDraftFormation : 'Pyramid';
-    setOppForm(nextFormation);
-    setOpponentTeam(normalized);
-    saveToDb({ opponentTeam: normalized, oppForm: nextFormation });
-    setShowImportReview(false);
-    setUploadStatus({
-      tone: 'success',
-      message: `Applied ${normalized.length} reviewed opponent players in ${FORMATIONS[nextFormation].name}.`,
-    });
-  };
-
-  const handleCancelImportDraft = () => {
-    setShowImportReview(false);
-    setImportDraftPlayers([]);
-  };
-
-  const handleImageUpload = async (e) => {
-    const files = Array.from(e.target.files);
-    if (files.length === 0) return;
-
-    setUploading(true);
-    setUploadProgress(0);
-    setUploadStatus({ tone: 'info', message: `Processing ${files.length} screenshot(s)...` });
+    setImportingTeamUrl(true);
+    setUploadStatus({ tone: 'info', message: 'Fetching opponent lineup from Lost Pigs API...' });
 
     try {
-      const localResult = await parseOpponentScreenshotsLocally(files, (done, total) => {
-        setUploadProgress(Math.round((done / total) * 100));
+      const imported = await importOpponentFromTeamInput(teamUrlInput);
+      const nextFormation = imported.formationKey && FORMATIONS[imported.formationKey]
+        ? imported.formationKey
+        : oppForm;
+
+      setOppForm(nextFormation);
+      setOpponentTeam(imported.players);
+      saveToDb({ opponentTeam: imported.players, oppForm: nextFormation });
+
+      const formationText = imported.formationKey
+        ? ` Formation: ${FORMATIONS[imported.formationKey].name}.`
+        : '';
+
+      setUploadStatus({
+        tone: 'success',
+        message: `Imported ${imported.players.length} active players from ${imported.teamLabel}.${formationText}`,
       });
-
-      const detectedRows = localResult.players.slice(0, 5).map((player, index) => createImportDraftPlayer(player, index));
-      const nextDraft = ensureDraftSize(detectedRows, 5);
-      const nextFormation = Object.keys(FORMATIONS).includes(localResult.detectedFormationKey)
-        ? localResult.detectedFormationKey
-        : 'Pyramid';
-
-      setImportDraftPlayers(nextDraft);
-      setImportDraftFormation(nextFormation);
-      setShowImportReview(true);
-
-      if (localResult.players.length === 0) {
-        setUploadStatus({
-          tone: 'error',
-          message: 'Auto-detection missed this screenshot. Update the 5 rows below and click Apply Opponent.',
-        });
-      } else {
-        setUploadStatus({
-          tone: 'info',
-          message: `Detected ${localResult.players.length} player(s) with free local OCR. Review and click Apply Opponent.`,
-        });
-      }
     } catch (err) {
-      console.error("Screenshot import failed:", err);
       setUploadStatus({
         tone: 'error',
-        message: err instanceof Error ? err.message : 'Screenshot import failed. Fill manual entries below.',
+        message: err instanceof Error ? err.message : 'Team URL import failed.',
       });
-      const fallbackDraft = ensureDraftSize([], 5);
-      setImportDraftPlayers(fallbackDraft);
-      setImportDraftFormation('Pyramid');
-      setShowImportReview(true);
     } finally {
-      setUploading(false);
-      e.target.value = null;
+      setImportingTeamUrl(false);
     }
-  };
+  }, [importingTeamUrl, oppForm, saveToDb, teamUrlInput]);
 
   const handleFormChange = (type, val) => {
     if (type === 'my') {
@@ -1275,7 +1174,7 @@ export default function OinkSoccerCalc() {
                   {
                     opponentTeam.length === 0 && (
                       <div className="p-8 text-center border-2 border-dashed border-slate-700 rounded-xl text-slate-500" >
-                        No opponent data.Use the Screenshot Import on the right.
+                        No opponent data. Import from a Lost Pigs team URL on the right.
                       </div>
                     )
                   }
@@ -1286,46 +1185,42 @@ export default function OinkSoccerCalc() {
           {/* Right Sidebar: Tools */}
           <div id="player-form" className="bg-slate-800 rounded-2xl p-6 border border-slate-700 h-fit sticky top-6 shadow-xl" >
 
-            {/* New: Screenshot Uploader */}
-            < div className="mb-6 pb-6 border-b border-slate-700" >
-              <div className="flex justify-between items-center mb-3" >
-                <h3 className="font-bold text-white flex items-center gap-2 text-sm" >
-                  <ImageIcon size={16} className="text-blue-400" />
-                  Opponent Screenshot Scanner
-                </h3>
-                {uploading && <Loader2 size={14} className="animate-spin text-blue-400" />}
-              </div>
-
-              {
-                uploading && (
-                  <div className="w-full bg-slate-700 rounded-full h-2.5 mb-3 overflow-hidden" >
-                    <div
-                      className="bg-blue-500 h-2.5 rounded-full transition-all duration-300 ease-out"
-                      style={{ width: `${uploadProgress}%` }
+            {/* Opponent Import */}
+            < div className="mb-6 pb-6 border-b border-slate-700 space-y-4" >
+              <div className="rounded-xl border border-slate-700 bg-slate-900/50 p-3 space-y-3">
+                <div className="flex items-center gap-2 text-sm font-bold text-white">
+                  <Link2 size={14} className="text-cyan-400" />
+                  Import From Team URL
+                </div>
+                <p className="text-[11px] text-slate-400">
+                  Paste a Lost Pigs team URL or a teamId like <span className="font-mono">AlgorandAsset:1197834124</span>.
+                </p>
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    value={teamUrlInput}
+                    onChange={(e) => setTeamUrlInput(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        e.preventDefault();
+                        void handleImportTeamUrl();
                       }
-                    > </div>
-                  </div>
-                )}
-
-              <div className="relative group" >
-                <input
-                  type="file"
-                  accept="image/*"
-                  multiple
-                  onChange={handleImageUpload}
-                  className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"
-                  disabled={uploading}
-                />
-                <div className={`border-2 border-dashed rounded-xl p-4 text-center transition-colors ${uploading ? 'border-blue-500/50 bg-blue-500/10' : 'border-slate-600 hover:border-blue-400 hover:bg-slate-700'}`}>
-                  <div className="flex flex-col items-center gap-2" >
-                    <Upload size={20} className={uploading ? "text-blue-400 animate-bounce" : "text-slate-400"} />
-                    <span className="text-[10px] font-bold uppercase text-slate-400" >
-                      {uploading ? "Analyzing..." : 'Upload Opponent Screenshot'}
-                    </span>
-                    < p className="text-[9px] text-slate-600" >
-                      Replaces opponent team.
-                    </p>
-                  </div>
+                    }}
+                    placeholder="https://www.thelostpigs.com/oink-soccer/team?teamId=..."
+                    className="flex-1 min-w-0 bg-slate-800 border border-slate-600 rounded px-3 py-2 text-xs text-white placeholder:text-slate-500 focus:outline-none focus:border-cyan-400"
+                    disabled={importingTeamUrl}
+                  />
+                  <button
+                    onClick={() => void handleImportTeamUrl()}
+                    disabled={importingTeamUrl}
+                    className={`px-3 py-2 rounded text-xs font-bold flex items-center gap-1 transition-colors ${importingTeamUrl
+                      ? 'bg-slate-700 text-slate-400 cursor-not-allowed'
+                      : 'bg-cyan-600 hover:bg-cyan-500 text-white'
+                      }`}
+                  >
+                    {importingTeamUrl ? <Loader2 size={12} className="animate-spin" /> : <Link2 size={12} />}
+                    {importingTeamUrl ? 'Importing...' : 'Import'}
+                  </button>
                 </div>
               </div>
               {uploadStatus && (
@@ -1339,81 +1234,6 @@ export default function OinkSoccerCalc() {
                   }`}
                 >
                   {uploadStatus.message}
-                </div>
-              )}
-
-              {showImportReview && (
-                <div className="mt-4 rounded-xl border border-slate-600 bg-slate-900/60 p-3 space-y-3">
-                  <div className="flex items-center justify-between gap-2">
-                    <div className="text-xs font-bold text-slate-200 uppercase">Review Opponent Import</div>
-                    <select
-                      value={importDraftFormation}
-                      onChange={(e) => setImportDraftFormation(e.target.value)}
-                      className="bg-slate-900 border border-slate-700 text-[11px] rounded px-2 py-1 text-white focus:outline-none focus:border-blue-500"
-                    >
-                      {Object.keys(FORMATIONS).map((k) => (
-                        <option key={k} value={k}>
-                          {FORMATIONS[k].name}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-
-                  <div className="max-h-[340px] overflow-y-auto space-y-2 pr-1">
-                    {importDraftPlayers.map((row, idx) => (
-                      <div key={row.id} className="rounded-lg border border-slate-700/70 bg-slate-800/60 p-2 space-y-2">
-                        <div className="flex items-center gap-2">
-                          <span className="text-[10px] font-bold text-slate-400 w-4">{idx + 1}</span>
-                          <input
-                            type="text"
-                            value={row.name}
-                            onChange={(e) => handleImportDraftChange(row.id, 'name', e.target.value)}
-                            placeholder={`Opponent ${idx + 1}`}
-                            className="flex-1 bg-slate-900 border border-slate-700 rounded px-2 py-1 text-xs text-white focus:outline-none focus:border-green-500"
-                          />
-                          <select
-                            value={row.pos}
-                            onChange={(e) => handleImportDraftChange(row.id, 'pos', e.target.value)}
-                            className="bg-slate-900 border border-slate-700 text-xs rounded px-2 py-1 text-white focus:outline-none focus:border-green-500"
-                          >
-                            {Object.keys(POSITIONS).map((k) => (
-                              <option key={k} value={k}>{k}</option>
-                            ))}
-                          </select>
-                        </div>
-                        <div className="grid grid-cols-5 gap-1">
-                          {['SPD', 'ATT', 'CTL', 'DEF', 'GKP'].map((statKey) => (
-                            <div key={statKey}>
-                              <label className="block text-[9px] font-bold text-slate-500 mb-1">{statKey}</label>
-                              <input
-                                type="number"
-                                min="0"
-                                max="100"
-                                value={row.stats[statKey]}
-                                onChange={(e) => handleImportDraftStatChange(row.id, statKey, e.target.value)}
-                                className="w-full bg-slate-900 border border-slate-700 rounded px-1.5 py-1 text-[11px] text-white font-mono focus:outline-none focus:border-blue-500"
-                              />
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-
-                  <div className="grid grid-cols-2 gap-2">
-                    <button
-                      onClick={handleApplyImportDraft}
-                      className="rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold py-2 transition-colors"
-                    >
-                      Apply Opponent
-                    </button>
-                    <button
-                      onClick={handleCancelImportDraft}
-                      className="rounded-lg border border-slate-600 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-bold py-2 transition-colors"
-                    >
-                      Discard Draft
-                    </button>
-                  </div>
                 </div>
               )}
             </div>
@@ -1596,10 +1416,18 @@ function PlayerRow({ player, onEdit, onDelete, isEditing, onInjuryChange, isActi
   const source = player.source || 'manual';
   const sourceBadgeClass = source === 'wallet'
     ? 'bg-green-900/50 text-green-300 border-green-500/30'
+    : source === 'team-url'
+      ? 'bg-cyan-900/50 text-cyan-300 border-cyan-500/30'
     : source === 'upload'
       ? 'bg-blue-900/50 text-blue-300 border-blue-500/30'
       : 'bg-slate-700/60 text-slate-300 border-slate-500/30';
-  const sourceLabel = source === 'wallet' ? 'Wallet' : source === 'upload' ? 'Upload' : 'Manual';
+  const sourceLabel = source === 'wallet'
+    ? 'Wallet'
+    : source === 'team-url'
+      ? 'Team URL'
+      : source === 'upload'
+        ? 'Upload'
+        : 'Manual';
 
   return (
     <div className={`relative bg-slate-800 p-3 rounded-xl border flex items-center justify-between group transition-colors ${isEditing ? 'border-yellow-500 bg-yellow-500/5' : 'border-slate-700 hover:border-slate-600'} ${injuryMenuOpen ? 'z-50' : 'z-0'}`

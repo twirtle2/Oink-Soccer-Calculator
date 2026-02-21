@@ -17,8 +17,7 @@
     "algosdk": "^3.5.2",
     "lucide-react": "^0.552.0",
     "react": "^18.2.0",
-    "react-dom": "^18.2.0",
-    "tesseract.js": "^7.0.0"
+    "react-dom": "^18.2.0"
   },
   "devDependencies": {
     "@blockshake/defly-connect": "^1.2.1",
