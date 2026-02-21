@@ -7,6 +7,7 @@ import { loadPlayableCatalog } from './lib/playableCatalog';
 import { fetchHeldAssetIdsForAddresses } from './lib/indexer';
 import { buildWalletPlayers, mergeWalletPlayers } from './lib/walletSync';
 import { importOpponentFromTeamInput } from './lib/lostPigsTeamImport';
+import { resolvePlayerImage } from './lib/assetImages';
 import {
   BOOSTS,
   DEFENSE_BIAS_MULTIPLIER,
@@ -234,6 +235,10 @@ export default function OinkSoccerCalc() {
 
   const [suggestions, setSuggestions] = useState({});
   const [analyzing, setAnalyzing] = useState(false);
+  const step1Ref = useRef(null);
+  const step2Ref = useRef(null);
+  const step3Ref = useRef(null);
+  const step4Ref = useRef(null);
 
   const connectedAddresses = useMemo(() => {
     const addresses = new Set();
@@ -778,6 +783,20 @@ export default function OinkSoccerCalc() {
     return false;
   };
 
+  const scrollToStep = useCallback((step) => {
+    setCurrentStep(step);
+    const sectionByStep = {
+      1: step1Ref,
+      2: step2Ref,
+      3: step3Ref,
+      4: step4Ref,
+    };
+    const target = sectionByStep[step]?.current;
+    if (target) {
+      target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+  }, []);
+
   const winPct = Number.parseFloat(simulation.win) || 0;
   const scoreGap = Number(simulation.myxG) - Number(simulation.oppxG);
   const drawPct = Math.max(12, Math.min(34, 24 - Math.abs(scoreGap) * 7));
@@ -791,19 +810,27 @@ export default function OinkSoccerCalc() {
   const defenseDelta = Number((myStats.Defense - oppStats.Defense).toFixed(1));
   const attackDelta = Number((myStats.Attack - oppStats.Attack).toFixed(1));
 
+  const topSuggestion = useMemo(() => (
+    Object.values(suggestions)
+      .sort((a, b) => b.win - a.win)[0] || null
+  ), [suggestions]);
+
   const annotation = useMemo(() => {
     const worstDelta = Math.min(controlDelta, defenseDelta, attackDelta);
+    if (topSuggestion && topSuggestion.formation && topSuggestion.diff > 0) {
+      return `Smart Coach sees an upgrade: ${FORMATIONS[topSuggestion.formation].name} projects ${topSuggestion.win.toFixed(1)}% win (${topSuggestion.diff.toFixed(1)} higher than current).`;
+    }
     if (worstDelta >= 0) {
       return `You are ahead across key metrics. Keep ${FORMATIONS[myForm]?.name || myForm} and preserve pressure with ${myBoost === 'None' ? 'No Boost' : BOOSTS[myBoost]?.label}.`;
     }
     if (controlDelta === worstDelta) {
-      return `Control gap detected: you are ${Math.abs(controlDelta).toFixed(1)} behind. Consider switching to ${FORMATIONS.Diamond.name} to improve midfield balance.`;
+      return `Control gap detected: you are ${Math.abs(controlDelta).toFixed(1)} behind. Run Smart Coach to find the highest-win formation from your current bench.`;
     }
     if (defenseDelta === worstDelta) {
-      return `Defense is trailing by ${Math.abs(defenseDelta).toFixed(1)}. Home location and a balanced shape can reduce opponent xG before kickoff.`;
+      return `Defense is trailing by ${Math.abs(defenseDelta).toFixed(1)}. Home location and lineup optimization can reduce opponent xG before kickoff.`;
     }
-    return `Attack is trailing by ${Math.abs(attackDelta).toFixed(1)}. Try a higher pressure shape like ${FORMATIONS.Y.name} to create more scoring events.`;
-  }, [attackDelta, controlDelta, defenseDelta, myBoost, myForm]);
+    return `Attack is trailing by ${Math.abs(attackDelta).toFixed(1)}. Run Smart Coach to identify the best attacking lineup from available players.`;
+  }, [attackDelta, controlDelta, defenseDelta, myBoost, myForm, topSuggestion]);
 
   return (
     <div className="min-h-screen bg-[#0a0d12] text-[#e8edf5] font-sans pb-10">
@@ -839,7 +866,7 @@ export default function OinkSoccerCalc() {
               <React.Fragment key={step.key}>
                 <button
                   type="button"
-                  onClick={() => stepIsClickable(step.key) && setCurrentStep(step.key)}
+                  onClick={() => stepIsClickable(step.key) && scrollToStep(step.key)}
                   disabled={!stepIsClickable(step.key)}
                   className={`inline-flex items-center gap-2 rounded-md px-2 py-1 text-xs font-semibold uppercase tracking-[0.08em] transition ${
                     isActive
@@ -870,17 +897,9 @@ export default function OinkSoccerCalc() {
 
         <div className="grid grid-cols-1 gap-6 lg:grid-cols-[1.7fr_1fr]">
           <section className="space-y-5">
-            <div className="rounded-xl border border-[#1e2a3a] bg-[#111620] p-5">
+            <div ref={step1Ref} className="rounded-xl border border-[#1e2a3a] bg-[#111620] p-5">
               <div className="mb-4 flex items-center justify-between">
                 <h2 className="font-['Barlow_Condensed'] text-xs font-bold uppercase tracking-[0.15em] text-[#6b7a94]">Step 1 · My Squad</h2>
-                <button
-                  type="button"
-                  onClick={() => setCurrentStep(2)}
-                  disabled={!stepCompletion[1]}
-                  className="rounded-md border border-[#1e2a3a] bg-[#161c28] px-3 py-1.5 text-[11px] font-semibold text-[#9aa5bb] hover:border-[#00e676]/60 hover:text-[#00e676] disabled:cursor-not-allowed disabled:opacity-50"
-                >
-                  Next
-                </button>
               </div>
               <div className="grid grid-cols-1 gap-4 md:grid-cols-[1fr_auto_1fr] md:items-start">
                 <div className="space-y-3">
@@ -928,7 +947,7 @@ export default function OinkSoccerCalc() {
                       <option key={k} value={k}>{FORMATIONS[k].name}</option>
                     ))}
                   </select>
-                  <div className="rounded-lg border border-[#1e2a3a] bg-[#161c28] p-3">
+                  <div ref={step2Ref} className="rounded-lg border border-[#1e2a3a] bg-[#161c28] p-3">
                     <div className="mb-2 text-[11px] font-semibold uppercase tracking-[0.1em] text-[#9aa5bb]">Step 2 · Import Opponent</div>
                     <p className="mb-2 text-xs text-[#6b7a94]">Paste your opponent's Lost Pigs team URL or teamId.</p>
                     <div className="flex gap-2">
@@ -986,17 +1005,9 @@ export default function OinkSoccerCalc() {
               </div>
             </div>
 
-            <div className="rounded-xl border border-[#1e2a3a] bg-[#111620] p-5">
+            <div ref={step3Ref} className="rounded-xl border border-[#1e2a3a] bg-[#111620] p-5">
               <div className="mb-4 flex items-center justify-between">
                 <h2 className="font-['Barlow_Condensed'] text-xs font-bold uppercase tracking-[0.15em] text-[#6b7a94]">Step 3 · Match Conditions</h2>
-                <button
-                  type="button"
-                  onClick={() => setCurrentStep(4)}
-                  disabled={!(stepCompletion[1] && stepCompletion[2] && stepCompletion[3])}
-                  className="rounded-md border border-[#1e2a3a] bg-[#161c28] px-3 py-1.5 text-[11px] font-semibold text-[#9aa5bb] hover:border-[#00e676]/60 hover:text-[#00e676] disabled:cursor-not-allowed disabled:opacity-50"
-                >
-                  View Simulation
-                </button>
               </div>
               <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
                 <div className="rounded-lg border border-[#1e2a3a] bg-[#161c28] p-4">
@@ -1053,7 +1064,7 @@ export default function OinkSoccerCalc() {
               </div>
             </div>
 
-            <div className="rounded-xl border border-[#1e2a3a] bg-[#111620] p-5">
+            <div ref={step4Ref} className="rounded-xl border border-[#1e2a3a] bg-[#111620] p-5">
               <div className="mb-4 text-xs font-bold uppercase tracking-[0.15em] text-[#6b7a94]">Step 4 · Stat Comparison</div>
               <div className="space-y-4">
                 <ComparisonStat title="Team Control" mine={myStats.Control} opp={oppStats.Control} />
@@ -1331,6 +1342,52 @@ function OutcomeBar({ label, value, color, textClass }) {
     </div>
   );
 }
+
+function AssetAvatar({ player }) {
+  const [imageSrc, setImageSrc] = useState(player.imageUrl || null);
+
+  useEffect(() => {
+    let cancelled = false;
+    if (player.imageUrl) {
+      setImageSrc(player.imageUrl);
+      return undefined;
+    }
+    if (!player.assetId) {
+      setImageSrc(null);
+      return undefined;
+    }
+
+    const controller = new AbortController();
+    resolvePlayerImage(player, controller.signal).then((resolved) => {
+      if (!cancelled) {
+        setImageSrc(resolved || null);
+      }
+    });
+
+    return () => {
+      cancelled = true;
+      controller.abort();
+    };
+  }, [player]);
+
+  if (imageSrc) {
+    return (
+      <img
+        src={imageSrc}
+        alt={player.name}
+        className="h-10 w-10 rounded-md border border-slate-600/80 bg-slate-900 object-cover"
+        loading="lazy"
+      />
+    );
+  }
+
+  return (
+    <div className="flex h-10 w-10 items-center justify-center rounded-md border border-slate-600/80 bg-slate-900 text-[10px] font-bold text-slate-500">
+      NFT
+    </div>
+  );
+}
+
 function PlayerRow({ player, onEdit, onDelete, isEditing, onInjuryChange, isActive, isBench, onSwap }) {
   const [injuryMenuOpen, setInjuryMenuOpen] = useState(false);
 
@@ -1377,6 +1434,7 @@ function PlayerRow({ player, onEdit, onDelete, isEditing, onInjuryChange, isActi
       }
 
       < div className="flex items-center gap-3 z-10 pl-2 flex-1 cursor-pointer" onClick={onSwap} >
+        <AssetAvatar player={player} />
         <div className={`w-8 h-8 rounded flex items-center justify-center text-xs font-bold bg-gradient-to-br ${posStyle.color} text-white shadow-lg relative`}>
           {player.pos}
           {isActive && <div className="absolute -top-1 -right-1 w-2 h-2 bg-green-500 rounded-full border border-slate-800" > </div>}

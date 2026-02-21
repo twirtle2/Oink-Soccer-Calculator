@@ -135,6 +135,7 @@ const mapTeamPayloadToPlayers = (teamId, payload) => {
       ovr,
       injury: null,
       source: 'team-url',
+      imageUrl: slot.asset?.image_url || slot.asset?.image || attrs.image_url || null,
     };
   });
 
@@ -185,4 +186,3 @@ export const importOpponentFromTeamInput = async (input) => {
 
   return mapped;
 };
-
