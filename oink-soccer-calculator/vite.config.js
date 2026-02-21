@@ -3,7 +3,7 @@ import react from '@vitejs/plugin-react'
 
 // https://vite.dev/config/
 export default defineConfig({
-  base: '/Oink-Soccer-Calculator/',
+  base: process.env.VITE_BASE_PATH || '/Oink-Soccer-Calculator/',
   define: {
     global: 'globalThis',
   },
