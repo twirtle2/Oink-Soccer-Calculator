@@ -205,6 +205,14 @@ const fetchJsonOrThrow = async (path, notFoundMessage) => {
   throw new Error(`Lost Pigs API returned ${response.status}.`);
 };
 
+const normalizeSeasonValue = (value) => {
+  const parsed = Number.parseInt(String(value), 10);
+  if (!Number.isFinite(parsed)) {
+    throw new Error('Lost Pigs API returned an invalid season value.');
+  }
+  return parsed;
+};
+
 export const fetchLeagueTeamsIndex = async () => {
   const [teamsPayload, configPayload] = await Promise.all([
     fetchJsonOrThrow('/soccer/league/teams'),
@@ -243,6 +251,11 @@ export const fetchLeagueTeamsIndex = async () => {
   return { byLeague, allTeams, leagueNames };
 };
 
+export const fetchCurrentSeason = async () => {
+  const payload = await fetchJsonOrThrow('/soccer/game-counter');
+  return normalizeSeasonValue(payload?.season);
+};
+
 export const fetchLeagueTableTeams = async (leagueId) => {
   const payload = await fetchJsonOrThrow(
     `/soccer/league/${encodeURIComponent(String(leagueId))}/table`,
@@ -267,6 +280,69 @@ export const fetchLeagueTableTeams = async (leagueId) => {
     leagueId: String(leagueId),
     leagueName: payload?.league?.name || `League ${leagueId}`,
     teams,
+  };
+};
+
+export const fetchTeamActiveBoosts = async (teamId) => {
+  const normalizedTeamId = normalizeTeamId(teamId);
+  if (!normalizedTeamId) {
+    throw new Error('Invalid teamId for boost fetch.');
+  }
+
+  const payload = await fetchJsonOrThrow(
+    `/soccer/team/${encodeURIComponent(normalizedTeamId)}/boosts`,
+    'Team boosts not found.',
+  );
+
+  return Array.isArray(payload?.boosts) ? payload.boosts : [];
+};
+
+export const fetchTeamBoostEffectiveness = async (teamId, leagueId, season) => {
+  const normalizedTeamId = normalizeTeamId(teamId);
+  if (!normalizedTeamId) {
+    throw new Error('Invalid teamId for boost effectiveness fetch.');
+  }
+
+  const normalizedLeagueId = String(leagueId || '').trim();
+  if (!normalizedLeagueId) {
+    throw new Error('Missing leagueId for boost effectiveness fetch.');
+  }
+
+  const normalizedSeason = normalizeSeasonValue(season);
+  const payload = await fetchJsonOrThrow(
+    `/soccer/team/${encodeURIComponent(normalizedTeamId)}/league/${encodeURIComponent(normalizedLeagueId)}/season/${encodeURIComponent(String(normalizedSeason))}/days-boosted`,
+    'Team boost effectiveness not found.',
+  );
+
+  return {
+    days_boosted: Number(payload?.days_boosted ?? 0),
+    boost_effectiveness: Number(payload?.boost_effectiveness ?? 100),
+  };
+};
+
+export const fetchTeamBoostState = async ({ teamId, leagueId, season }) => {
+  const normalizedTeamId = normalizeTeamId(teamId);
+  if (!normalizedTeamId) {
+    throw new Error('Invalid teamId for boost state fetch.');
+  }
+
+  const normalizedLeagueId = String(leagueId || '').trim();
+  if (!normalizedLeagueId) {
+    throw new Error('Missing leagueId for boost state fetch.');
+  }
+
+  const normalizedSeason = normalizeSeasonValue(season);
+  const [boosts, effectiveness] = await Promise.all([
+    fetchTeamActiveBoosts(normalizedTeamId),
+    fetchTeamBoostEffectiveness(normalizedTeamId, normalizedLeagueId, normalizedSeason),
+  ]);
+
+  return {
+    source: 'live',
+    daysBoosted: Number(effectiveness?.days_boosted ?? 0),
+    effectivenessPct: Number(effectiveness?.boost_effectiveness ?? 100),
+    boosts: Array.isArray(boosts) ? boosts : [],
+    fetchError: null,
   };
 };
 

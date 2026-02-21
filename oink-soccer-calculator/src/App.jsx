@@ -7,18 +7,24 @@ import { loadPlayableCatalog } from './lib/playableCatalog';
 import { fetchHeldAssetIdsForAddresses } from './lib/indexer';
 import { buildWalletPlayers, mergeWalletPlayers } from './lib/walletSync';
 import {
+  fetchCurrentSeason,
   fetchLeagueTableTeams,
   fetchLeagueTeamsIndex,
+  fetchTeamBoostState,
   findTeamsByName,
   importOpponentFromTeamInput,
   resolveOwnedTeamLeagues,
 } from './lib/lostPigsTeamImport';
+import {
+  createEmptyTeamBoostState,
+  createManualFallbackBoostState,
+  formatBoostEffectRange,
+  getBoostMultipliersFromState,
+} from './lib/boosts';
 import { resolvePlayerImage } from './lib/assetImages';
 import {
   BOOSTS,
   DEFENSE_BIAS_MULTIPLIER,
-  DR_DECAY,
-  DR_MIN,
   FORMATIONS,
   FORMATION_CHANCE_RANGES,
 } from './lib/gameRules';
@@ -48,22 +54,6 @@ const INJURIES = {
   High: { label: 'Severe (85%)', reduction: 0.85, color: 'bg-red-600', text: 'text-red-400' },
 };
 
-const calculateBoostMultiplier = (boostKey, applications = 1) => {
-  if (boostKey === 'None' || !BOOSTS[boostKey]) return 1.0;
-  const boost = BOOSTS[boostKey];
-  const baseBoost = (boost.min + boost.max) / 2;
-
-  if (applications <= 1) return baseBoost;
-
-  let m = Math.pow(DR_DECAY, applications);
-  if (m < DR_MIN) m = DR_MIN;
-
-  if (baseBoost >= 1.0) {
-    return 1.0 + (baseBoost - 1.0) * m;
-  }
-  return baseBoost * m;
-};
-
 // --- Math Functions ---
 const getControlScore = (stats, pos, injuryMod = 1.0, boostMults = {}) => {
   const spd = stats.SPD * (boostMults.SPD || 1.0);
@@ -91,19 +81,9 @@ const getOfficialOvr = (stats, pos) => {
   return 0;
 };
 
-const calculateTeamScores = (players, formationKey, activeBoost, boostApps) => {
+const calculateTeamScores = (players, formationKey, boostContext) => {
   const form = FORMATIONS[formationKey];
-
-  const boostType = BOOSTS[activeBoost]?.type || 'None';
-  const mult = calculateBoostMultiplier(activeBoost, boostApps);
-
-  const boostMults = {
-    CTL: (boostType === 'All' || boostType === 'CTL') ? mult : 1.0,
-    ATT: (boostType === 'All') ? mult : 1.0,
-    DEF: (boostType === 'All') ? mult : 1.0,
-    SPD: (boostType === 'All') ? mult : 1.0,
-    GKP: (boostType === 'All') ? mult : 1.0,
-  };
+  const boostMults = getBoostMultipliersFromState(boostContext);
 
   const stats = {
     Control: 0, Defense: 0, Attack: 0,
@@ -194,6 +174,19 @@ const initialMyTeam = [];
 
 const initialOpponent = [];
 
+const TEAM_BOOST_STATE_EMPTY = createEmptyTeamBoostState();
+
+const getErrorMessage = (error, fallback = 'Failed to load boost data.') =>
+  error instanceof Error ? error.message : fallback;
+
+const formatBoostTypeLabel = (entry) => {
+  const boost = entry?.boost || {};
+  if (boost.boost_type === 'Position Boost' && boost.boost_position === 'Midfield') {
+    return 'Control boost';
+  }
+  return boost.boost_type || 'Unknown boost';
+};
+
 
 export default function OinkSoccerCalc() {
   const { wallets } = useWallet();
@@ -212,8 +205,10 @@ export default function OinkSoccerCalc() {
   const [detectedMyTeamIds, setDetectedMyTeamIds] = useState([]);
   const [opponentSearchInput, setOpponentSearchInput] = useState('');
   const [selectedOpponentTeamId, setSelectedOpponentTeamId] = useState('');
+  const [importedOpponentTeamId, setImportedOpponentTeamId] = useState(null);
   const [catalogSeason, setCatalogSeason] = useState(null);
   const [walletSyncing, setWalletSyncing] = useState(false);
+  const [boostStatesLoading, setBoostStatesLoading] = useState(false);
 
   const [mySquad, setMySquad] = useState(persistedState.mySquad || initialMyTeam); // Full roster
   const [myTeam, setMyTeam] = useState(persistedState.myTeam || initialMyTeam.slice(0, 5)); // Active 5
@@ -223,6 +218,8 @@ export default function OinkSoccerCalc() {
 
   const [myBoost, setMyBoost] = useState(persistedState.myBoost || 'None');
   const [myBoostApps] = useState(persistedState.myBoostApps || 1);
+  const [myBoostState, setMyBoostState] = useState(createManualFallbackBoostState(persistedState.myBoost || 'None', persistedState.myBoostApps || 1));
+  const [oppBoostState, setOppBoostState] = useState(TEAM_BOOST_STATE_EMPTY);
   const [homeAdvantage, setHomeAdvantage] = useState(persistedState.homeAdvantage || 'home'); // 'home' or 'away'
   const [walletSyncMeta, setWalletSyncMeta] = useState(
     persistedState.walletSyncMeta || {
@@ -286,6 +283,48 @@ export default function OinkSoccerCalc() {
     const candidates = (leagueTeams || []).filter((team) => !blocked.has(team.teamId));
     return findTeamsByName(candidates, opponentSearchInput).slice(0, 25);
   }, [detectedMyTeamIds, leagueTeams, opponentSearchInput]);
+
+  const getLeagueIdForTeamId = useCallback((teamId) => {
+    if (!teamId || !leagueIndex?.allTeams) return null;
+    const found = leagueIndex.allTeams.find((entry) => entry.teamId === teamId);
+    return found?.leagueId || null;
+  }, [leagueIndex]);
+
+  const myTeamIdForBoosts = useMemo(() => {
+    if (detectedMyTeamIds.length === 0) return null;
+    if (!selectedLeagueId || !leagueIndex?.byLeague?.[selectedLeagueId]) {
+      return detectedMyTeamIds[0] || null;
+    }
+    const leagueTeamIds = new Set((leagueIndex.byLeague[selectedLeagueId] || []).map((team) => team.teamId));
+    return detectedMyTeamIds.find((teamId) => leagueTeamIds.has(teamId)) || detectedMyTeamIds[0] || null;
+  }, [detectedMyTeamIds, leagueIndex, selectedLeagueId]);
+
+  const opponentTeamIdForBoosts = useMemo(
+    () => importedOpponentTeamId || null,
+    [importedOpponentTeamId],
+  );
+
+  const myTeamLeagueIdForBoosts = useMemo(
+    () => getLeagueIdForTeamId(myTeamIdForBoosts) || (selectedLeagueId ? String(selectedLeagueId) : null),
+    [getLeagueIdForTeamId, myTeamIdForBoosts, selectedLeagueId],
+  );
+
+  const oppTeamLeagueIdForBoosts = useMemo(
+    () => getLeagueIdForTeamId(opponentTeamIdForBoosts) || (selectedLeagueId ? String(selectedLeagueId) : null),
+    [getLeagueIdForTeamId, opponentTeamIdForBoosts, selectedLeagueId],
+  );
+
+  const myBoostContext = useMemo(() => (
+    myBoostState.source === 'live'
+      ? myBoostState
+      : createManualFallbackBoostState(myBoost, myBoostApps, myBoostState.fetchError)
+  ), [myBoost, myBoostApps, myBoostState]);
+
+  const oppBoostContext = useMemo(() => (
+    oppBoostState.source === 'live'
+      ? oppBoostState
+      : createEmptyTeamBoostState(oppBoostState.fetchError)
+  ), [oppBoostState]);
 
   useEffect(() => {
     let cancelled = false;
@@ -408,6 +447,77 @@ export default function OinkSoccerCalc() {
     setSelectedOpponentTeamId('');
   }, [filteredOpponentOptions, selectedOpponentTeamId]);
 
+  useEffect(() => {
+    let cancelled = false;
+
+    const loadBoostStates = async () => {
+      const myFallback = createManualFallbackBoostState(myBoost, myBoostApps);
+      const oppFallback = createEmptyTeamBoostState();
+
+      const canFetchMyTeam = Boolean(myTeamIdForBoosts && myTeamLeagueIdForBoosts);
+      const canFetchOppTeam = Boolean(opponentTeam.length > 0 && opponentTeamIdForBoosts && oppTeamLeagueIdForBoosts);
+
+      if (!canFetchMyTeam && !canFetchOppTeam) {
+        if (!cancelled) {
+          setBoostStatesLoading(false);
+          setMyBoostState(myFallback);
+          setOppBoostState(oppFallback);
+        }
+        return;
+      }
+
+      setBoostStatesLoading(true);
+
+      try {
+        const season = await fetchCurrentSeason();
+
+        const myStatePromise = canFetchMyTeam
+          ? fetchTeamBoostState({
+            teamId: myTeamIdForBoosts,
+            leagueId: myTeamLeagueIdForBoosts,
+            season,
+          }).catch((error) => createManualFallbackBoostState(myBoost, myBoostApps, getErrorMessage(error)))
+          : Promise.resolve(myFallback);
+
+        const oppStatePromise = canFetchOppTeam
+          ? fetchTeamBoostState({
+            teamId: opponentTeamIdForBoosts,
+            leagueId: oppTeamLeagueIdForBoosts,
+            season,
+          }).catch((error) => createEmptyTeamBoostState(getErrorMessage(error)))
+          : Promise.resolve(oppFallback);
+
+        const [nextMyBoostState, nextOppBoostState] = await Promise.all([myStatePromise, oppStatePromise]);
+        if (cancelled) return;
+        setMyBoostState(nextMyBoostState);
+        setOppBoostState(nextOppBoostState);
+      } catch (error) {
+        if (cancelled) return;
+        const message = getErrorMessage(error);
+        setMyBoostState(createManualFallbackBoostState(myBoost, myBoostApps, message));
+        setOppBoostState(createEmptyTeamBoostState(message));
+      } finally {
+        if (!cancelled) {
+          setBoostStatesLoading(false);
+        }
+      }
+    };
+
+    void loadBoostStates();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    myBoost,
+    myBoostApps,
+    myTeamIdForBoosts,
+    myTeamLeagueIdForBoosts,
+    opponentTeam.length,
+    opponentTeamIdForBoosts,
+    oppTeamLeagueIdForBoosts,
+  ]);
+
   const saveToDb = useCallback((overrides = {}) => {
     saveCalculatorState({
       mySquad: overrides.mySquad !== undefined ? overrides.mySquad : mySquad,
@@ -436,8 +546,8 @@ export default function OinkSoccerCalc() {
     });
   }, [mySquad, myTeam, opponentTeam, myForm, oppForm, myBoost, myBoostApps, homeAdvantage, walletSyncMeta]);
 
-  const myStats = useMemo(() => calculateTeamScores(myTeam, myForm, myBoost, myBoostApps), [myTeam, myForm, myBoost, myBoostApps]);
-  const oppStats = useMemo(() => calculateTeamScores(opponentTeam, oppForm, 'None', 1), [opponentTeam, oppForm]);
+  const myStats = useMemo(() => calculateTeamScores(myTeam, myForm, myBoostContext), [myTeam, myForm, myBoostContext]);
+  const oppStats = useMemo(() => calculateTeamScores(opponentTeam, oppForm, oppBoostContext), [opponentTeam, oppForm, oppBoostContext]);
 
   const simulation = useMemo(() => {
     if (myStats.Count === 0 || oppStats.Count === 0) {
@@ -562,6 +672,10 @@ export default function OinkSoccerCalc() {
         ? imported.formationKey
         : oppForm;
 
+      setImportedOpponentTeamId(imported.teamId || null);
+      if (imported.teamId) {
+        setSelectedOpponentTeamId(imported.teamId);
+      }
       setOppForm(nextFormation);
       setOpponentTeam(imported.players);
       saveToDb({ opponentTeam: imported.players, oppForm: nextFormation });
@@ -791,7 +905,7 @@ export default function OinkSoccerCalc() {
               const lineup = [...gks, ...dfs, ...mfs, ...fws];
 
               // Calculate stats for this lineup
-              const stats = calculateTeamScores(lineup, formKey, myBoost, myBoostApps);
+              const stats = calculateTeamScores(lineup, formKey, myBoostContext);
 
               // Calculate win prob against CURRENT opponent
               // Re-implementing simulation logic here to avoid hook dependency issues inside loop
@@ -903,6 +1017,8 @@ export default function OinkSoccerCalc() {
     }
     closeInjuryModal();
   }, [closeInjuryModal, handleInjuryChange, injuryModalState, mySquad, opponentTeam]);
+
+  const manualBoostFallbackActive = myBoostContext.source !== 'live';
 
   const annotation = useMemo(() => {
     const worstDelta = Math.min(controlDelta, defenseDelta, attackDelta);
@@ -1324,6 +1440,7 @@ export default function OinkSoccerCalc() {
                   {Object.keys(BOOSTS).map((key) => (
                     <button
                       key={key}
+                      disabled={!manualBoostFallbackActive}
                       onClick={() => handleBoostChange(key)}
                       className={`rounded-full border px-3 py-1 text-xs font-semibold ${
                         myBoost === key
@@ -1331,13 +1448,31 @@ export default function OinkSoccerCalc() {
                             ? 'border-[#253040] bg-[#161c28] text-[#e8edf5]'
                             : 'border-[#ffab00] bg-[#ffab00] text-black'
                           : 'border-[#1e2a3a] bg-[#111620] text-[#9aa5bb]'
-                      }`}
+                      } ${manualBoostFallbackActive ? '' : 'cursor-not-allowed opacity-50'}`}
                     >
                       {BOOSTS[key].label}
                     </button>
                   ))}
                 </div>
+                <div className="mt-2 text-xs text-[#6b7a94]">
+                  {manualBoostFallbackActive
+                    ? 'Manual boosts are active because live boost data is unavailable for your team.'
+                    : 'Live boost data is active. Manual boosts are disabled until fallback is needed.'}
+                </div>
               </div>
+            </div>
+
+            <div className="grid grid-cols-1 gap-3 min-[780px]:grid-cols-2">
+              <BoostStateCard
+                title="My Team Boost State"
+                boostState={myBoostContext}
+                loading={boostStatesLoading}
+              />
+              <BoostStateCard
+                title="Opponent Boost State"
+                boostState={oppBoostContext}
+                loading={boostStatesLoading}
+              />
             </div>
 
             <div className="rounded-[10px] border border-[#1e2a3a] bg-[#111620] p-4">
@@ -1514,6 +1649,78 @@ function OutcomeBar({ label, value, color, textClass }) {
         <div className="h-full rounded" style={{ width: `${Math.max(0, Math.min(100, value))}%`, backgroundColor: color }} />
       </div>
       <div className={`w-12 text-right font-['Barlow_Condensed'] text-base font-bold ${textClass}`}>{value.toFixed(1)}%</div>
+    </div>
+  );
+}
+
+function BoostStateCard({ title, boostState, loading }) {
+  const boosts = Array.isArray(boostState?.boosts) ? boostState.boosts : [];
+  const sourceLabel = boostState?.source === 'live' ? 'Live' : 'Manual fallback';
+  const sourceClass = boostState?.source === 'live'
+    ? 'border-[rgba(0,230,118,0.35)] bg-[rgba(0,230,118,0.1)] text-[#00e676]'
+    : 'border-[#253040] bg-[#161c28] text-[#9aa5bb]';
+
+  return (
+    <div className="rounded-[10px] border border-[#1e2a3a] bg-[#111620] p-4">
+      <div className="mb-3 flex items-center justify-between">
+        <div className="text-xs font-bold uppercase tracking-[0.1em] text-[#9aa5bb]">{title}</div>
+        <span className={`rounded-full border px-2 py-0.5 text-[10px] font-semibold ${sourceClass}`}>
+          {sourceLabel}
+        </span>
+      </div>
+
+      {loading ? (
+        <div className="text-xs text-[#6b7a94]">Loading boost state...</div>
+      ) : (
+        <>
+          <div className="mb-3 grid grid-cols-2 gap-2 text-xs">
+            <div className="rounded border border-[#1e2a3a] bg-[#161c28] px-2 py-1.5">
+              <div className="text-[10px] uppercase tracking-[0.1em] text-[#6b7a94]">Days boosted</div>
+              <div className="font-['Barlow_Condensed'] text-xl font-bold text-[#e8edf5]">
+                {boostState?.daysBoosted ?? '—'}
+              </div>
+            </div>
+            <div className="rounded border border-[#1e2a3a] bg-[#161c28] px-2 py-1.5">
+              <div className="text-[10px] uppercase tracking-[0.1em] text-[#6b7a94]">Effectiveness</div>
+              <div className="font-['Barlow_Condensed'] text-xl font-bold text-[#e8edf5]">
+                {boostState?.effectivenessPct == null ? '—' : `${Number(boostState.effectivenessPct).toFixed(1)}%`}
+              </div>
+            </div>
+          </div>
+
+          {boostState?.fetchError && (
+            <div className="mb-3 rounded border border-[rgba(255,68,68,0.35)] bg-[rgba(255,68,68,0.08)] px-2 py-1.5 text-xs text-[#ff8b8b]">
+              {boostState.fetchError}
+            </div>
+          )}
+
+          <div className="space-y-2">
+            {boosts.length === 0 && (
+              <div className="rounded border border-dashed border-[#253040] px-2 py-2 text-xs text-[#6b7a94]">
+                No active boosts.
+              </div>
+            )}
+            {boosts.map((entry, index) => {
+              const boost = entry?.boost || {};
+              const expires = entry?.expires ? new Date(entry.expires) : null;
+              const expiresText = expires && !Number.isNaN(expires.getTime())
+                ? expires.toLocaleString()
+                : 'N/A';
+              return (
+                <div key={`${boost.boost_type || 'boost'}-${index}`} className="rounded border border-[#1e2a3a] bg-[#161c28] px-2 py-2">
+                  <div className="flex items-center justify-between gap-2 text-xs">
+                    <div className="font-semibold text-[#e8edf5]">{formatBoostTypeLabel(entry)}</div>
+                    <div className="text-[#9aa5bb]">{formatBoostEffectRange(entry)}</div>
+                  </div>
+                  <div className="mt-1 text-[11px] text-[#6b7a94]">
+                    Applications: {Number(boost.applications ?? 0)} · Expires: {expiresText}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </>
+      )}
     </div>
   );
 }

@@ -8,6 +8,7 @@
     "dev": "vite",
     "build": "vite build",
     "lint": "eslint . --max-warnings 0",
+    "test": "node --test \"src/**/*.test.js\"",
     "preview": "vite preview",
     "deploy": "npm run build && gh-pages -d dist",
     "generate:catalog": "node scripts/generate-playable-catalog.mjs",
