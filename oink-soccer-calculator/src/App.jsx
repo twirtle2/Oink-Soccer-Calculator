@@ -217,7 +217,7 @@ export default function OinkSoccerCalc() {
     },
   );
 
-  const [activeTab, setActiveTab] = useState('simulation');
+  const [currentStep, setCurrentStep] = useState(1);
   const [editingId, setEditingId] = useState(null);
   const [formTarget, setFormTarget] = useState('mySquad');
   const [showManualForm, setShowManualForm] = useState(false);
@@ -269,12 +269,6 @@ export default function OinkSoccerCalc() {
       cancelled = true;
     };
   }, []);
-
-  useEffect(() => {
-    // Auto set form target based on tab
-    if (activeTab === 'myTeam') setFormTarget('mySquad');
-    if (activeTab === 'opponent') setFormTarget('opponent');
-  }, [activeTab]);
 
   const saveToDb = useCallback((overrides = {}) => {
     saveCalculatorState({
@@ -755,578 +749,543 @@ export default function OinkSoccerCalc() {
     setMyForm(config.formation);
     saveToDb({ myTeam: config.lineup, myForm: config.formation });
     setSuggestions({});
-    setActiveTab('myTeam'); // Switch to team view to see changes
   };
 
-  return (
-    <div className="min-h-screen bg-slate-900 text-slate-100 font-sans pb-12 selection:bg-green-500/30" >
-      <div className="max-w-6xl mx-auto p-4 md:p-8 space-y-8" >
+  const connectedWalletCount = connectedAddresses.length;
+  const walletBadgeLabel = connectedWalletCount > 0
+    ? `${connectedWalletCount} wallet${connectedWalletCount > 1 ? 's' : ''} connected`
+    : 'No wallet connected';
 
-        {/* Header */}
-        < div className="flex flex-col md:flex-row items-start justify-between gap-6 pb-8 border-b border-slate-800" >
+  const stepCompletion = useMemo(() => ({
+    1: myTeam.length > 0,
+    2: opponentTeam.length > 0,
+    3: Boolean(homeAdvantage && myBoost),
+  }), [homeAdvantage, myBoost, myTeam.length, opponentTeam.length]);
+
+  const stepItems = useMemo(() => ([
+    { key: 1, label: 'My Squad' },
+    { key: 2, label: 'Opponent' },
+    { key: 3, label: 'Match Conditions' },
+    { key: 4, label: 'Simulation' },
+  ]), []);
+
+  const stepIsClickable = (step) => {
+    if (step === currentStep) return true;
+    if (step < currentStep) return true;
+    if (step === 2 && stepCompletion[1]) return true;
+    if (step === 3 && stepCompletion[1] && stepCompletion[2]) return true;
+    if (step === 4 && stepCompletion[1] && stepCompletion[2] && stepCompletion[3]) return true;
+    return false;
+  };
+
+  const winPct = Number.parseFloat(simulation.win) || 0;
+  const scoreGap = Number(simulation.myxG) - Number(simulation.oppxG);
+  const drawPct = Math.max(12, Math.min(34, 24 - Math.abs(scoreGap) * 7));
+  const remaining = Math.max(0, 100 - drawPct);
+  const winShare = Math.max(0, Math.min(1, winPct / 100));
+  const forecastWin = Number((remaining * winShare).toFixed(1));
+  const forecastLoss = Number((100 - drawPct - forecastWin).toFixed(1));
+  const forecastDraw = Number((100 - forecastWin - forecastLoss).toFixed(1));
+
+  const controlDelta = Number((myStats.Control - oppStats.Control).toFixed(1));
+  const defenseDelta = Number((myStats.Defense - oppStats.Defense).toFixed(1));
+  const attackDelta = Number((myStats.Attack - oppStats.Attack).toFixed(1));
+
+  const annotation = useMemo(() => {
+    const worstDelta = Math.min(controlDelta, defenseDelta, attackDelta);
+    if (worstDelta >= 0) {
+      return `You are ahead across key metrics. Keep ${FORMATIONS[myForm]?.name || myForm} and preserve pressure with ${myBoost === 'None' ? 'No Boost' : BOOSTS[myBoost]?.label}.`;
+    }
+    if (controlDelta === worstDelta) {
+      return `Control gap detected: you are ${Math.abs(controlDelta).toFixed(1)} behind. Consider switching to ${FORMATIONS.Diamond.name} to improve midfield balance.`;
+    }
+    if (defenseDelta === worstDelta) {
+      return `Defense is trailing by ${Math.abs(defenseDelta).toFixed(1)}. Home location and a balanced shape can reduce opponent xG before kickoff.`;
+    }
+    return `Attack is trailing by ${Math.abs(attackDelta).toFixed(1)}. Try a higher pressure shape like ${FORMATIONS.Y.name} to create more scoring events.`;
+  }, [attackDelta, controlDelta, defenseDelta, myBoost, myForm]);
+
+  return (
+    <div className="min-h-screen bg-[#0a0d12] text-[#e8edf5] font-sans pb-10">
+      <div className="mx-auto max-w-[1240px] px-4 py-6 md:px-8 md:py-8 space-y-6">
+        <header className="flex flex-col gap-4 border-b border-[#1e2a3a] pb-6 md:flex-row md:items-center md:justify-between">
           <div>
-            <h1 className="text-4xl font-black text-white flex items-center gap-3 tracking-tight" >
-              <span className="text-green-500" > OINK </span> SOCCER CALCULATOR
+            <h1 className="font-['Barlow_Condensed'] text-4xl font-black tracking-wide text-white md:text-5xl">
+              <span className="text-[#00e676]">OINK</span> SOCCER CALCULATOR
             </h1>
-            < p className="text-slate-500 font-medium mt-1" > {catalogSeason ? `Season ${catalogSeason}` : 'Season Unknown'} </p>
+            <p className="mt-1 text-sm font-medium text-[#6b7a94]">{catalogSeason ? `Season ${catalogSeason}` : 'Season Unknown'}</p>
           </div>
-          <div className="flex flex-col items-end gap-3 w-full md:w-auto">
+          <div className="flex items-center gap-3 self-start md:self-center">
+            <div className="inline-flex items-center gap-2 rounded-lg border border-[#1e2a3a] bg-[#111620] px-3 py-2 text-xs font-semibold text-[#9aa5bb]">
+              <span className="relative flex h-2.5 w-2.5">
+                <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-[#00e676]/70" />
+                <span className="relative inline-flex h-2.5 w-2.5 rounded-full bg-[#00e676]" />
+              </span>
+              {walletBadgeLabel}
+            </div>
             <WalletConnector
               onSync={handleSyncWalletAssets}
               isSyncing={walletSyncing}
               syncMeta={walletSyncMeta}
             />
-            < div className="bg-slate-800/50 px-6 py-4 rounded-2xl border border-slate-700/50 text-center min-w-[200px] w-full md:w-auto" >
-              <div className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-1" > Win Probability </div>
-              < div className={`text-4xl font-black ${simulation.win > 50 ? 'text-green-400' : 'text-red-400'}`
-              }>
-                {simulation.win} %
-              </div>
-              < div className="text-[10px] text-slate-500 mt-1" > Based on {Number(simulation.myxG) + Number(simulation.oppxG)} simulated goals </div>
-            </div>
           </div>
-        </div>
+        </header>
 
-        {/* Top Bar */}
-        <div className="flex flex-col xl:flex-row items-center justify-between gap-4 bg-slate-800 p-4 rounded-xl" >
-          <div className="flex items-center gap-3 w-full xl:w-auto" >
-            <span className="text-xs font-bold text-green-400 uppercase whitespace-nowrap" > My Formation </span>
-            < select
-              value={myForm}
-              onChange={(e) => handleFormChange('my', e.target.value)}
-              className="bg-slate-900 border border-slate-700 text-sm rounded-lg px-3 py-2 text-white focus:outline-none focus:border-green-500 flex-1 xl:w-48"
-            >
-              {Object.keys(FORMATIONS).map(k => <option key={k} value={k} > {FORMATIONS[k].name} </option>)}
-            </select>
-          </div>
-
-          < div className="flex flex-wrap justify-center gap-2 w-full xl:w-auto" >
-            <TabButton active={activeTab === 'simulation'} onClick={() => setActiveTab('simulation')} label="Simulation" icon={< Activity size={14} />} />
-            < TabButton active={activeTab === 'myTeam'} onClick={() => setActiveTab('myTeam')} label="My Squad" icon={< Users size={14} />} />
-            < TabButton active={activeTab === 'opponent'} onClick={() => setActiveTab('opponent')} label="Opponent" icon={< Users size={14} />} />
-          </div>
-
-          < div className="flex items-center gap-3 w-full xl:w-auto justify-end" >
-            <span className="text-xs font-bold text-red-400 uppercase whitespace-nowrap" > Opp Formation </span>
-            < select
-              value={oppForm}
-              onChange={(e) => handleFormChange('opp', e.target.value)}
-              className="bg-slate-900 border border-slate-700 text-sm rounded-lg px-3 py-2 text-white focus:outline-none focus:border-red-500 flex-1 xl:w-48"
-            >
-              {Object.keys(FORMATIONS).map(k => <option key={k} value={k} > {FORMATIONS[k].name} </option>)}
-            </select>
-          </div>
-        </div>
-
-        {/* Boost Selection - Only show on Sim or My Team */}
-        {
-          (activeTab === 'simulation' || activeTab === 'myTeam') && (
-            <div className="bg-slate-800 p-4 rounded-xl flex flex-col md:flex-row items-center gap-4 border border-slate-700" >
-              <div className="flex items-center gap-2" >
-                <TrendingUp className="text-yellow-400" size={20} />
-                <span className="font-bold text-sm text-slate-300 uppercase" > Active Boost </span>
-              </div>
-              < div className="flex-1 flex gap-2 overflow-x-auto w-full" >
-                {
-                  Object.keys(BOOSTS).map(key => (
-                    <button
-                      key={key}
-                      onClick={() => handleBoostChange(key)}
-                      className={`px-3 py-1.5 rounded text-xs font-bold whitespace-nowrap transition-colors ${myBoost === key ? 'bg-yellow-500 text-black' : 'bg-slate-900 text-slate-400 hover:text-white'}`
-                      }
-                    >
-                      {BOOSTS[key].label}
-                    </button>
-                  ))}
-              </div>
-              {
-                myBoost !== 'None' && (
-                  <div className="flex items-center gap-2 border-l border-slate-700 pl-4" >
-                    <span className="text-[10px] font-bold text-slate-500 uppercase" > Effectiveness </span>
-                    < input
-                      type="range" min="1" max="10"
-                      value={myBoostApps}
-                      onChange={(e) => handleBoostAppsChange(e.target.value)
-                      }
-                      className="w-24 h-1 bg-slate-700 rounded-lg appearance-none cursor-pointer accent-yellow-500"
-                    />
-                    <span className="text-xs font-mono text-yellow-400 w-8 text-right" >
-                      {Math.round(Math.pow(DR_DECAY, myBoostApps - 1) * 100)} %
-                    </span>
-                  </div>
-                )}
-            </div>
-          )}
-
-        {/* Home/Away Toggle - Only show on Simulation tab */}
-        {
-          activeTab === 'simulation' && (
-            <div className="bg-slate-800 p-4 rounded-xl flex flex-col md:flex-row items-center justify-between gap-4 border border-slate-700" >
-              <div className="flex items-center gap-2" >
-                <Activity className="text-blue-400" size={20} />
-                <span className="font-bold text-sm text-slate-300 uppercase" > Match Location </span>
-              </div>
-              < div className="flex gap-3" >
+        <nav className="flex flex-wrap items-center gap-2 rounded-xl border border-[#1e2a3a] bg-[#111620] px-4 py-3 md:gap-3">
+          {stepItems.map((step, idx) => {
+            const isDone = step.key <= 3 && stepCompletion[step.key];
+            const isActive = currentStep === step.key;
+            return (
+              <React.Fragment key={step.key}>
                 <button
-                  onClick={() => handleHomeAwayToggle('home')}
-                  className={`px-6 py-2.5 rounded-lg text-sm font-bold transition-all flex items-center gap-2 ${homeAdvantage === 'home' ? 'bg-green-600 text-white shadow-lg shadow-green-500/20' : 'bg-slate-900 text-slate-400 hover:text-white hover:bg-slate-700'}`}
+                  type="button"
+                  onClick={() => stepIsClickable(step.key) && setCurrentStep(step.key)}
+                  disabled={!stepIsClickable(step.key)}
+                  className={`inline-flex items-center gap-2 rounded-md px-2 py-1 text-xs font-semibold uppercase tracking-[0.08em] transition ${
+                    isActive
+                      ? 'text-white'
+                      : isDone
+                        ? 'text-[#00e676]'
+                        : 'text-[#6b7a94]'
+                  } ${stepIsClickable(step.key) ? 'cursor-pointer' : 'cursor-not-allowed opacity-60'}`}
                 >
-                  <Users size={16} />
-                  Home (+5% ATT, +3% DEF)
+                  <span
+                    className={`inline-flex h-5 w-5 items-center justify-center rounded-full border text-[10px] font-bold ${
+                      isDone
+                        ? 'border-[#00e676] bg-[#00e676] text-black'
+                        : isActive
+                          ? 'border-[#00e676] text-[#00e676]'
+                          : 'border-[#1e2a3a] text-[#6b7a94]'
+                    }`}
+                  >
+                    {isDone ? '✓' : step.key}
+                  </span>
+                  <span className={isActive ? 'border-b-2 border-[#00e676] pb-0.5' : ''}>{step.label}</span>
                 </button>
+                {idx < stepItems.length - 1 && <span className="text-[#1e2a3a]">›</span>}
+              </React.Fragment>
+            );
+          })}
+        </nav>
+
+        <div className="grid grid-cols-1 gap-6 lg:grid-cols-[1.7fr_1fr]">
+          <section className="space-y-5">
+            <div className="rounded-xl border border-[#1e2a3a] bg-[#111620] p-5">
+              <div className="mb-4 flex items-center justify-between">
+                <h2 className="font-['Barlow_Condensed'] text-xs font-bold uppercase tracking-[0.15em] text-[#6b7a94]">Step 1 · My Squad</h2>
                 <button
-                  onClick={() => handleHomeAwayToggle('away')}
-                  className={`px-6 py-2.5 rounded-lg text-sm font-bold transition-all flex items-center gap-2 ${homeAdvantage === 'away' ? 'bg-red-600 text-white shadow-lg shadow-red-500/20' : 'bg-slate-900 text-slate-400 hover:text-white hover:bg-slate-700'}`}
+                  type="button"
+                  onClick={() => setCurrentStep(2)}
+                  disabled={!stepCompletion[1]}
+                  className="rounded-md border border-[#1e2a3a] bg-[#161c28] px-3 py-1.5 text-[11px] font-semibold text-[#9aa5bb] hover:border-[#00e676]/60 hover:text-[#00e676] disabled:cursor-not-allowed disabled:opacity-50"
                 >
-                  <Users size={16} />
-                  Away (-3% ATT, -2% DEF)
+                  Next
                 </button>
               </div>
-              <div className="text-xs text-slate-500" >
-                Adjusts your team's performance modifiers
-              </div>
-            </div>
-          )
-        }
-
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-8" >
-
-          {/* Left Column */}
-          < div className="lg:col-span-2 space-y-6" >
-
-            {activeTab === 'simulation' && (
-              <div className="space-y-6 animate-in fade-in duration-500" >
-
-                {/* Suggestion Box */}
-                {
-                  mySquad.length > 5 && (
-                    <div className="bg-slate-800/50 border border-slate-700 rounded-xl p-4" >
-                      {
-                        Object.keys(suggestions).length === 0 && !analyzing && (
-                          <div className="flex items-center justify-between">
-                            <div>
-                              <h4 className="text-sm font-bold text-white flex items-center gap-2">
-                                <Zap size={14} className="text-yellow-400" /> Smart Coach
-                              </h4>
-                              < p className="text-xs text-slate-400 mt-1" > Analyze your bench for a better lineup against this opponent.</p>
-                            </div>
-                            < button
-                              onClick={analyzeLineups}
-                              className="bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold px-4 py-2 rounded-lg transition-colors flex items-center gap-2"
-                            >
-                              Analyze Bench
-                            </button>
-                          </div>
-                        )
-                      }
-
-                      {
-                        analyzing && (
-                          <div className="flex items-center justify-center gap-3 py-2" >
-                            <Loader2 size={16} className="animate-spin text-blue-400" />
-                            <span className="text-xs font-bold text-slate-300" > Crunching the numbers...</span>
-                          </div>
-                        )
-                      }
-
-                      {
-                        Object.keys(suggestions).length > 0 && (
-                          <div className="animate-in fade-in slide-in-from-top-2 space-y-2" >
-                            <div className="flex items-center justify-between" >
-                              <h4 className="text-sm font-bold text-white flex items-center gap-2" >
-                                <Zap size={14} className="text-yellow-400" /> Analysis Complete
-                              </h4>
-                              < button
-                                onClick={() => setSuggestions({})
-                                }
-                                className="p-1.5 hover:bg-slate-700 rounded text-slate-400"
-                              >
-                                <X size={14} />
-                              </button>
-                            </div>
-
-                            < div className="grid grid-cols-1 gap-2" >
-                              {
-                                Object.values(suggestions).sort((a, b) => b.win - a.win).map((sugg) => (
-                                  <div key={sugg.formation} className="bg-slate-900/50 p-3 rounded-lg border border-slate-700 flex items-center justify-between" >
-                                    <div>
-                                      <div className="text-xs font-bold text-slate-400" > {FORMATIONS[sugg.formation].name} </div>
-                                      < div className="text-sm font-black text-white" >
-                                        {sugg.win.toFixed(1)} % Win
-                                        < span className={`ml-2 text-xs ${sugg.diff >= 0 ? 'text-green-400' : 'text-red-400'}`} >
-                                          {sugg.diff >= 0 ? '+' : ''}{sugg.diff.toFixed(1)}%
-                                        </span>
-                                      </div>
-                                    </div>
-                                    < button
-                                      onClick={() => applySuggestion(sugg)}
-                                      className="bg-slate-700 hover:bg-green-600 text-white text-[10px] font-bold px-3 py-1.5 rounded transition-colors"
-                                    >
-                                      Apply
-                                    </button>
-                                  </div>
-                                ))}
-                            </div>
-                          </div>
-                        )}
-                    </div>
-                  )}
-
-                <div className="grid grid-cols-3 gap-4" >
-                  <ScoreCard title="Team Control" myVal={myStats.Control} oppVal={oppStats.Control} color="text-emerald-400" />
-                  <ScoreCard title="Team Defense" myVal={myStats.Defense} oppVal={oppStats.Defense} color="text-blue-400" />
-                  <ScoreCard title="Eff. Attack" myVal={myStats.Attack} oppVal={oppStats.Attack} color="text-red-400" />
-                </div>
-
-                {
-                  formationMismatch && (
-                    <div className="bg-red-900/20 border border-red-500/50 rounded-xl p-4 flex items-start gap-3" >
-                      <Bandage className="text-red-500 shrink-0 mt-0.5" size={16} />
-                      <div>
-                        <h4 className="text-sm font-bold text-red-400" > Formation Mismatch </h4>
-                        < p className="text-xs text-slate-400 mt-1" >
-                          Your active lineup does not match the selected formation({FORMATIONS[myForm].name}).
-                          This may result in penalties.
-                        </p>
-                        < p className="text-xs font-mono text-red-300 mt-2 bg-red-900/30 p-1.5 rounded" >
-                          {formationMismatch}
-                        </p>
-                      </div>
-                    </div>
-                  )
-                }
-
-                <div className="bg-slate-800 rounded-2xl p-6 border border-slate-700" >
-                  <h3 className="text-white font-bold text-lg mb-6 flex items-center gap-2" >
-                    <Activity size={20} className="text-green-500" /> Match Engine Forecast
-                  </h3>
-
-                  < div className="space-y-8" >
-                    <div>
-                      <div className="flex justify-between text-sm font-bold mb-2 text-slate-400" >
-                        <span>Possession </span>
-                        < span > {simulation.myPossession} % / {100 - simulation.myPossession}%</span >
-                      </div>
-                      < div className="h-4 bg-slate-900 rounded-full flex overflow-hidden" >
-                        <div className="bg-emerald-500" style={{ width: `${simulation.myPossession}%` }}> </div>
-                        < div className="bg-slate-700 flex-1" > </div>
-                      </div>
-                    </div>
-
-                    < div className="grid grid-cols-2 gap-8" >
-                      <div className="bg-slate-900/50 p-4 rounded-xl border border-slate-700/50" >
-                        <div className="text-xs text-slate-500 uppercase font-bold mb-1" > My Expected Goals </div>
-                        < div className="text-3xl font-black text-white" > {simulation.myxG} </div>
-                        < div className="text-xs text-green-400 mt-1" >
-                          Attack {myStats.Attack} vs Def {oppStats.Defense}
-                        </div>
-                      </div>
-                      < div className="bg-slate-900/50 p-4 rounded-xl border border-slate-700/50 text-right" >
-                        <div className="text-xs text-slate-500 uppercase font-bold mb-1" > Opponent xG </div>
-                        < div className="text-3xl font-black text-white" > {simulation.oppxG} </div>
-                        < div className="text-xs text-red-400 mt-1" >
-                          Attack {oppStats.Attack} vs Def {myStats.Defense}
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            )}
-
-            {
-              activeTab === 'myTeam' && (
-                <div className="space-y-8 animate-in slide-in-from-right-4 duration-300 pb-20" >
-
-                  {/* Active Formation View */}
-                  < div >
-                    <h3 className="text-sm font-bold text-slate-400 uppercase mb-3 flex items-center gap-2" >
-                      <Activity size={14} className="text-green-500" /> Active Lineup(Max 5)
-                    </h3>
-                    < div className="space-y-3" >
-                      {
-                        myTeam.map((p) => (
-                          <PlayerRow
-                            key={p.id}
-                            player={p}
-                            onEdit={() => handleEditPlayer(p, activeTab)}
-                            onDelete={() => handleRemove(p.id, activeTab)
-                            }
-                            isEditing={editingId === p.id}
-                            onInjuryChange={(sev) => handleInjuryChange(p, sev, activeTab)}
-                            isActive={true}
-                            onSwap={() => handleSwap(p)}
-                          />
-                        ))}
-                      {
-                        myTeam.length === 0 && (
-                          <div className="p-6 text-center border-2 border-dashed border-slate-700 rounded-xl text-slate-500 text-sm" >
-                            Your lineup is empty.Tap players from the Bench below to add them.
-                          </div>
-                        )
-                      }
-                    </div>
-                  </div>
-
-                  {/* Bench View */}
-                  <div>
-                    <div className="flex justify-between items-end mb-3" >
-                      <h3 className="text-sm font-bold text-slate-400 uppercase flex items-center gap-2" >
-                        <Users size={14} /> Available Squad (Bench)
-                      </h3>
-
-                      {/* Bench Filters & Sort */}
-                      <div className="flex items-center gap-2" >
-                        <div className="flex bg-slate-800 rounded-lg p-0.5 border border-slate-700" >
-                          {
-                            ['All', 'FW', 'MF', 'DF', 'GK'].map(pos => (
-                              <button
-                                key={pos}
-                                onClick={() => setBenchFilter(pos)}
-                                className={`px-2 py-1 rounded text-[10px] font-bold transition-colors ${benchFilter === pos ? 'bg-slate-600 text-white' : 'text-slate-500 hover:text-slate-300'}`}
-                              >
-                                {pos}
-                              </button>
-                            ))}
-                        </div>
-                        < button
-                          onClick={toggleSort}
-                          className="p-1.5 bg-slate-800 border border-slate-700 rounded-lg text-slate-400 hover:text-white transition-colors"
-                          title={`Sort by OVR (${benchSort === 'ovr_desc' ? 'High to Low' : 'Low to High'})`}
-                        >
-                          {benchSort === 'ovr_desc' ? <ArrowDownWideNarrow size={14} /> : <ArrowUpNarrowWide size={14} />}
-                        </button>
-                      </div>
-                    </div>
-
-                    < div className="space-y-3" >
-                      {
-                        benchPlayers.map((p) => (
-                          <PlayerRow
-                            key={p.id}
-                            player={p}
-                            onEdit={() => handleEditPlayer(p, activeTab)}
-                            onDelete={() => handleRemove(p.id, 'mySquad')}
-                            isEditing={editingId === p.id}
-                            onInjuryChange={(sev) => handleInjuryChange(p, sev, activeTab)}
-                            isBench={true}
-                            onSwap={() => handleSwap(p)}
-                          />
-                        ))}
-                      {
-                        benchPlayers.length === 0 && (
-                          <div className="p-6 text-center border-2 border-dashed border-slate-700 rounded-xl text-slate-500 text-sm" >
-                            {mySquad.length === 0 ? "No bench players yet. Sync wallet assets or add manual players." : "No players match your filter."}
-                          </div>
-                        )
-                      }
-                    </div>
-                  </div>
-
-                </div>
-              )}
-
-            {
-              activeTab === 'opponent' && (
-                <div className="animate-in slide-in-from-right-4 duration-300 space-y-4 pb-20" >
-                  {
-                    opponentTeam.map((p) => (
+              <div className="grid grid-cols-1 gap-4 md:grid-cols-[1fr_auto_1fr] md:items-start">
+                <div className="space-y-3">
+                  <div className="text-xs font-semibold uppercase tracking-[0.14em] text-[#00e676]">▲ My Team</div>
+                  <select
+                    value={myForm}
+                    onChange={(e) => handleFormChange('my', e.target.value)}
+                    className="w-full rounded-md border border-[#1e2a3a] bg-[#161c28] px-3 py-2 text-sm text-[#e8edf5] outline-none focus:border-[#00e676]"
+                  >
+                    {Object.keys(FORMATIONS).map((k) => (
+                      <option key={k} value={k}>{FORMATIONS[k].name}</option>
+                    ))}
+                  </select>
+                  <div className="space-y-2">
+                    {myTeam.map((p) => (
                       <PlayerRow
                         key={p.id}
                         player={p}
-                        onEdit={() => handleEditPlayer(p, activeTab)}
-                        onDelete={() => handleRemove(p.id, activeTab)
-                        }
+                        onEdit={() => handleEditPlayer(p, 'myTeam')}
+                        onDelete={() => handleRemove(p.id, 'myTeam')}
                         isEditing={editingId === p.id}
-                        onInjuryChange={(sev) => handleInjuryChange(p, sev, activeTab)}
+                        onInjuryChange={(sev) => handleInjuryChange(p, sev, 'myTeam')}
+                        isActive
+                        onSwap={() => handleSwap(p)}
                       />
                     ))}
-                  {
-                    opponentTeam.length === 0 && (
-                      <div className="p-8 text-center border-2 border-dashed border-slate-700 rounded-xl text-slate-500" >
-                        No opponent data. Import from a Lost Pigs team URL on the right.
-                      </div>
-                    )
-                  }
+                    {myTeam.length === 0 && (
+                      <div className="rounded-md border border-dashed border-[#1e2a3a] p-4 text-sm text-[#6b7a94]">No active lineup yet. Sync wallets or add manual players.</div>
+                    )}
+                  </div>
                 </div>
-              )}
-          </div>
-
-          {/* Right Sidebar: Tools */}
-          <div id="player-form" className="bg-slate-800 rounded-2xl p-6 border border-slate-700 h-fit sticky top-6 shadow-xl" >
-
-            {/* Opponent Import */}
-            < div className="mb-6 pb-6 border-b border-slate-700 space-y-4" >
-              <div className="rounded-xl border border-slate-700 bg-slate-900/50 p-3 space-y-3">
-                <div className="flex items-center gap-2 text-sm font-bold text-white">
-                  <Link2 size={14} className="text-cyan-400" />
-                  Import Opponent Team URL
+                <div className="hidden flex-col items-center gap-2 pt-10 md:flex">
+                  <div className="h-8 w-px bg-[#1e2a3a]" />
+                  <div className="font-['Barlow_Condensed'] text-2xl font-black text-[#6b7a94]">VS</div>
+                  <div className="h-8 w-px bg-[#1e2a3a]" />
                 </div>
-                <p className="text-[11px] text-slate-400">
-                  Paste your opponent&apos;s Lost Pigs team URL (or a teamId like <span className="font-mono">AlgorandAsset:1197834124</span>).
-                </p>
-                <div className="flex gap-2">
-                  <input
-                    type="text"
-                    value={teamUrlInput}
-                    onChange={(e) => setTeamUrlInput(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter') {
-                        e.preventDefault();
-                        void handleImportTeamUrl();
-                      }
-                    }}
-                    placeholder="Paste opponent URL: https://www.thelostpigs.com/oink-soccer/team?teamId=..."
-                    className="flex-1 min-w-0 bg-slate-800 border border-slate-600 rounded px-3 py-2 text-xs text-white placeholder:text-slate-500 focus:outline-none focus:border-cyan-400"
-                    disabled={importingTeamUrl}
-                  />
-                  <button
-                    onClick={() => void handleImportTeamUrl()}
-                    disabled={importingTeamUrl}
-                    className={`px-3 py-2 rounded text-xs font-bold flex items-center gap-1 transition-colors ${importingTeamUrl
-                      ? 'bg-slate-700 text-slate-400 cursor-not-allowed'
-                      : 'bg-cyan-600 hover:bg-cyan-500 text-white'
-                      }`}
+                <div className="space-y-3">
+                  <div className="text-xs font-semibold uppercase tracking-[0.14em] text-[#ffab00]">▼ Opponent</div>
+                  <select
+                    value={oppForm}
+                    onChange={(e) => handleFormChange('opp', e.target.value)}
+                    className="w-full rounded-md border border-[#1e2a3a] bg-[#161c28] px-3 py-2 text-sm text-[#e8edf5] outline-none focus:border-[#ffab00]"
                   >
-                    {importingTeamUrl ? <Loader2 size={12} className="animate-spin" /> : <Link2 size={12} />}
-                    {importingTeamUrl ? 'Importing...' : 'Import'}
-                  </button>
+                    {Object.keys(FORMATIONS).map((k) => (
+                      <option key={k} value={k}>{FORMATIONS[k].name}</option>
+                    ))}
+                  </select>
+                  <div className="rounded-lg border border-[#1e2a3a] bg-[#161c28] p-3">
+                    <div className="mb-2 text-[11px] font-semibold uppercase tracking-[0.1em] text-[#9aa5bb]">Step 2 · Import Opponent</div>
+                    <p className="mb-2 text-xs text-[#6b7a94]">Paste your opponent's Lost Pigs team URL or teamId.</p>
+                    <div className="flex gap-2">
+                      <input
+                        type="text"
+                        value={teamUrlInput}
+                        onChange={(e) => setTeamUrlInput(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') {
+                            e.preventDefault();
+                            void handleImportTeamUrl();
+                          }
+                        }}
+                        placeholder="https://www.thelostpigs.com/oink-soccer/team?teamId=..."
+                        className="min-w-0 flex-1 rounded-md border border-[#1e2a3a] bg-[#111620] px-3 py-2 text-xs text-[#e8edf5] placeholder:text-[#6b7a94] outline-none focus:border-[#2979ff]"
+                        disabled={importingTeamUrl}
+                      />
+                      <button
+                        onClick={() => void handleImportTeamUrl()}
+                        disabled={importingTeamUrl}
+                        className="inline-flex items-center gap-1 rounded-md bg-[#2979ff] px-3 py-2 text-xs font-semibold text-white disabled:cursor-not-allowed disabled:bg-slate-700"
+                      >
+                        {importingTeamUrl ? <Loader2 size={12} className="animate-spin" /> : <Link2 size={12} />}
+                        {importingTeamUrl ? 'Loading' : 'Import'}
+                      </button>
+                    </div>
+                    {uploadStatus && (
+                      <div className={`mt-2 rounded-md border px-2 py-1.5 text-[11px] ${
+                        uploadStatus.tone === 'success'
+                          ? 'border-[#00e676]/40 bg-[#00e676]/10 text-[#9af7cb]'
+                          : uploadStatus.tone === 'error'
+                            ? 'border-[#ff4444]/50 bg-[#ff4444]/10 text-[#ff9e9e]'
+                            : 'border-[#2979ff]/40 bg-[#2979ff]/10 text-[#9fc6ff]'
+                      }`}>
+                        {uploadStatus.message}
+                      </div>
+                    )}
+                  </div>
+                  <div className="space-y-2">
+                    {opponentTeam.map((p) => (
+                      <PlayerRow
+                        key={p.id}
+                        player={p}
+                        onEdit={() => handleEditPlayer(p, 'opponent')}
+                        onDelete={() => handleRemove(p.id, 'opponent')}
+                        isEditing={editingId === p.id}
+                        onInjuryChange={(sev) => handleInjuryChange(p, sev, 'opponent')}
+                      />
+                    ))}
+                    {opponentTeam.length === 0 && (
+                      <div className="rounded-md border border-dashed border-[#1e2a3a] p-4 text-sm text-[#6b7a94]">No opponent lineup imported yet.</div>
+                    )}
+                  </div>
                 </div>
               </div>
-              {uploadStatus && (
-                <div
-                  className={`mt-3 rounded-lg border p-2 text-[11px] ${
-                    uploadStatus.tone === 'success'
-                      ? 'border-emerald-500/40 bg-emerald-900/20 text-emerald-200'
-                      : uploadStatus.tone === 'error'
-                        ? 'border-red-500/40 bg-red-900/20 text-red-200'
-                        : 'border-blue-500/40 bg-blue-900/20 text-blue-200'
-                  }`}
+            </div>
+
+            <div className="rounded-xl border border-[#1e2a3a] bg-[#111620] p-5">
+              <div className="mb-4 flex items-center justify-between">
+                <h2 className="font-['Barlow_Condensed'] text-xs font-bold uppercase tracking-[0.15em] text-[#6b7a94]">Step 3 · Match Conditions</h2>
+                <button
+                  type="button"
+                  onClick={() => setCurrentStep(4)}
+                  disabled={!(stepCompletion[1] && stepCompletion[2] && stepCompletion[3])}
+                  className="rounded-md border border-[#1e2a3a] bg-[#161c28] px-3 py-1.5 text-[11px] font-semibold text-[#9aa5bb] hover:border-[#00e676]/60 hover:text-[#00e676] disabled:cursor-not-allowed disabled:opacity-50"
                 >
-                  {uploadStatus.message}
+                  View Simulation
+                </button>
+              </div>
+              <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+                <div className="rounded-lg border border-[#1e2a3a] bg-[#161c28] p-4">
+                  <div className="mb-3 text-[11px] font-bold uppercase tracking-[0.1em] text-[#6b7a94]">📍 Location</div>
+                  <div className="flex flex-col gap-2">
+                    <button
+                      onClick={() => handleHomeAwayToggle('home')}
+                      className={`rounded-md border px-3 py-2 text-left text-sm ${homeAdvantage === 'home' ? 'border-[#00e676] text-[#00e676]' : 'border-[#1e2a3a] text-[#9aa5bb]'}`}
+                    >
+                      🏠 Home (+5% ATT / +3% DEF)
+                    </button>
+                    <button
+                      onClick={() => handleHomeAwayToggle('away')}
+                      className={`rounded-md border px-3 py-2 text-left text-sm ${homeAdvantage === 'away' ? 'border-[#00e676] text-[#00e676]' : 'border-[#1e2a3a] text-[#9aa5bb]'}`}
+                    >
+                      ✈️ Away (-3% ATT / -2% DEF)
+                    </button>
+                  </div>
+                </div>
+                <div className="rounded-lg border border-[#1e2a3a] bg-[#161c28] p-4">
+                  <div className="mb-3 text-[11px] font-bold uppercase tracking-[0.1em] text-[#6b7a94]">⚡ Active Boost</div>
+                  <div className="flex flex-wrap gap-2">
+                    {Object.keys(BOOSTS).map((key) => (
+                      <button
+                        key={key}
+                        onClick={() => handleBoostChange(key)}
+                        className={`rounded-full border px-3 py-1 text-xs font-semibold ${
+                          myBoost === key
+                            ? key === 'None'
+                              ? 'border-[#6b7a94] bg-[#111620] text-[#e8edf5]'
+                              : 'border-[#ffab00] bg-[#ffab00] text-black'
+                            : 'border-[#1e2a3a] bg-[#111620] text-[#9aa5bb]'
+                        }`}
+                      >
+                        {key === 'MagicTruffle' ? 'Magic (1-5%)' : key === 'GoldenTruffle' ? 'Golden (3-7%)' : key === 'IridiumTruffle' ? 'Iridium (10%)' : key === 'HalftimeOrange' ? 'Half-time (3-7%)' : 'No Boost'}
+                      </button>
+                    ))}
+                  </div>
+                  {myBoost !== 'None' && (
+                    <div className="mt-3 flex items-center gap-2">
+                      <span className="text-[11px] text-[#9aa5bb]">Applications</span>
+                      <input
+                        type="range"
+                        min="1"
+                        max="10"
+                        value={myBoostApps}
+                        onChange={(e) => handleBoostAppsChange(e.target.value)}
+                        className="h-1 w-24 accent-[#ffab00]"
+                      />
+                      <span className="text-xs font-semibold text-[#ffab00]">{myBoostApps}</span>
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            <div className="rounded-xl border border-[#1e2a3a] bg-[#111620] p-5">
+              <div className="mb-4 text-xs font-bold uppercase tracking-[0.15em] text-[#6b7a94]">Step 4 · Stat Comparison</div>
+              <div className="space-y-4">
+                <ComparisonStat title="Team Control" mine={myStats.Control} opp={oppStats.Control} />
+                <ComparisonStat title="Team Defense" mine={myStats.Defense} opp={oppStats.Defense} />
+                <ComparisonStat title="Eff. Attack" mine={myStats.Attack} opp={oppStats.Attack} />
+              </div>
+              <div className="mt-4 rounded-lg border border-[#00e676]/30 bg-[#00e676]/5 p-3 text-sm text-[#9bd7bd]">
+                ⚠️ <span className="font-semibold text-[#c3ffe4]">Match Insight:</span> {annotation}
+              </div>
+              {formationMismatch && (
+                <div className="mt-3 rounded-lg border border-[#ff4444]/40 bg-[#ff4444]/10 p-3 text-xs text-[#ffb3b3]">
+                  {formationMismatch}
                 </div>
               )}
             </div>
 
-            {/* Collapsible Manual Form */}
-            <div>
+            <div className="rounded-xl border border-[#1e2a3a] bg-[#111620] p-5">
+              <div className="mb-3 flex items-center justify-between">
+                <h3 className="font-['Barlow_Condensed'] text-xs font-bold uppercase tracking-[0.15em] text-[#6b7a94]">My Squad Bench</h3>
+                <div className="flex items-center gap-2">
+                  <div className="flex rounded-md border border-[#1e2a3a] bg-[#161c28] p-0.5">
+                    {['All', 'FW', 'MF', 'DF', 'GK'].map((pos) => (
+                      <button
+                        key={pos}
+                        onClick={() => setBenchFilter(pos)}
+                        className={`rounded px-2 py-1 text-[10px] font-semibold ${benchFilter === pos ? 'bg-[#111620] text-white' : 'text-[#6b7a94]'}`}
+                      >
+                        {pos}
+                      </button>
+                    ))}
+                  </div>
+                  <button onClick={toggleSort} className="rounded-md border border-[#1e2a3a] bg-[#161c28] p-1.5 text-[#9aa5bb]">
+                    {benchSort === 'ovr_desc' ? <ArrowDownWideNarrow size={14} /> : <ArrowUpNarrowWide size={14} />}
+                  </button>
+                </div>
+              </div>
+              <div className="space-y-2">
+                {benchPlayers.map((p) => (
+                  <PlayerRow
+                    key={p.id}
+                    player={p}
+                    onEdit={() => handleEditPlayer(p, 'mySquad')}
+                    onDelete={() => handleRemove(p.id, 'mySquad')}
+                    isEditing={editingId === p.id}
+                    onInjuryChange={(sev) => handleInjuryChange(p, sev, 'mySquad')}
+                    isBench
+                    onSwap={() => handleSwap(p)}
+                  />
+                ))}
+                {benchPlayers.length === 0 && (
+                  <div className="rounded-md border border-dashed border-[#1e2a3a] p-4 text-sm text-[#6b7a94]">No bench players match your filter.</div>
+                )}
+              </div>
+            </div>
+
+            <div id="player-form" className="rounded-xl border border-[#1e2a3a] bg-[#111620] p-5">
               <button
                 onClick={() => setShowManualForm(!showManualForm)}
-                className="w-full flex justify-between items-center mb-4 text-sm font-bold text-slate-400 hover:text-white transition-colors"
+                className="mb-4 flex w-full items-center justify-between text-sm font-semibold text-[#9aa5bb]"
               >
-                <span className="flex items-center gap-2" >
-                  {editingId ? <Pencil size={14} className="text-yellow-400" /> : <Plus size={14} className="text-green-500" />}
+                <span className="inline-flex items-center gap-2">
+                  {editingId ? <Pencil size={14} className="text-[#ffab00]" /> : <Plus size={14} className="text-[#00e676]" />}
                   {editingId ? 'Edit Player' : 'Manual Entry'}
                 </span>
                 {showManualForm ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
               </button>
 
-              {
-                showManualForm && (
-                  <div className="space-y-4 animate-in fade-in slide-in-from-top-2" >
+              {showManualForm && (
+                <div className="space-y-4">
+                  {editingId && (
+                    <div className="flex justify-end">
+                      <button onClick={handleCancelEdit} className="inline-flex items-center gap-1 rounded bg-[#161c28] px-2 py-1 text-xs text-[#9aa5bb]">
+                        <RotateCcw size={12} /> Cancel Edit
+                      </button>
+                    </div>
+                  )}
 
-                    {editingId && (
-                      <div className="flex justify-end" >
-                        <button onClick={handleCancelEdit} className="text-xs text-slate-400 hover:text-white flex items-center gap-1 bg-slate-700 px-2 py-1 rounded" >
-                          <RotateCcw size={12} /> Cancel Edit
+                  {!editingId && (
+                    <div className="flex rounded-md border border-[#1e2a3a] bg-[#161c28] p-1">
+                      <button
+                        onClick={() => setFormTarget('mySquad')}
+                        className={`flex-1 rounded py-1.5 text-xs font-semibold ${formTarget === 'mySquad' ? 'bg-[#00e676] text-black' : 'text-[#9aa5bb]'}`}
+                      >
+                        My Squad
+                      </button>
+                      <button
+                        onClick={() => setFormTarget('opponent')}
+                        className={`flex-1 rounded py-1.5 text-xs font-semibold ${formTarget === 'opponent' ? 'bg-[#ffab00] text-black' : 'text-[#9aa5bb]'}`}
+                      >
+                        Opponent
+                      </button>
+                    </div>
+                  )}
+
+                  <div>
+                    <label className="mb-1 block text-[10px] font-bold uppercase tracking-[0.1em] text-[#6b7a94]">Name</label>
+                    <input
+                      type="text"
+                      placeholder="Player Name"
+                      className="w-full rounded-md border border-[#1e2a3a] bg-[#161c28] px-3 py-2 text-sm text-white outline-none focus:border-[#00e676]"
+                      value={newPlayer.name}
+                      onChange={(e) => setNewPlayer({ ...newPlayer, name: e.target.value })}
+                    />
+                  </div>
+
+                  <div>
+                    <label className="mb-1 block text-[10px] font-bold uppercase tracking-[0.1em] text-[#6b7a94]">Position</label>
+                    <div className="grid grid-cols-4 gap-2">
+                      {Object.keys(POSITIONS).map((k) => (
+                        <button
+                          key={k}
+                          onClick={() => setNewPlayer({ ...newPlayer, pos: k })}
+                          className={`rounded border py-2 text-xs font-semibold ${newPlayer.pos === k ? 'border-[#00e676] bg-[#00e676]/10 text-[#00e676]' : 'border-[#1e2a3a] bg-[#161c28] text-[#9aa5bb]'}`}
+                        >
+                          {k}
                         </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-3">
+                    {['ATT', 'CTL', 'SPD', 'DEF'].map((s) => (
+                      <div key={s}>
+                        <label className="mb-1 block text-[10px] font-bold uppercase tracking-[0.1em] text-[#6b7a94]">{s}</label>
+                        <input
+                          type="number"
+                          className="w-full rounded-md border border-[#1e2a3a] bg-[#161c28] px-2 py-1.5 text-sm font-mono text-white outline-none focus:border-[#00e676]"
+                          value={newPlayer.stats[s]}
+                          onChange={(e) => handleStatChange(s, e.target.value)}
+                        />
                       </div>
-                    )
-                    }
-
-                    {
-                      !editingId && (
-                        <div className="flex bg-slate-900 p-1 rounded-lg" >
-                          <button onClick={() => setFormTarget('mySquad')} className={`flex-1 py-1.5 text-xs font-bold rounded transition-colors ${formTarget === 'mySquad' ? 'bg-green-600 text-white' : 'text-slate-400 hover:text-slate-200'}`
-                          }> My Squad </button>
-                          < button onClick={() => setFormTarget('opponent')} className={`flex-1 py-1.5 text-xs font-bold rounded transition-colors ${formTarget === 'opponent' ? 'bg-red-600 text-white' : 'text-slate-400 hover:text-slate-200'}`}> Opponent </button>
-                        </div>
-                      )}
-
-                    <div>
-                      <label className="text-[10px] font-bold text-slate-500 uppercase block mb-1" > Name </label>
-                      < input
-                        type="text" placeholder="Player Name"
-                        className="w-full bg-slate-900 border border-slate-700 rounded px-3 py-2 text-sm focus:border-green-500 outline-none text-white"
-                        value={newPlayer.name} onChange={e => setNewPlayer({ ...newPlayer, name: e.target.value })}
-                      />
-                    </div>
-
-                    < div >
-                      <label className="text-[10px] font-bold text-slate-500 uppercase block mb-1" > Position </label>
-                      < div className="grid grid-cols-4 gap-2" >
-                        {
-                          Object.keys(POSITIONS).map(k => (
-                            <button
-                              key={k}
-                              onClick={() => setNewPlayer({ ...newPlayer, pos: k })}
-                              className={`text-xs font-bold py-2 rounded border ${newPlayer.pos === k ? 'bg-green-500/20 border-green-500 text-green-400' : 'bg-slate-900 border-transparent text-slate-500 hover:bg-slate-800'}`}
-                            >
-                              {k}
-                            </button>
-                          ))}
+                    ))}
+                    {newPlayer.pos === 'GK' && (
+                      <div className="col-span-2">
+                        <label className="mb-1 block text-[10px] font-bold uppercase tracking-[0.1em] text-[#6b7a94]">GKP</label>
+                        <input
+                          type="number"
+                          className="w-full rounded-md border border-[#1e2a3a] bg-[#161c28] px-2 py-1.5 text-sm font-mono text-white outline-none focus:border-[#00e676]"
+                          value={newPlayer.stats.GKP}
+                          onChange={(e) => handleStatChange('GKP', e.target.value)}
+                        />
                       </div>
-                    </div>
+                    )}
+                  </div>
 
-                    < div className="grid grid-cols-2 gap-3" >
-                      {
-                        ['ATT', 'CTL', 'SPD', 'DEF'].map(s => (
-                          <div key={s} >
-                            <label className="text-[10px] font-bold text-slate-500 uppercase block mb-1" > {s} </label>
-                            < input
-                              type="number"
-                              className="w-full bg-slate-900 border border-slate-700 rounded px-2 py-1.5 text-sm font-mono focus:border-green-500 outline-none text-white"
-                              value={newPlayer.stats[s]} onChange={e => handleStatChange(s, e.target.value)
-                              }
-                            />
-                          </div>
-                        ))}
-                      {
-                        newPlayer.pos === 'GK' && (
-                          <div className="col-span-2 animate-in fade-in" >
-                            <label className="text-[10px] font-bold text-yellow-500 uppercase block mb-1" > GKP(Goalkeeping) </label>
-                            < input
-                              type="number"
-                              className="w-full bg-yellow-900/20 border border-yellow-500/30 rounded px-2 py-1.5 text-sm font-mono text-yellow-200 focus:border-yellow-500 outline-none"
-                              value={newPlayer.stats.GKP} onChange={e => handleStatChange('GKP', e.target.value)}
-                            />
-                          </div>
-                        )
-                      }
+                  <div>
+                    <label className="mb-1 block text-[10px] font-bold uppercase tracking-[0.1em] text-[#6b7a94]">Injury Status</label>
+                    <div className="grid grid-cols-4 gap-2">
+                      {Object.keys(INJURIES).map((sev) => (
+                        <button
+                          key={sev}
+                          onClick={() => setNewPlayer({ ...newPlayer, injury: sev === 'None' ? null : sev })}
+                          className={`rounded border py-2 text-[10px] font-bold ${
+                            (newPlayer.injury === sev || (!newPlayer.injury && sev === 'None'))
+                              ? `${INJURIES[sev].color} border-transparent text-white`
+                              : 'border-[#1e2a3a] bg-[#161c28] text-[#9aa5bb]'
+                          }`}
+                        >
+                          {sev === 'None' ? 'Healthy' : sev}
+                        </button>
+                      ))}
                     </div>
+                  </div>
 
-                    {/* Injury Status in Form */}
-                    <div>
-                      <label className="text-[10px] font-bold text-slate-500 uppercase block mb-1" > Injury Status </label>
-                      < div className="grid grid-cols-4 gap-2" >
-                        {
-                          Object.keys(INJURIES).map(sev => (
-                            <button
-                              key={sev}
-                              onClick={() => setNewPlayer({ ...newPlayer, injury: sev === 'None' ? null : sev })}
-                              className={`text-[10px] font-bold py-2 rounded border ${(newPlayer.injury === sev || (!newPlayer.injury && sev === 'None'))
-                                ? `${INJURIES[sev].color} border-transparent text-white`
-                                : 'bg-slate-900 border-slate-700 text-slate-500 hover:bg-slate-800'
-                                }`}
-                            >
-                              {sev === 'None' ? 'Healthy' : sev}
-                            </button>
-                          ))}
-                      </div>
-                    </div>
+                  <button
+                    onClick={handleSavePlayer}
+                    className={`inline-flex w-full items-center justify-center gap-2 rounded-md py-2.5 text-sm font-semibold ${editingId ? 'bg-[#ffab00] text-black' : 'bg-[#00e676] text-black'}`}
+                  >
+                    {editingId ? <Save size={15} /> : <Plus size={15} />}
+                    {editingId ? 'Update Player' : 'Add Player'}
+                  </button>
+                </div>
+              )}
+            </div>
+          </section>
 
-                    < button
-                      onClick={handleSavePlayer}
-                      className={`w-full py-3 font-bold rounded-xl mt-4 transition-all active:scale-95 flex items-center justify-center gap-2 ${editingId ? 'bg-yellow-600 hover:bg-yellow-500 text-white' : 'bg-green-600 hover:bg-green-500 text-white'}`}
-                    >
-                      {editingId ? <Save size={16} /> : <Plus size={16} />}
-                      {editingId ? 'Update Player' : 'Add Player'}
-                    </button>
+          <aside className="space-y-4 lg:sticky lg:top-6 lg:h-fit">
+            <div className="rounded-xl border border-[#1e2a3a] bg-[#111620] p-5 text-center">
+              <div className="text-[11px] font-bold uppercase tracking-[0.12em] text-[#6b7a94]">Win Probability</div>
+              <div className="mt-2 font-['Barlow_Condensed'] text-7xl font-black leading-none text-[#00e676]">{simulation.win}%</div>
+              <div className="mt-2 text-xs text-[#6b7a94]">Based on {(Number(simulation.myxG) + Number(simulation.oppxG)).toFixed(2)} simulated goals</div>
+              <div className="mt-4 grid grid-cols-[1fr_auto_1fr] items-center rounded-lg border border-[#1e2a3a] bg-[#161c28] px-3 py-2">
+                <div>
+                  <div className="font-['Barlow_Condensed'] text-3xl font-bold text-[#00e676]">{simulation.myxG}</div>
+                  <div className="text-[10px] uppercase tracking-[0.08em] text-[#6b7a94]">Your Goals</div>
+                </div>
+                <div className="text-xl text-[#6b7a94]">:</div>
+                <div>
+                  <div className="font-['Barlow_Condensed'] text-3xl font-bold text-[#ffab00]">{simulation.oppxG}</div>
+                  <div className="text-[10px] uppercase tracking-[0.08em] text-[#6b7a94]">Opp Goals</div>
+                </div>
+              </div>
+            </div>
+
+            <div className="rounded-xl border border-[#1e2a3a] bg-[#111620] p-5">
+              <div className="mb-3 text-sm font-semibold text-[#e8edf5]">📊 Outcome Forecast</div>
+              <div className="space-y-2">
+                <OutcomeBar label="Win" value={forecastWin} color="#00e676" textClass="text-[#00e676]" />
+                <OutcomeBar label="Draw" value={forecastDraw} color="#6b7a94" textClass="text-[#9aa5bb]" />
+                <OutcomeBar label="Loss" value={forecastLoss} color="#ff4444" textClass="text-[#ff4444]" />
+              </div>
+            </div>
+
+            <div className="rounded-xl border border-[#1e2a3a] bg-[#111620] p-5">
+              <div className="mb-1 text-sm font-semibold text-[#e8edf5]">⚡ Smart Coach</div>
+              <p className="mb-3 text-xs text-[#6b7a94]">Lineup suggestions for this matchup</p>
+              <div className="space-y-2">
+                {Object.values(suggestions).sort((a, b) => b.win - a.win).slice(0, 2).map((sugg) => (
+                  <button
+                    key={sugg.formation}
+                    onClick={() => applySuggestion(sugg)}
+                    className="w-full rounded-md border border-[#1e2a3a] border-l-[3px] border-l-[#00e676] bg-[#161c28] p-3 text-left text-xs text-[#9aa5bb]"
+                  >
+                    <div className="font-semibold text-[#e8edf5]">{FORMATIONS[sugg.formation].name}</div>
+                    <div><strong className="text-[#00e676]">{sugg.win.toFixed(1)}% win</strong> ({sugg.diff >= 0 ? '+' : ''}{sugg.diff.toFixed(1)} vs current)</div>
+                  </button>
+                ))}
+                {Object.keys(suggestions).length === 0 && (
+                  <div className="rounded-md border border-[#1e2a3a] bg-[#161c28] p-3 text-xs text-[#9aa5bb]">
+                    Run Smart Coach to generate lineup recommendations.
                   </div>
                 )}
+              </div>
+              <button
+                onClick={analyzeLineups}
+                disabled={analyzing || mySquad.length <= 5}
+                className="mt-3 inline-flex w-full items-center justify-center gap-2 rounded-md border border-[#1e2a3a] bg-[#161c28] px-3 py-2 text-xs font-semibold text-[#e8edf5] hover:border-[#00e676]/70 hover:text-[#00e676] disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {analyzing ? <Loader2 size={13} className="animate-spin" /> : <Zap size={13} />} Analyze Full Bench
+              </button>
             </div>
-          </div>
-
+          </aside>
         </div>
       </div>
     </div>
@@ -1335,35 +1294,43 @@ export default function OinkSoccerCalc() {
 
 // --- Components ---
 
-function TabButton({ active, onClick, label, icon }) {
-  return (
-    <button
-      onClick={onClick}
-      className={`flex items-center gap-2 px-4 py-1.5 rounded-lg text-xs font-bold transition-all ${active ? 'bg-slate-600 text-white' : 'text-slate-400 hover:bg-slate-700 hover:text-white'}`
-      }
-    >
-      {icon} {label}
-    </button>
-  )
-}
+function ComparisonStat({ title, mine, opp }) {
+  const delta = Number((mine - opp).toFixed(1));
+  const deltaPositive = delta >= 0;
 
-function ScoreCard({ title, myVal, oppVal, color }) {
-  const diff = (myVal - oppVal).toFixed(1);
   return (
-    <div className="bg-slate-800 p-4 rounded-xl border border-slate-700 flex flex-col justify-between" >
-      <div className="text-xs font-bold text-slate-500 uppercase mb-2" > {title} </div>
-      < div className="flex items-baseline justify-between" >
-        <span className={`text-3xl font-black ${color}`}> {myVal} </span>
-        < span className="text-xl font-bold text-slate-600" > {oppVal} </span>
+    <div>
+      <div className="mb-1 flex items-end justify-between gap-3">
+        <div className="inline-flex items-center gap-2">
+          <span className="text-[11px] font-bold uppercase tracking-[0.12em] text-[#6b7a94]">{title}</span>
+          <span className={`rounded-full border px-2 py-0.5 text-[10px] font-bold ${deltaPositive ? 'border-[#00e676]/40 bg-[#00e676]/10 text-[#00e676]' : 'border-[#ff4444]/40 bg-[#ff4444]/10 text-[#ff4444]'}`}>
+            {deltaPositive ? '+' : ''}{delta} vs Opp
+          </span>
+        </div>
+        <div className="flex items-end gap-1">
+          <span className="font-['Barlow_Condensed'] text-2xl font-bold text-[#00e676]">{mine.toFixed(1)}</span>
+          <span className="font-['Barlow_Condensed'] text-lg font-semibold text-[#9aa5bb]">/ {opp.toFixed(1)}</span>
+        </div>
       </div>
-      < div className={`text-[10px] font-bold mt-2 ${diff > 0 ? 'text-green-400' : 'text-red-400'}`
-      }>
-        {diff > 0 ? '+' : ''}{diff} vs Opponent
+      <div className="relative h-1.5 rounded bg-[#161c28]">
+        <div className="absolute left-0 top-0 h-1.5 rounded bg-[#00e676]" style={{ width: `${Math.max(0, Math.min(100, mine))}%` }} />
+        <div className="absolute top-[-2px] h-2.5 w-1 rounded bg-[#ffab00]" style={{ left: `${Math.max(0, Math.min(100, opp))}%` }} />
       </div>
     </div>
-  )
+  );
 }
 
+function OutcomeBar({ label, value, color, textClass }) {
+  return (
+    <div className="flex items-center gap-2">
+      <div className="w-10 text-[11px] font-bold uppercase tracking-[0.08em] text-[#6b7a94]">{label}</div>
+      <div className="h-2 flex-1 overflow-hidden rounded bg-[#161c28]">
+        <div className="h-full rounded" style={{ width: `${Math.max(0, Math.min(100, value))}%`, backgroundColor: color }} />
+      </div>
+      <div className={`w-12 text-right font-['Barlow_Condensed'] text-base font-bold ${textClass}`}>{value.toFixed(1)}%</div>
+    </div>
+  );
+}
 function PlayerRow({ player, onEdit, onDelete, isEditing, onInjuryChange, isActive, isBench, onSwap }) {
   const [injuryMenuOpen, setInjuryMenuOpen] = useState(false);
 

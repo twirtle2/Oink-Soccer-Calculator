@@ -4,7 +4,7 @@ module.exports = {
   theme: {
     extend: {
       fontFamily: {
-        sans: ['"Space Grotesk"', 'ui-sans-serif', 'system-ui', 'sans-serif'],
+        sans: ['"Barlow"', 'ui-sans-serif', 'system-ui', 'sans-serif'],
       },
       boxShadow: {
         glow: '0 0 0 1px rgb(148 163 184 / 0.2), 0 10px 35px rgb(15 23 42 / 0.45)',
