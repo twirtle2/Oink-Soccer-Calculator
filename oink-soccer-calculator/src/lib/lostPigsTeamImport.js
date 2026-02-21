@@ -206,7 +206,18 @@ const fetchJsonOrThrow = async (path, notFoundMessage) => {
 };
 
 export const fetchLeagueTeamsIndex = async () => {
-  const payload = await fetchJsonOrThrow('/soccer/league/teams');
+  const [teamsPayload, configPayload] = await Promise.all([
+    fetchJsonOrThrow('/soccer/league/teams'),
+    fetchJsonOrThrow('/soccer/league/config'),
+  ]);
+
+  const leagueNames = {};
+  for (const league of configPayload?.leagues_config || []) {
+    if (!league?.id) continue;
+    leagueNames[String(league.id)] = league?.name || `League ${league.id}`;
+  }
+
+  const payload = teamsPayload;
   const teamsByLeague = payload?.teams_by_league || {};
   const byLeague = {};
   const allTeams = [];
@@ -229,7 +240,7 @@ export const fetchLeagueTeamsIndex = async () => {
     allTeams.push(...normalized);
   }
 
-  return { byLeague, allTeams };
+  return { byLeague, allTeams, leagueNames };
 };
 
 export const fetchLeagueTableTeams = async (leagueId) => {

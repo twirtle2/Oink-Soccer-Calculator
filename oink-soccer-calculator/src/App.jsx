@@ -275,9 +275,10 @@ export default function OinkSoccerCalc() {
 
   const leagueOptions = useMemo(() => {
     const byLeague = leagueIndex?.byLeague || {};
+    const leagueNames = leagueIndex?.leagueNames || {};
     return Object.keys(byLeague)
       .sort((a, b) => Number(a) - Number(b))
-      .map((id) => ({ id, label: `League ${id}` }));
+      .map((id) => ({ id, label: leagueNames[id] || `League ${id}` }));
   }, [leagueIndex]);
 
   const filteredOpponentOptions = useMemo(() => {
