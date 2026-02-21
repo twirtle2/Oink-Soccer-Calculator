@@ -6,6 +6,7 @@ import { loadCalculatorState, saveCalculatorState } from './lib/storage';
 import { loadPlayableCatalog } from './lib/playableCatalog';
 import { fetchHeldAssetIdsForAddresses } from './lib/indexer';
 import { buildWalletPlayers, mergeWalletPlayers } from './lib/walletSync';
+import { parseOpponentScreenshotsLocally } from './lib/localScreenshotParser';
 
 // --- Game Constants ---
 const POSITIONS = {
@@ -500,7 +501,47 @@ export default function OinkSoccerCalc() {
 
     try {
       if (!apiKey) {
-        throw new Error('Screenshot scanning is unavailable: VITE_GEMINI_API_KEY is not configured for this deployment.');
+        const localResult = await parseOpponentScreenshotsLocally(files, (done, total) => {
+          setUploadProgress(Math.round((done / total) * 100));
+        });
+
+        if (localResult.players.length === 0) {
+          throw new Error('No players were detected from the uploaded screenshot(s). Try a clearer image with visible player cards and stats.');
+        }
+
+        const localPlayers = localResult.players.map((p) => ({
+          id: Date.now() + Math.random(),
+          name: p.name || `Unknown ${p.pos || 'FW'}`,
+          pos: p.pos || 'FW',
+          stats: {
+            SPD: p.stats?.SPD || 50,
+            ATT: p.stats?.ATT || ((p.pos || 'FW') === 'GK' ? 0 : 50),
+            CTL: p.stats?.CTL || 50,
+            DEF: p.stats?.DEF || 50,
+            GKP: p.stats?.GKP || ((p.pos || 'FW') === 'GK' ? 50 : 0),
+          },
+          ovr: getOfficialOvr(
+            {
+              SPD: p.stats?.SPD || 50,
+              ATT: p.stats?.ATT || ((p.pos || 'FW') === 'GK' ? 0 : 50),
+              CTL: p.stats?.CTL || 50,
+              DEF: p.stats?.DEF || 50,
+              GKP: p.stats?.GKP || ((p.pos || 'FW') === 'GK' ? 50 : 0),
+            },
+            p.pos || 'FW',
+          ),
+          injury: null,
+          source: 'upload',
+        }));
+
+        setOppForm(localResult.detectedFormationKey || 'Pyramid');
+        setOpponentTeam(localPlayers);
+        saveToDb({ opponentTeam: localPlayers, oppForm: localResult.detectedFormationKey || 'Pyramid' });
+        setUploadStatus({
+          tone: 'success',
+          message: `Updated opponent with ${localPlayers.length} player(s) via local OCR in ${FORMATIONS[localResult.detectedFormationKey || 'Pyramid']?.name || 'Pyramid'}${localResult.failedFiles > 0 ? ` (${localResult.failedFiles} file(s) failed)` : ''}.`,
+        });
+        return;
       }
 
       let completedCount = 0;
