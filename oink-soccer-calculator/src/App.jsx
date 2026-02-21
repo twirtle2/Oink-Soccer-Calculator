@@ -331,7 +331,9 @@ export default function OinkSoccerCalc() {
   const oppStats = useMemo(() => calculateTeamScores(opponentTeam, oppForm, 'None', 1), [opponentTeam, oppForm]);
 
   const simulation = useMemo(() => {
-    if (myStats.Count === 0 || oppStats.Count === 0) return { win: 50, possession: 50 };
+    if (myStats.Count === 0 || oppStats.Count === 0) {
+      return { win: '50.0', myPossession: '50', myxG: '0.00', oppxG: '0.00' };
+    }
 
     // Home/Away modifiers
     const HOME_ATTACK_BOOST = 1.05;
