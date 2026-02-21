@@ -7,6 +7,14 @@ import { loadPlayableCatalog } from './lib/playableCatalog';
 import { fetchHeldAssetIdsForAddresses } from './lib/indexer';
 import { buildWalletPlayers, mergeWalletPlayers } from './lib/walletSync';
 import { importOpponentFromTeamInput } from './lib/lostPigsTeamImport';
+import {
+  BOOSTS,
+  DEFENSE_BIAS_MULTIPLIER,
+  DR_DECAY,
+  DR_MIN,
+  FORMATIONS,
+  FORMATION_CHANCE_RANGES,
+} from './lib/gameRules';
 
 // --- Game Constants ---
 const POSITIONS = {
@@ -16,48 +24,7 @@ const POSITIONS = {
   FW: { label: 'Forward', short: 'FW', color: 'from-red-500 to-red-600' },
 };
 
-const FORMATIONS = {
-  Pyramid: {
-    name: "The Pyramid (2-1-1)",
-    style: "DEF",
-    defMod: 1.04, ctlMod: 0.97, attMod: 0.94,
-    structure: { GK: 1, DF: 2, MF: 1, FW: 1 }
-  },
-  Diamond: {
-    name: "The Diamond (1-2-1)",
-    style: "BAL",
-    defMod: 0.92, ctlMod: 1.015, attMod: 0.92,
-    structure: { GK: 1, DF: 1, MF: 2, FW: 1 }
-  },
-  Y: {
-    name: "The Y (1-1-2)",
-    style: "ATT",
-    defMod: 0.96, ctlMod: 0.98, attMod: 1.04,
-    structure: { GK: 1, DF: 1, MF: 1, FW: 2 }
-  },
-  Box: {
-    name: "The Box (2-0-2)",
-    style: "BAL",
-    defMod: 1.07, ctlMod: 1.0, attMod: 1.06,
-    structure: { GK: 1, DF: 2, MF: 0, FW: 2 }
-  },
-};
-
 // --- Event Count Logic (Home/Away Bias) ---
-const FORMATION_CHANCE_RANGES = {
-  "HOME:ATT|AWAY:ATT": { min: 7, max: 15 },
-  "HOME:ATT|AWAY:BAL": { min: 6, max: 12 },
-  "HOME:ATT|AWAY:DEF": { min: 5, max: 11 },
-
-  "HOME:BAL|AWAY:ATT": { min: 7, max: 12 },
-  "HOME:BAL|AWAY:BAL": { min: 4, max: 9 },
-  "HOME:BAL|AWAY:DEF": { min: 3, max: 8 },
-
-  "HOME:DEF|AWAY:ATT": { min: 6, max: 11 },
-  "HOME:DEF|AWAY:BAL": { min: 3, max: 8 },
-  "HOME:DEF|AWAY:DEF": { min: 2, max: 6 },
-};
-
 const getAverageEvents = (homeFormKey, awayFormKey) => {
   const homeStyle = FORMATIONS[homeFormKey]?.style || 'BAL';
   const awayStyle = FORMATIONS[awayFormKey]?.style || 'BAL';
@@ -74,31 +41,14 @@ const INJURIES = {
   High: { label: 'Severe (85%)', reduction: 0.85, color: 'bg-red-600', text: 'text-red-400' },
 };
 
-const BOOSTS = {
-  None: { label: 'No Boost', type: 'None', min: 1.0, max: 1.0 },
-  MagicTruffle: { label: 'Magic Truffle (1-5%)', type: 'All', min: 1.01, max: 1.05 },
-  GoldenTruffle: { label: 'Golden Truffle (3-7%)', type: 'All', min: 1.03, max: 1.07 },
-  IridiumTruffle: { label: 'Iridium Truffle (10%)', type: 'All', min: 1.10, max: 1.10 },
-  HalftimeOrange: { label: 'Half-time Orange (3-7%)', type: 'CTL', min: 1.03, max: 1.07 },
-};
-
-const DR_DECAY = 0.97;
-const DR_MIN = 0.35;
-
 const calculateBoostMultiplier = (boostKey, applications = 1) => {
   if (boostKey === 'None' || !BOOSTS[boostKey]) return 1.0;
   const boost = BOOSTS[boostKey];
   const baseBoost = (boost.min + boost.max) / 2;
 
-  // If only 1 person applies it, it's 100% effective (no decay)
   if (applications <= 1) return baseBoost;
 
-  // Decay starts from the 2nd application onwards? 
-  // Actually, usually "1 application" = 100% effective.
-  // "2 applications" = 97% effective? Or is it 0.97^2?
-  // Let's assume 1 application = 100% (multiplier 1.0)
-
-  let m = Math.pow(DR_DECAY, applications - 1); // Shifted so 1 app = 1.0
+  let m = Math.pow(DR_DECAY, applications);
   if (m < DR_MIN) m = DR_MIN;
 
   if (baseBoost >= 1.0) {
@@ -214,7 +164,6 @@ const calculateTeamScores = (players, formationKey, activeBoost, boostApps) => {
 
   stats.Control = rawControl * form.ctlMod;
 
-  const DEFENSE_BIAS_MULTIPLIER = 1.05;
   stats.Defense = Math.min(100, rawDefense * form.defMod * DEFENSE_BIAS_MULTIPLIER);
 
   const attChanceWeights = formationKey === 'Box'
@@ -247,6 +196,7 @@ export default function OinkSoccerCalc() {
   const [importingTeamUrl, setImportingTeamUrl] = useState(false);
   const [uploadStatus, setUploadStatus] = useState(null);
   const [teamUrlInput, setTeamUrlInput] = useState('');
+  const [catalogSeason, setCatalogSeason] = useState(null);
   const [walletSyncing, setWalletSyncing] = useState(false);
 
   const [mySquad, setMySquad] = useState(persistedState.mySquad || initialMyTeam); // Full roster
@@ -300,6 +250,25 @@ export default function OinkSoccerCalc() {
     () => [...connectedAddresses].sort().join('|'),
     [connectedAddresses],
   );
+
+  useEffect(() => {
+    let cancelled = false;
+    void loadPlayableCatalog()
+      .then((catalog) => {
+        if (!cancelled) {
+          setCatalogSeason(catalog?.season ?? null);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setCatalogSeason(null);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     // Auto set form target based on tab
@@ -427,11 +396,12 @@ export default function OinkSoccerCalc() {
     setWalletSyncMeta(nextMeta);
 
     try {
-      const [catalogByAssetId, heldAssetIds] = await Promise.all([
+      const [catalogPayload, heldAssetIds] = await Promise.all([
         loadPlayableCatalog(),
         fetchHeldAssetIdsForAddresses(addressesToSync),
       ]);
 
+      const catalogByAssetId = catalogPayload?.assets || {};
       const { walletPlayers, matchedCount, unmatchedCount } = buildWalletPlayers(heldAssetIds, catalogByAssetId);
       const { nextSquad, nextTeam } = mergeWalletPlayers({ mySquad, myTeam, walletPlayers });
 
@@ -796,9 +766,9 @@ export default function OinkSoccerCalc() {
         < div className="flex flex-col md:flex-row items-start justify-between gap-6 pb-8 border-b border-slate-800" >
           <div>
             <h1 className="text-4xl font-black text-white flex items-center gap-3 tracking-tight" >
-              <span className="text-green-500" > OINK </span> ANALYZER
+              <span className="text-green-500" > OINK </span> SOCCER CALCULATOR
             </h1>
-            < p className="text-slate-500 font-medium mt-1" > Advanced Engine Simulator • Wallet + Local Storage </p>
+            < p className="text-slate-500 font-medium mt-1" > {catalogSeason ? `Season ${catalogSeason}` : 'Season Unknown'} </p>
           </div>
           <div className="flex flex-col items-end gap-3 w-full md:w-auto">
             <WalletConnector

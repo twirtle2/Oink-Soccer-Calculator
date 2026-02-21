@@ -1,0 +1,100 @@
+{
+  "generatedAt": "2026-02-02T10:17:27Z",
+  "sourceRepo": "https://github.com/stein-f/oink-soccer-common",
+  "sourceRef": "812aa2bf55869dbcbb0e21b0526ed3c693d0c07a",
+  "rules": {
+    "formations": {
+      "Box": {
+        "style": "BAL",
+        "defMod": 1.05,
+        "ctlMod": 1,
+        "attMod": 1.05,
+        "structure": {
+          "GK": 1,
+          "DF": 2,
+          "MF": 0,
+          "FW": 2
+        }
+      },
+      "Diamond": {
+        "style": "BAL",
+        "defMod": 0.94,
+        "ctlMod": 1.02,
+        "attMod": 0.94,
+        "structure": {
+          "GK": 1,
+          "DF": 1,
+          "MF": 2,
+          "FW": 1
+        }
+      },
+      "Pyramid": {
+        "style": "DEF",
+        "defMod": 1.05,
+        "ctlMod": 0.97,
+        "attMod": 0.94,
+        "structure": {
+          "GK": 1,
+          "DF": 2,
+          "MF": 1,
+          "FW": 1
+        }
+      },
+      "Y": {
+        "style": "ATT",
+        "defMod": 0.96,
+        "ctlMod": 0.98,
+        "attMod": 1.05,
+        "structure": {
+          "GK": 1,
+          "DF": 1,
+          "MF": 1,
+          "FW": 2
+        }
+      }
+    },
+    "defenseBiasMultiplier": 1.05,
+    "boosts": {
+      "decayPerApplication": 0.97,
+      "minMultiplier": 0.35
+    },
+    "chanceRanges": {
+      "HOME:ATT|AWAY:ATT": {
+        "min": 7,
+        "max": 15
+      },
+      "HOME:ATT|AWAY:BAL": {
+        "min": 6,
+        "max": 12
+      },
+      "HOME:ATT|AWAY:DEF": {
+        "min": 5,
+        "max": 11
+      },
+      "HOME:BAL|AWAY:ATT": {
+        "min": 7,
+        "max": 12
+      },
+      "HOME:BAL|AWAY:BAL": {
+        "min": 4,
+        "max": 9
+      },
+      "HOME:BAL|AWAY:DEF": {
+        "min": 3,
+        "max": 8
+      },
+      "HOME:DEF|AWAY:ATT": {
+        "min": 6,
+        "max": 11
+      },
+      "HOME:DEF|AWAY:BAL": {
+        "min": 3,
+        "max": 8
+      },
+      "HOME:DEF|AWAY:DEF": {
+        "min": 2,
+        "max": 6
+      }
+    }
+  }
+}

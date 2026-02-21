@@ -1,15 +1,14 @@
 # Oink Soccer Calculator
 
-Wallet-aware simulator for Oink Soccer lineups.  
-The app now runs fully on static hosting (GitHub Pages), persists data in browser local storage, and can sync playable assets from connected Algorand wallets.
+Static, wallet-aware Oink Soccer calculator hosted on GitHub Pages.
 
 ## Features
 
-- Connect wallets with `@txnlab/use-wallet-react` (Pera, Defly, Kibisis).
-- Sync playable assets for connected accounts from Algorand MainNet holdings.
-- Keep full simulator workflow (manual edits, screenshot import, opponent team simulation).
-- Persist squads/forms/settings locally via `oink-soccer-calc:v2`.
-- Deploy on GitHub Pages via GitHub Actions.
+- Connect Pera, Defly, and Kibisis wallets via `@txnlab/use-wallet-react`.
+- Sync playable assets from connected MainNet wallets.
+- Import opponent lineup from Lost Pigs opponent team URL.
+- Run formation/boost simulation with local persistent state (`oink-soccer-calc:v2`).
+- Display active season dynamically from catalog metadata.
 
 ## Local Development
 
@@ -18,30 +17,6 @@ npm install
 npm run dev
 ```
 
-## Environment Variables
-
-Screenshot scanner requires Gemini API key:
-
-```bash
-VITE_GEMINI_API_KEY=your_key_here
-```
-
-Without this env var, screenshot upload is disabled with an error message, but wallet/manual simulation still works.
-
-## Playable Asset Catalog
-
-Catalog is generated from [`oink-soccer-common`](https://github.com/stein-f/oink-soccer-common) and stored as:
-
-- `public/data/playable-assets.s14.json`
-
-Regenerate:
-
-```bash
-npm run generate:catalog -- /path/to/oink-soccer-common
-```
-
-If no path is provided, the script will try common defaults (including `/tmp/oink-soccer-common`).
-
 ## Build and Lint
 
 ```bash
@@ -49,14 +24,49 @@ npm run lint
 npm run build
 ```
 
-## GitHub Pages Deployment
+## Catalog + Upstream Sync
 
-Deployment is automated by:
+Current playable catalog is served from:
 
-- `.github/workflows/deploy-pages.yml`
+- `public/data/playable-catalog-manifest.json`
+- `public/data/playable-assets.s<season>.json`
 
-On push to `main`, workflow builds from `oink-soccer-calculator/` and deploys `dist/` to GitHub Pages.
+Generate catalog directly from a local upstream clone:
 
-Vite base path is set to:
+```bash
+npm run generate:catalog -- /path/to/oink-soccer-common
+```
 
-- `/Oink-Soccer-Calculator/`
+Generate upstream game-rules snapshot:
+
+```bash
+npm run generate:rules-snapshot -- /path/to/oink-soccer-common
+```
+
+Full upstream sync (catalog + snapshot + parity check):
+
+```bash
+npm run sync:upstream
+```
+
+Blocking upstream drift check (used in CI):
+
+```bash
+npm run check:upstream
+```
+
+Notes:
+
+- If no path is provided, sync scripts default to `/tmp/oink-soccer-common`.
+- `check:upstream` will fail when generated artifacts differ from committed files.
+
+## CI / Automation
+
+- `.github/workflows/deploy-pages.yml`: builds and deploys Pages on push to `main`.
+- `.github/workflows/upstream-sync.yml`: weekly upstream sync that opens a PR when data/rules change.
+- `.github/workflows/upstream-drift-check.yml`: runs on push/PR and fails on upstream drift.
+
+## GitHub Pages
+
+- App URL: `https://twirtle2.github.io/Oink-Soccer-Calculator/`
+- Vite base path: `/Oink-Soccer-Calculator/`

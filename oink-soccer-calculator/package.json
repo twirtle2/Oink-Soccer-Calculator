@@ -10,7 +10,10 @@
     "lint": "eslint . --max-warnings 0",
     "preview": "vite preview",
     "deploy": "npm run build && gh-pages -d dist",
-    "generate:catalog": "node scripts/generate-playable-catalog.mjs"
+    "generate:catalog": "node scripts/generate-playable-catalog.mjs",
+    "generate:rules-snapshot": "node scripts/generate-game-rules-snapshot.mjs",
+    "sync:upstream": "node scripts/sync-oink-common.mjs",
+    "check:upstream": "node scripts/sync-oink-common.mjs --check"
   },
   "dependencies": {
     "@txnlab/use-wallet-react": "^4.5.0",

@@ -1,6 +1,9 @@
 #!/usr/bin/env node
 import fs from 'node:fs';
 import path from 'node:path';
+import { execSync } from 'node:child_process';
+
+const UPSTREAM_REPO_URL = process.env.OINK_COMMON_SOURCE_REPO || 'https://github.com/stein-f/oink-soccer-common';
 
 const DEFAULT_COMMON_PATHS = [
   process.env.OINK_COMMON_PATH,
@@ -125,6 +128,30 @@ const getOvr = (stats, pos) => {
   return Math.round(((stats.ATT * 3) + stats.SPD) / 4);
 };
 
+const getSourceMetadata = (commonRoot) => {
+  try {
+    const sourceRef = execSync('git rev-parse HEAD', {
+      cwd: commonRoot,
+      stdio: ['ignore', 'pipe', 'ignore'],
+      encoding: 'utf8',
+    }).trim();
+    const sourceCommitTime = execSync('git show -s --format=%cI HEAD', {
+      cwd: commonRoot,
+      stdio: ['ignore', 'pipe', 'ignore'],
+      encoding: 'utf8',
+    }).trim();
+    return {
+      sourceRef,
+      generatedAt: sourceCommitTime || new Date().toISOString(),
+    };
+  } catch {
+    return {
+      sourceRef: null,
+      generatedAt: new Date().toISOString(),
+    };
+  }
+};
+
 const main = () => {
   const commonRoot = resolveCommonPath();
   const configPath = path.join(commonRoot, 'cmd/allocation/config.json');
@@ -167,17 +194,34 @@ const main = () => {
     };
   }
 
+  const { sourceRef, generatedAt } = getSourceMetadata(commonRoot);
+  const catalogFile = `playable-assets.s${season}.json`;
+
   const output = {
     season,
-    generatedAt: new Date().toISOString(),
-    sourceRepo: commonRoot,
+    generatedAt,
+    sourceRepo: UPSTREAM_REPO_URL,
+    sourceRef,
     assets,
   };
 
-  const outputPath = path.resolve(process.cwd(), `public/data/playable-assets.s${season}.json`);
+  const publicDataPath = path.resolve(process.cwd(), 'public/data');
+  const outputPath = path.join(publicDataPath, catalogFile);
   fs.mkdirSync(path.dirname(outputPath), { recursive: true });
   fs.writeFileSync(outputPath, JSON.stringify(output));
+
+  const manifestPath = path.join(publicDataPath, 'playable-catalog-manifest.json');
+  const manifest = {
+    currentSeason: season,
+    catalogFile,
+    generatedAt,
+    sourceRepo: UPSTREAM_REPO_URL,
+    sourceRef,
+  };
+  fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
+
   console.log(`Generated ${Object.keys(assets).length} playable assets to ${outputPath}`);
+  console.log(`Updated catalog manifest at ${manifestPath}`);
 };
 
 main();
