@@ -60,7 +60,7 @@ jobs:
           fi
 
           find . -mindepth 1 -maxdepth 1 ! -name '.git' ! -name 'pr-preview' -exec rm -rf {} +
-          rsync -a --delete --exclude 'pr-preview' "${GITHUB_WORKSPACE}/oink-soccer-calculator/dist/" ./
+          rsync -a --exclude '.git' --exclude 'pr-preview' "${GITHUB_WORKSPACE}/oink-soccer-calculator/dist/" ./
           touch .nojekyll
 
           if [ -z "$(git status --porcelain)" ]; then
