@@ -18,6 +18,53 @@ const normalizeAvatarUrl = (value) => {
   return null;
 };
 
+const extractImageFromMetadata = (metadata) => {
+  if (!metadata || typeof metadata !== 'object') {
+    return null;
+  }
+
+  const direct =
+    metadata.image ||
+    metadata.image_url ||
+    metadata.imageUrl ||
+    metadata.properties?.image ||
+    metadata.properties?.image_url ||
+    metadata.properties?.imageUrl ||
+    null;
+
+  return normalizeAvatarUrl(direct);
+};
+
+const resolveAvatarMediaUrl = async (avatarRaw, signal) => {
+  const candidateUrl = normalizeAvatarUrl(avatarRaw);
+  if (!candidateUrl) {
+    return null;
+  }
+
+  try {
+    const headResponse = await fetch(candidateUrl, { method: 'HEAD', signal });
+    const contentType = (headResponse.headers.get('content-type') || '').toLowerCase();
+
+    if (contentType.startsWith('image/')) {
+      return candidateUrl;
+    }
+
+    if (contentType.includes('application/json') || contentType.includes('text/plain')) {
+      const jsonResponse = await fetch(candidateUrl, { signal });
+      if (!jsonResponse.ok) {
+        return candidateUrl;
+      }
+      const metadata = await jsonResponse.json();
+      const resolvedImageUrl = extractImageFromMetadata(metadata);
+      return resolvedImageUrl || candidateUrl;
+    }
+  } catch (_) {
+    return candidateUrl;
+  }
+
+  return candidateUrl;
+};
+
 const pickLookupEntry = (payload, address) => {
   if (!payload || typeof payload !== 'object') {
     return null;
@@ -58,7 +105,7 @@ export const lookupNfdByAddress = async (address, signal) => {
   }
 
   const avatarRaw = entry?.properties?.userDefined?.avatar || entry?.properties?.verified?.avatar || null;
-  const avatarUrl = normalizeAvatarUrl(avatarRaw);
+  const avatarUrl = await resolveAvatarMediaUrl(avatarRaw, signal);
   const name = typeof entry?.name === 'string' && entry.name.length > 0 ? entry.name : null;
 
   return {

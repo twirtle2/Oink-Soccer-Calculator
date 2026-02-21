@@ -15,6 +15,7 @@ export default function WalletConnector({ onSync, isSyncing, syncMeta }) {
   const [open, setOpen] = useState(false);
   const [error, setError] = useState(null);
   const [primaryIdentity, setPrimaryIdentity] = useState(null);
+  const [avatarLoadFailed, setAvatarLoadFailed] = useState(false);
   const popoverRef = useRef(null);
 
   const connectedWallets = useMemo(
@@ -59,6 +60,10 @@ export default function WalletConnector({ onSync, isSyncing, syncMeta }) {
     return () => controller.abort();
   }, [primaryAddress]);
 
+  useEffect(() => {
+    setAvatarLoadFailed(false);
+  }, [primaryIdentity?.avatarUrl]);
+
   const handleConnect = async (wallet) => {
     setError(null);
     try {
@@ -88,11 +93,12 @@ export default function WalletConnector({ onSync, isSyncing, syncMeta }) {
         onClick={() => setOpen((prev) => !prev)}
         className="inline-flex items-center gap-2 rounded-2xl border border-slate-400/70 bg-slate-900/90 px-4 py-2 text-sm font-bold text-white shadow-glow transition hover:border-emerald-300"
       >
-        {primaryIdentity?.avatarUrl ? (
+        {primaryIdentity?.avatarUrl && !avatarLoadFailed ? (
           <img
             src={primaryIdentity.avatarUrl}
             alt={primaryIdentity.name || 'Connected wallet avatar'}
             className="h-5 w-5 rounded-full border border-emerald-400/40 bg-slate-800 object-cover"
+            onError={() => setAvatarLoadFailed(true)}
           />
         ) : (
           <Wallet size={16} className="text-emerald-300" />
