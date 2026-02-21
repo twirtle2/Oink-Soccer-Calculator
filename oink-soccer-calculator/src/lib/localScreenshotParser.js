@@ -459,6 +459,93 @@ const getCardBoxesFromCanvas = (canvas) => {
   return (loose.length > strict.length ? loose : strict).slice(0, 7);
 };
 
+const clampBoxToCanvas = (box, width, height) => ({
+  x0: Math.max(0, Math.min(width - 1, box.x0)),
+  y0: Math.max(0, Math.min(height - 1, box.y0)),
+  x1: Math.max(0, Math.min(width - 1, box.x1)),
+  y1: Math.max(0, Math.min(height - 1, box.y1)),
+});
+
+const getTemplateCardBoxes = (canvas, formationKey) => {
+  const { width, height } = canvas;
+  const cardW = Math.round(width * 0.21);
+  const cardH = Math.round(height * 0.22);
+  const hw = Math.round(cardW / 2);
+  const hh = Math.round(cardH / 2);
+
+  const centerLayouts = {
+    Diamond: [
+      [0.50, 0.18],
+      [0.22, 0.40],
+      [0.78, 0.40],
+      [0.50, 0.62],
+      [0.50, 0.83],
+    ],
+    Pyramid: [
+      [0.50, 0.16],
+      [0.34, 0.37],
+      [0.66, 0.37],
+      [0.50, 0.58],
+      [0.50, 0.81],
+    ],
+    Y: [
+      [0.36, 0.20],
+      [0.64, 0.20],
+      [0.50, 0.41],
+      [0.50, 0.62],
+      [0.50, 0.83],
+    ],
+    Box: [
+      [0.36, 0.20],
+      [0.64, 0.20],
+      [0.36, 0.43],
+      [0.64, 0.43],
+      [0.50, 0.83],
+    ],
+    default: [
+      [0.50, 0.18],
+      [0.22, 0.40],
+      [0.78, 0.40],
+      [0.50, 0.62],
+      [0.50, 0.83],
+    ],
+  };
+
+  const centers = centerLayouts[formationKey] || centerLayouts.default;
+  return centers.map(([cxRatio, cyRatio]) =>
+    clampBoxToCanvas({
+      x0: Math.round((cxRatio * width) - hw),
+      y0: Math.round((cyRatio * height) - hh),
+      x1: Math.round((cxRatio * width) + hw),
+      y1: Math.round((cyRatio * height) + hh),
+    }, width, height),
+  );
+};
+
+const mergeCandidateBoxes = (detected, templates) => {
+  if (!Array.isArray(detected) || detected.length === 0) {
+    return templates;
+  }
+  if (detected.length >= 5) {
+    return detected.slice(0, 7);
+  }
+
+  const merged = [...detected];
+  for (const t of templates) {
+    const duplicate = merged.some((box) => {
+      const overlapX = Math.max(0, Math.min(box.x1, t.x1) - Math.max(box.x0, t.x0));
+      const overlapY = Math.max(0, Math.min(box.y1, t.y1) - Math.max(box.y0, t.y0));
+      const overlapArea = overlapX * overlapY;
+      const tArea = Math.max(1, (t.x1 - t.x0) * (t.y1 - t.y0));
+      return (overlapArea / tArea) > 0.45;
+    });
+    if (!duplicate) {
+      merged.push(t);
+    }
+  }
+  return merged.slice(0, 7);
+};
+
 const cropCanvas = (sourceCanvas, box) => {
   const width = box.x1 - box.x0 + 1;
   const height = box.y1 - box.y0 + 1;
@@ -535,9 +622,13 @@ export const parseOpponentScreenshotsLocally = async (files, onProgress) => {
       const canvas = await toCanvasFromFile(file);
       const fullOcr = await recognize(canvas, 'eng', OCR_OPTIONS);
       const fullText = fullOcr?.data?.text || '';
-      formationVotes.push(detectFormationKey(fullText));
+      const formationKey = detectFormationKey(fullText);
+      formationVotes.push(formationKey);
 
-      const cardBoxes = getCardBoxesFromCanvas(canvas);
+      const cardBoxes = mergeCandidateBoxes(
+        getCardBoxesFromCanvas(canvas),
+        getTemplateCardBoxes(canvas, formationKey),
+      );
       const cardPlayers = [];
 
       for (let i = 0; i < cardBoxes.length; i += 1) {
