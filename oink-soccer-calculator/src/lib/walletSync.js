@@ -58,6 +58,9 @@ export const buildWalletPlayers = (heldAssetIds, catalogByAssetId) => {
       assetKey: entry.assetKey,
       playerName: entry.playerName,
       season: entry.season,
+      positions: Array.isArray(entry.positions) && entry.positions.length > 0
+        ? entry.positions
+        : [entry.pos],
     });
   }
 

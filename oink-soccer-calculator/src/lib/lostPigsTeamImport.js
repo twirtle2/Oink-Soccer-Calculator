@@ -142,6 +142,9 @@ const mapTeamPayloadToPlayers = (teamId, payload) => {
       injury: null,
       source: 'team-url',
       imageUrl: slot.asset?.image_url || slot.asset?.image || attrs.image_url || null,
+      positions: Array.isArray(attrs.positions) && attrs.positions.length > 0
+        ? attrs.positions.map(p => getPositionKey(p, stats))
+        : [pos],
     };
   });
 

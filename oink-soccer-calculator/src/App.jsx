@@ -103,10 +103,46 @@ const calculateTeamScores = (players, formationKey, boostContext) => {
 
   if (players.length === 0) return stats;
 
-  const byPos = { GK: [], DF: [], MF: [], FW: [] };
-  players.forEach(p => {
-    if (byPos[p.pos]) byPos[p.pos].push(p);
-  });
+  const assignPositions = (squad, structure) => {
+    let bestAssignment = null;
+    let minDeficit = Infinity;
+
+    const backtrack = (index, currentAssigned, currentCounts) => {
+      if (index === squad.length) {
+        let deficit = 0;
+        for (const pos of ['GK', 'DF', 'MF', 'FW']) {
+          deficit += Math.max(0, structure[pos] - currentCounts[pos]);
+        }
+        if (deficit < minDeficit) {
+          minDeficit = deficit;
+          bestAssignment = {
+            GK: [...currentAssigned.GK],
+            DF: [...currentAssigned.DF],
+            MF: [...currentAssigned.MF],
+            FW: [...currentAssigned.FW]
+          };
+        }
+        return;
+      }
+
+      const p = squad[index];
+      const validPos = p.positions && p.positions.length > 0 ? p.positions : [p.pos];
+
+      for (const pos of validPos) {
+        currentAssigned[pos].push(p);
+        currentCounts[pos]++;
+        backtrack(index + 1, currentAssigned, currentCounts);
+        currentCounts[pos]--;
+        currentAssigned[pos].pop();
+        if (minDeficit === 0) return; // Opt: first perfect assignment is sufficient
+      }
+    };
+
+    backtrack(0, { GK: [], DF: [], MF: [], FW: [] }, { GK: 0, DF: 0, MF: 0, FW: 0 });
+    return bestAssignment || { GK: [], DF: [], MF: [], FW: [] };
+  };
+
+  const byPos = assignPositions(players, form.structure);
 
   const getAvgWithInjury = (list, scoreFn) => {
     if (list.length === 0) return 0;
@@ -752,8 +788,9 @@ export default function OinkSoccerCalc() {
       id: editingId || Date.now(),
       ovr: getOfficialOvr(newPlayer.stats, newPlayer.pos),
       injury: newPlayer.injury === 'None' ? null : newPlayer.injury,
-      source: existingPlayer?.source || 'manual'
+      source: existingPlayer?.source || 'manual',
     };
+    p.positions = existingPlayer?.positions || [p.pos];
 
     let newList;
     if (editingId) {
@@ -812,7 +849,11 @@ export default function OinkSoccerCalc() {
       return;
     }
 
-    const samePosIndex = myTeam.findIndex(p => p.pos === benchPlayer.pos);
+    const playerValidPos = benchPlayer.positions || [benchPlayer.pos];
+    const samePosIndex = myTeam.findIndex(p => {
+      const activeValidPos = p.positions || [p.pos];
+      return activeValidPos.some(pos => playerValidPos.includes(pos));
+    });
     if (samePosIndex !== -1) {
       const newActive = [...myTeam];
       newActive[samePosIndex] = benchPlayer;
@@ -875,7 +916,10 @@ export default function OinkSoccerCalc() {
 
     const byPos = { GK: [], DF: [], MF: [], FW: [] };
     mySquad.forEach(p => {
-      if (byPos[p.pos]) byPos[p.pos].push(p);
+      const validPos = p.positions && p.positions.length > 0 ? p.positions : [p.pos];
+      validPos.forEach(pos => {
+        if (byPos[pos]) byPos[pos].push(p);
+      });
     });
 
     // Iterate all formations
@@ -904,6 +948,11 @@ export default function OinkSoccerCalc() {
           for (const mfs of mfCombos) {
             for (const fws of fwCombos) {
               const lineup = [...gks, ...dfs, ...mfs, ...fws];
+
+              // Ensure a single player is not fielding multiple positions
+              if (new Set(lineup.map(p => p.id)).size !== lineup.length) {
+                continue;
+              }
 
               // Calculate stats for this lineup
               const stats = calculateTeamScores(lineup, formKey, mySimulationBoostContext);
@@ -1733,11 +1782,12 @@ function AssetAvatar({ player }) {
     };
   }, [player.assetId, player.imageUrl, player.id]);
 
-  const badgeClass = player.pos === 'GK'
+  const primaryPos = player.positions && player.positions.length > 0 ? player.positions[0] : player.pos;
+  const badgeClass = primaryPos === 'GK'
     ? 'bg-[#b8860b] text-white'
-    : player.pos === 'DF'
+    : primaryPos === 'DF'
       ? 'bg-[#1e5fa8] text-white'
-      : player.pos === 'MF'
+      : primaryPos === 'MF'
         ? 'bg-[#1a7a3a] text-white'
         : 'bg-[#cc3333] text-white';
 
@@ -1759,7 +1809,7 @@ function AssetAvatar({ player }) {
         className={`absolute -bottom-1 -right-1 rounded-[3px] px-1 py-0.5 font-['Barlow_Condensed'] text-[9px] font-bold leading-none ${badgeClass}`}
         style={{ border: '1.5px solid #111620' }}
       >
-        {player.pos}
+        {(player.positions && player.positions.length > 0 ? player.positions : [player.pos]).join('/')}
       </div>
     </div>
   );
