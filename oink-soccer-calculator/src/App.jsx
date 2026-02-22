@@ -38,10 +38,20 @@ const POSITIONS = {
 };
 
 // --- Event Count Logic (Home/Away Bias) ---
-const getAverageEvents = (homeFormKey, awayFormKey) => {
+const getAverageEvents = (homeFormKey, awayFormKey, homeAdvantage) => {
   const homeStyle = FORMATIONS[homeFormKey]?.style || 'BAL';
   const awayStyle = FORMATIONS[awayFormKey]?.style || 'BAL';
-  const key = `HOME:${homeStyle}|AWAY:${awayStyle}`;
+
+  // In the core game, the truth table is fixed as HOME:formation|AWAY:formation.
+  // We need to decide which team is 'Home' and which is 'Away' based on the user's toggle.
+  let key;
+  if (homeAdvantage === 'home') {
+    // My team is Home
+    key = `HOME:${homeStyle}|AWAY:${awayStyle}`;
+  } else {
+    // Opponent team is Home
+    key = `HOME:${awayStyle}|AWAY:${homeStyle}`;
+  }
 
   const range = FORMATION_CHANCE_RANGES[key] || { min: 3, max: 10 };
   return (range.min + range.max) / 2;
@@ -562,23 +572,6 @@ export default function OinkSoccerCalc() {
       return { win: '50.0', myPossession: '50', myxG: '0.00', oppxG: '0.00' };
     }
 
-    // Home/Away modifiers
-    const HOME_ATTACK_BOOST = 1.05;
-    const HOME_DEFENSE_BOOST = 1.03;
-    const AWAY_ATTACK_PENALTY = 0.97;
-    const AWAY_DEFENSE_PENALTY = 0.98;
-
-    // Apply modifiers based on home/away status
-    const myAttackMod = homeAdvantage === 'home' ? HOME_ATTACK_BOOST : AWAY_ATTACK_PENALTY;
-    const myDefenseMod = homeAdvantage === 'home' ? HOME_DEFENSE_BOOST : AWAY_DEFENSE_PENALTY;
-    const oppAttackMod = homeAdvantage === 'home' ? AWAY_ATTACK_PENALTY : HOME_ATTACK_BOOST;
-    const oppDefenseMod = homeAdvantage === 'home' ? AWAY_DEFENSE_PENALTY : HOME_DEFENSE_BOOST;
-
-    const myModifiedAttack = myStats.Attack * myAttackMod;
-    const myModifiedDefense = myStats.Defense * myDefenseMod;
-    const oppModifiedAttack = oppStats.Attack * oppAttackMod;
-    const oppModifiedDefense = oppStats.Defense * oppDefenseMod;
-
     const totalControl = myStats.Control + oppStats.Control;
     const myPossession = totalControl === 0 ? 0.5 : (myStats.Control / totalControl);
 
@@ -587,10 +580,10 @@ export default function OinkSoccerCalc() {
       return Math.max(0.01, Math.min(0.9, 0.15 * (ratio ** 1.5)));
     };
 
-    const myGoalProb = calcGoalProb(myModifiedAttack, oppModifiedDefense);
-    const oppGoalProb = calcGoalProb(oppModifiedAttack, myModifiedDefense);
+    const myGoalProb = calcGoalProb(myStats.Attack, oppStats.Defense);
+    const oppGoalProb = calcGoalProb(oppStats.Attack, myStats.Defense);
 
-    const AVG_EVENTS = getAverageEvents(myForm, oppForm);
+    const AVG_EVENTS = getAverageEvents(myForm, oppForm, homeAdvantage);
     const myEvents = AVG_EVENTS * myPossession;
     const oppEvents = AVG_EVENTS * (1 - myPossession);
 
@@ -928,7 +921,7 @@ export default function OinkSoccerCalc() {
               const myGoalProb = calcGoalProb(stats.Attack, oppStats.Defense);
               const oppGoalProb = calcGoalProb(oppStats.Attack, stats.Defense);
 
-              const AVG_EVENTS = getAverageEvents(formKey, oppForm);
+              const AVG_EVENTS = getAverageEvents(formKey, oppForm, homeAdvantage);
               const myEvents = AVG_EVENTS * myPossession;
               const oppEvents = AVG_EVENTS * (1 - myPossession);
 
@@ -1074,9 +1067,8 @@ export default function OinkSoccerCalc() {
                 <button
                   key={tab.key}
                   onClick={() => setActiveTab(tab.key)}
-                  className={`relative flex items-center gap-1.5 px-4 py-3 text-sm font-semibold transition ${
-                    isActive ? 'text-[#e8edf5]' : 'text-[#6b7a94] hover:text-[#9aa5bb]'
-                  }`}
+                  className={`relative flex items-center gap-1.5 px-4 py-3 text-sm font-semibold transition ${isActive ? 'text-[#e8edf5]' : 'text-[#6b7a94] hover:text-[#9aa5bb]'
+                    }`}
                 >
                   <span>{tab.icon}</span>
                   <span>{tab.label}</span>
@@ -1353,11 +1345,10 @@ export default function OinkSoccerCalc() {
                       <button
                         key={team.teamId}
                         onClick={() => setSelectedOpponentTeamId(team.teamId)}
-                        className={`w-full rounded-md border px-2 py-1.5 text-left text-xs transition ${
-                          selectedOpponentTeamId === team.teamId
-                            ? 'border-[#2979ff] bg-[#0f1f39] text-[#9fc6ff]'
-                            : 'border-[#1e2a3a] bg-[#141a26] text-[#d0d7e5] hover:border-[#2f3f59]'
-                        }`}
+                        className={`w-full rounded-md border px-2 py-1.5 text-left text-xs transition ${selectedOpponentTeamId === team.teamId
+                          ? 'border-[#2979ff] bg-[#0f1f39] text-[#9fc6ff]'
+                          : 'border-[#1e2a3a] bg-[#141a26] text-[#d0d7e5] hover:border-[#2f3f59]'
+                          }`}
                       >
                         <div className="font-semibold">{team.teamName}</div>
                         <div className="text-[10px] text-[#7f8aa3]">{team.teamId}</div>
@@ -1395,13 +1386,12 @@ export default function OinkSoccerCalc() {
               </div>
 
               {uploadStatus && (
-                <div className={`mt-2 rounded-md border px-2 py-1.5 text-xs ${
-                  uploadStatus.tone === 'success'
-                    ? 'border-[#00e676]/40 bg-[#00e676]/10 text-[#9af7cb]'
-                    : uploadStatus.tone === 'error'
-                      ? 'border-[#ff4444]/50 bg-[#ff4444]/10 text-[#ff9e9e]'
-                      : 'border-[#2979ff]/40 bg-[#2979ff]/10 text-[#9fc6ff]'
-                }`}>
+                <div className={`mt-2 rounded-md border px-2 py-1.5 text-xs ${uploadStatus.tone === 'success'
+                  ? 'border-[#00e676]/40 bg-[#00e676]/10 text-[#9af7cb]'
+                  : uploadStatus.tone === 'error'
+                    ? 'border-[#ff4444]/50 bg-[#ff4444]/10 text-[#ff9e9e]'
+                    : 'border-[#2979ff]/40 bg-[#2979ff]/10 text-[#9fc6ff]'
+                  }`}>
                   {uploadStatus.message}
                 </div>
               )}
@@ -1431,13 +1421,13 @@ export default function OinkSoccerCalc() {
                     onClick={() => handleHomeAwayToggle('home')}
                     className={`w-full rounded-md border px-3 py-2 text-left text-sm ${homeAdvantage === 'home' ? 'border-[#00e676] bg-[#111620] text-[#00e676]' : 'border-[#1e2a3a] text-[#9aa5bb]'}`}
                   >
-                    🏠 Home (+5% ATT / +3% DEF)
+                    🏠 My Team Home (Tempo Bias)
                   </button>
                   <button
                     onClick={() => handleHomeAwayToggle('away')}
                     className={`w-full rounded-md border px-3 py-2 text-left text-sm ${homeAdvantage === 'away' ? 'border-[#00e676] bg-[#111620] text-[#00e676]' : 'border-[#1e2a3a] text-[#9aa5bb]'}`}
                   >
-                    ✈️ Away (-3% ATT / -2% DEF)
+                    ✈️ Opponent Home (Tempo Bias)
                   </button>
                 </div>
               </div>
@@ -1450,13 +1440,12 @@ export default function OinkSoccerCalc() {
                       key={key}
                       disabled={!manualBoostFallbackActive}
                       onClick={() => handleBoostChange(key)}
-                      className={`rounded-full border px-3 py-1 text-xs font-semibold ${
-                        myBoost === key
-                          ? key === 'None'
-                            ? 'border-[#253040] bg-[#161c28] text-[#e8edf5]'
-                            : 'border-[#ffab00] bg-[#ffab00] text-black'
-                          : 'border-[#1e2a3a] bg-[#111620] text-[#9aa5bb]'
-                      } ${manualBoostFallbackActive ? '' : 'cursor-not-allowed opacity-50'}`}
+                      className={`rounded-full border px-3 py-1 text-xs font-semibold ${myBoost === key
+                        ? key === 'None'
+                          ? 'border-[#253040] bg-[#161c28] text-[#e8edf5]'
+                          : 'border-[#ffab00] bg-[#ffab00] text-black'
+                        : 'border-[#1e2a3a] bg-[#111620] text-[#9aa5bb]'
+                        } ${manualBoostFallbackActive ? '' : 'cursor-not-allowed opacity-50'}`}
                     >
                       {BOOSTS[key].label}
                     </button>
@@ -1891,11 +1880,10 @@ function PlayerRow({ player, onInjuryOpen, onSwap, isBench }) {
       <div className="flex items-center justify-end border-t border-[#1e2a3a] px-[14px] py-2">
         <button
           onClick={onInjuryOpen}
-          className={`inline-flex items-center gap-1 rounded-[5px] border px-3 py-1.5 text-[11px] font-semibold transition-colors ${
-            player.injury
-              ? 'border-[rgba(255,171,0,0.4)] bg-[rgba(255,171,0,0.08)] text-[#ffab00]'
-              : 'border-[#1e2a3a] text-[#6b7a94] hover:border-[#ffab00] hover:text-[#ffab00]'
-          }`}
+          className={`inline-flex items-center gap-1 rounded-[5px] border px-3 py-1.5 text-[11px] font-semibold transition-colors ${player.injury
+            ? 'border-[rgba(255,171,0,0.4)] bg-[rgba(255,171,0,0.08)] text-[#ffab00]'
+            : 'border-[#1e2a3a] text-[#6b7a94] hover:border-[#ffab00] hover:text-[#ffab00]'
+            }`}
         >
           🩹 {player.injury ? INJURIES[player.injury].label : 'Injury'}
         </button>
