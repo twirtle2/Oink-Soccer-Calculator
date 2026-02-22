@@ -1414,23 +1414,7 @@ export default function OinkSoccerCalc() {
         {activeTab === 'conditions' && (
           <section id="tab-conditions" className="space-y-4">
             <div className="grid grid-cols-1 gap-3 min-[500px]:grid-cols-2">
-              <div className="rounded-[10px] border border-[#1e2a3a] bg-[#161c28] p-4">
-                <div className="mb-2 text-[11px] font-bold uppercase tracking-[0.1em] text-[#6b7a94]">📍 Location</div>
-                <div className="space-y-2">
-                  <button
-                    onClick={() => handleHomeAwayToggle('home')}
-                    className={`w-full rounded-md border px-3 py-2 text-left text-sm ${homeAdvantage === 'home' ? 'border-[#00e676] bg-[#111620] text-[#00e676]' : 'border-[#1e2a3a] text-[#9aa5bb]'}`}
-                  >
-                    🏠 My Team Home (Tempo Bias)
-                  </button>
-                  <button
-                    onClick={() => handleHomeAwayToggle('away')}
-                    className={`w-full rounded-md border px-3 py-2 text-left text-sm ${homeAdvantage === 'away' ? 'border-[#00e676] bg-[#111620] text-[#00e676]' : 'border-[#1e2a3a] text-[#9aa5bb]'}`}
-                  >
-                    ✈️ Opponent Home (Tempo Bias)
-                  </button>
-                </div>
-              </div>
+              {/* Location selection hidden as it only affects match tempo (xG volume) without changing win probability ratios in core game logic */}
 
               <div className="rounded-[10px] border border-[#1e2a3a] bg-[#161c28] p-4">
                 <div className="mb-2 text-[11px] font-bold uppercase tracking-[0.1em] text-[#6b7a94]">⚡ Active Boost</div>
