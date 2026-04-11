@@ -65,7 +65,7 @@ Notes:
 - `.github/workflows/deploy-pages.yml`: builds and deploys production site to `gh-pages` on push to `main`.
 - `.github/workflows/deploy-pages-preview.yml`: builds and deploys PR previews to `gh-pages/pr-preview/pr-<number>/`.
 - `.github/workflows/cleanup-pages-preview.yml`: removes PR preview path after PR close.
-- `.github/workflows/upstream-sync.yml`: weekly upstream sync that opens a PR when data/rules change.
+- `.github/workflows/upstream-sync.yml`: daily upstream sync that opens a PR when data/rules change.
 - `.github/workflows/upstream-drift-check.yml`: runs on push/PR and fails on upstream drift.
 
 ## GitHub Pages
