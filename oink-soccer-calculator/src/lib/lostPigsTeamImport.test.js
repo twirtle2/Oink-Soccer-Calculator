@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 
 import {
   fetchCurrentSeason,
+  fetchGameCounter,
+  fetchLeagueRoundFixtures,
   fetchTeamActiveBoosts,
   fetchTeamBoostEffectiveness,
   fetchTeamBoostState,
@@ -31,6 +33,47 @@ test('fetchCurrentSeason reads the season from game-counter', async () => {
   }, async () => {
     const season = await fetchCurrentSeason();
     assert.equal(season, 14);
+  });
+});
+
+test('fetchGameCounter normalizes season and current round', async () => {
+  await withMockedFetch(async (url) => {
+    assert.match(String(url), /\/soccer\/game-counter$/);
+    return okResponse({
+      season: '16',
+      game_round: '2',
+      games_per_season: '44',
+      is_active: true,
+    });
+  }, async () => {
+    const counter = await fetchGameCounter();
+    assert.deepEqual(counter, {
+      season: 16,
+      game_round: 2,
+      games_per_season: 44,
+      is_active: true,
+    });
+  });
+});
+
+test('fetchLeagueRoundFixtures uses the game fixture endpoint', async () => {
+  await withMockedFetch(async (url) => {
+    assert.match(String(url), /\/soccer\/league\/2\/season\/16\/round\/3\/fixtures$/);
+    return okResponse({
+      fixtures: [
+        {
+          game_key: 'fixture-1',
+          home_team_id: 'AlgorandAsset:1',
+          away_team_id: 'AlgorandAsset:2',
+        },
+      ],
+    });
+  }, async () => {
+    const result = await fetchLeagueRoundFixtures({ leagueId: '2', season: 16, round: 3 });
+    assert.equal(result.season, 16);
+    assert.equal(result.round, 3);
+    assert.equal(result.fixtures.length, 1);
+    assert.equal(result.fixtures[0].away_team_id, 'AlgorandAsset:2');
   });
 });
 

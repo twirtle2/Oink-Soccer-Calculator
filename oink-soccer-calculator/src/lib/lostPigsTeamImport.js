@@ -262,8 +262,38 @@ export const fetchLeagueTeamsIndex = async () => {
 };
 
 export const fetchCurrentSeason = async () => {
-  const payload = await fetchJsonOrThrow('/soccer/game-counter');
+  const payload = await fetchGameCounter();
   return normalizeSeasonValue(payload?.season);
+};
+
+export const fetchGameCounter = async () => {
+  const payload = await fetchJsonOrThrow('/soccer/game-counter');
+  return {
+    season: normalizeSeasonValue(payload?.season),
+    game_round: Number.parseInt(String(payload?.game_round || 1), 10) || 1,
+    games_per_season: Number.parseInt(String(payload?.games_per_season || 0), 10) || 0,
+    is_active: Boolean(payload?.is_active),
+  };
+};
+
+export const fetchLeagueRoundFixtures = async ({ leagueId, season, round }) => {
+  const normalizedLeagueId = String(leagueId || '').trim();
+  if (!normalizedLeagueId) {
+    throw new Error('Missing leagueId for fixtures fetch.');
+  }
+
+  const normalizedSeason = normalizeSeasonValue(season);
+  const normalizedRound = Number.parseInt(String(round || 1), 10) || 1;
+  const payload = await fetchJsonOrThrow(
+    `/soccer/league/${encodeURIComponent(normalizedLeagueId)}/season/${encodeURIComponent(String(normalizedSeason))}/round/${encodeURIComponent(String(normalizedRound))}/fixtures`,
+    'League fixtures not found.',
+  );
+
+  return {
+    fixtures: Array.isArray(payload?.fixtures) ? payload.fixtures : [],
+    season: normalizedSeason,
+    round: normalizedRound,
+  };
 };
 
 export const fetchLeagueTableTeams = async (leagueId) => {

@@ -8,6 +8,8 @@ import { fetchHeldAssetIdsForAddresses } from './lib/indexer';
 import { buildWalletPlayers, mergeWalletPlayers } from './lib/walletSync';
 import {
   fetchCurrentSeason,
+  fetchGameCounter,
+  fetchLeagueRoundFixtures,
   fetchLeagueTableTeams,
   fetchLeagueTeamsIndex,
   fetchTeamBoostState,
@@ -677,6 +679,10 @@ export default function OinkSoccerCalc() {
   const [selectedLeagueName, setSelectedLeagueName] = useState('');
   const [leagueTeams, setLeagueTeams] = useState([]);
   const [leagueTeamsLoading, setLeagueTeamsLoading] = useState(false);
+  const [gameCounter, setGameCounter] = useState(null);
+  const [fixtures, setFixtures] = useState([]);
+  const [fixturesLoading, setFixturesLoading] = useState(false);
+  const [selectedFixtureKey, setSelectedFixtureKey] = useState('');
   const [detectedMyTeamIds, setDetectedMyTeamIds] = useState([]);
   const [opponentSearchInput, setOpponentSearchInput] = useState('');
   const [selectedOpponentTeamId, setSelectedOpponentTeamId] = useState('');
@@ -697,7 +703,7 @@ export default function OinkSoccerCalc() {
   const [myBoostApps] = useState(persistedState.myBoostApps || 1);
   const [myBoostState, setMyBoostState] = useState(createManualFallbackBoostState(persistedState.myBoost || 'None', persistedState.myBoostApps || 1));
   const [oppBoostState, setOppBoostState] = useState(TEAM_BOOST_STATE_EMPTY);
-  const [homeAdvantage] = useState(persistedState.homeAdvantage || 'home'); // 'home' or 'away'
+  const [homeAdvantage, setHomeAdvantage] = useState(persistedState.homeAdvantage || 'home'); // 'home' or 'away'
   const [walletSyncMeta, setWalletSyncMeta] = useState(
     persistedState.walletSyncMeta || {
       lastSyncedAt: null,
@@ -707,7 +713,7 @@ export default function OinkSoccerCalc() {
     },
   );
 
-  const [activeTab, setActiveTab] = useState('squad');
+  const [activeTab, setActiveTab] = useState('upcoming');
   const [editingId, setEditingId] = useState(null);
   const [formTarget, setFormTarget] = useState('mySquad');
   const [showManualForm, setShowManualForm] = useState(false);
@@ -763,6 +769,20 @@ export default function OinkSoccerCalc() {
     const candidates = (leagueTeams || []).filter((team) => !blocked.has(team.teamId));
     return findTeamsByName(candidates, opponentSearchInput).slice(0, 25);
   }, [detectedMyTeamIds, leagueTeams, opponentSearchInput]);
+
+  const myFixtureRows = useMemo(() => {
+    if (detectedMyTeamIds.length === 0) return [];
+    const myTeams = new Set(detectedMyTeamIds);
+    return fixtures.filter((fixture) => myTeams.has(fixture.home_team_id) || myTeams.has(fixture.away_team_id));
+  }, [detectedMyTeamIds, fixtures]);
+
+  const visibleFixtures = myFixtureRows.length > 0 ? myFixtureRows : fixtures;
+
+  const fixtureRound = gameCounter?.game_round && gameCounter.game_round > 0
+    ? gameCounter.game_round
+    : 1;
+
+  const fixtureSeason = gameCounter?.season || catalogSeason;
 
   const getLeagueIdForTeamId = useCallback((teamId) => {
     if (!teamId || !leagueIndex?.allTeams) return null;
@@ -859,6 +879,25 @@ export default function OinkSoccerCalc() {
   }, []);
 
   useEffect(() => {
+    let cancelled = false;
+
+    void fetchGameCounter()
+      .then((payload) => {
+        if (cancelled) return;
+        setGameCounter(payload);
+      })
+      .catch((error) => {
+        if (cancelled) return;
+        const message = error instanceof Error ? error.message : 'Failed to load game round.';
+        setUploadStatus({ tone: 'error', message });
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
     if (!leagueIndex) return;
 
     let cancelled = false;
@@ -928,6 +967,48 @@ export default function OinkSoccerCalc() {
       cancelled = true;
     };
   }, [selectedLeagueId]);
+
+  useEffect(() => {
+    if (!selectedLeagueId || !fixtureSeason) {
+      setFixtures([]);
+      setSelectedFixtureKey('');
+      return;
+    }
+
+    let cancelled = false;
+    setFixturesLoading(true);
+
+    void fetchLeagueRoundFixtures({
+      leagueId: selectedLeagueId,
+      season: fixtureSeason,
+      round: fixtureRound,
+    })
+      .then((payload) => {
+        if (cancelled) return;
+        setFixtures(payload.fixtures);
+        setSelectedFixtureKey((current) => (
+          current && payload.fixtures.some((fixture) => fixture.game_key === current)
+            ? current
+            : ''
+        ));
+      })
+      .catch((error) => {
+        if (cancelled) return;
+        const message = error instanceof Error ? error.message : 'Failed to load fixtures.';
+        setUploadStatus({ tone: 'error', message });
+        setFixtures([]);
+        setSelectedFixtureKey('');
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setFixturesLoading(false);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [fixtureRound, fixtureSeason, selectedLeagueId]);
 
   useEffect(() => {
     if (!selectedOpponentTeamId) return;
@@ -1174,6 +1255,44 @@ export default function OinkSoccerCalc() {
     }
     await importOpponentFromInput(candidateTeamId);
   }, [filteredOpponentOptions, importOpponentFromInput, selectedOpponentTeamId]);
+
+  const handleHomeAdvantageChange = useCallback((value) => {
+    setHomeAdvantage(value);
+    saveToDb({ homeAdvantage: value });
+  }, [saveToDb]);
+
+  const handleSelectFixture = useCallback(async (fixture, { quiet = false } = {}) => {
+    if (!fixture) return;
+    const myTeams = new Set(detectedMyTeamIds);
+    const isHome = myTeams.has(fixture.home_team_id);
+    const isAway = myTeams.has(fixture.away_team_id);
+    const opponentId = isHome
+      ? fixture.away_team_id
+      : isAway
+        ? fixture.home_team_id
+        : fixture.away_team_id;
+    const nextHomeAdvantage = isAway ? 'away' : 'home';
+
+    setSelectedFixtureKey(fixture.game_key || '');
+    setHomeAdvantage(nextHomeAdvantage);
+    saveToDb({ homeAdvantage: nextHomeAdvantage });
+
+    if (!opponentId) {
+      if (!quiet) {
+        setUploadStatus({ tone: 'error', message: 'Could not identify opponent from that fixture.' });
+      }
+      return;
+    }
+
+    await importOpponentFromInput(opponentId);
+  }, [detectedMyTeamIds, importOpponentFromInput, saveToDb]);
+
+  useEffect(() => {
+    if (importingTeamUrl || selectedFixtureKey || myFixtureRows.length === 0) return;
+    const nextFixture = myFixtureRows.find((fixture) => !fixture.game_result) || myFixtureRows[0];
+    if (!nextFixture) return;
+    void handleSelectFixture(nextFixture, { quiet: true });
+  }, [handleSelectFixture, importingTeamUrl, myFixtureRows, selectedFixtureKey]);
 
   const handleFormChange = (type, val) => {
     if (type === 'my') {
@@ -1528,25 +1647,11 @@ export default function OinkSoccerCalc() {
   };
 
   const tabItems = useMemo(() => ([
+    { key: 'upcoming', icon: '📅', label: 'Upcoming' },
     { key: 'squad', icon: '👥', label: 'Squad' },
-    { key: 'opponent', icon: '⚔️', label: 'Opponent' },
     { key: 'conditions', icon: '⚡', label: 'Conditions' },
-    { key: 'simulation', icon: '📊', label: 'Simulation' },
     { key: 'bench', icon: '🪑', label: 'Bench' },
   ]), []);
-
-  const winPct = Number.parseFloat(simulation.win) || 0;
-  const scoreGap = Number(simulation.myxG) - Number(simulation.oppxG);
-  const drawPct = Math.max(12, Math.min(34, 24 - Math.abs(scoreGap) * 7));
-  const remaining = Math.max(0, 100 - drawPct);
-  const winShare = Math.max(0, Math.min(1, winPct / 100));
-  const forecastWin = Number((remaining * winShare).toFixed(1));
-  const forecastLoss = Number((100 - drawPct - forecastWin).toFixed(1));
-  const forecastDraw = Number((100 - forecastWin - forecastLoss).toFixed(1));
-
-  const controlDelta = Number((myStats.Control - oppStats.Control).toFixed(1));
-  const defenseDelta = Number((myStats.Defense - oppStats.Defense).toFixed(1));
-  const attackDelta = Number((myStats.Attack - oppStats.Attack).toFixed(1));
 
   const suggestionList = useMemo(() => (
     Object.values(suggestions)
@@ -1563,6 +1668,33 @@ export default function OinkSoccerCalc() {
   ), [activeSuggestions]);
 
   const topSuggestion = activeSuggestionList[0] || null;
+
+  const headlineProjection = topSuggestion
+    ? {
+      label: 'Best Setup Projection',
+      win: formatNumber(topSuggestion.win),
+      myxG: formatNumber(topSuggestion.myxG, 2),
+      oppxG: formatNumber(topSuggestion.oppxG, 2),
+    }
+    : {
+      label: 'Current Setup Projection',
+      win: simulation.win,
+      myxG: simulation.myxG,
+      oppxG: simulation.oppxG,
+    };
+
+  const winPct = Number.parseFloat(headlineProjection.win) || 0;
+  const scoreGap = Number(headlineProjection.myxG) - Number(headlineProjection.oppxG);
+  const drawPct = Math.max(12, Math.min(34, 24 - Math.abs(scoreGap) * 7));
+  const remaining = Math.max(0, 100 - drawPct);
+  const winShare = Math.max(0, Math.min(1, winPct / 100));
+  const forecastWin = Number((remaining * winShare).toFixed(1));
+  const forecastLoss = Number((100 - drawPct - forecastWin).toFixed(1));
+  const forecastDraw = Number((100 - forecastWin - forecastLoss).toFixed(1));
+
+  const controlDelta = Number((myStats.Control - oppStats.Control).toFixed(1));
+  const defenseDelta = Number((myStats.Defense - oppStats.Defense).toFixed(1));
+  const attackDelta = Number((myStats.Attack - oppStats.Attack).toFixed(1));
 
   const copySuggestion = useCallback(async (suggestion) => {
     if (!suggestion?.formation) return;
@@ -1677,19 +1809,19 @@ export default function OinkSoccerCalc() {
       <section className="border-b border-[#1e2a3a] bg-[linear-gradient(135deg,#161c28,rgba(0,230,118,0.05))]">
         <div className="mx-auto flex max-w-[1200px] items-center justify-between gap-6 px-4 py-3 md:px-6">
           <div>
-            <div className="text-[10px] font-bold uppercase tracking-[0.14em] text-[#6b7a94]">Win Probability</div>
-            <div className="font-['Barlow_Condensed'] text-[42px] font-black leading-none text-[#00e676]">{simulation.win}%</div>
-            <div className="text-[11px] text-[#6b7a94]">Based on {(Number(simulation.myxG) + Number(simulation.oppxG)).toFixed(2)} simulated goals</div>
+            <div className="text-[10px] font-bold uppercase tracking-[0.14em] text-[#6b7a94]">{headlineProjection.label}</div>
+            <div className="font-['Barlow_Condensed'] text-[42px] font-black leading-none text-[#00e676]">{headlineProjection.win}%</div>
+            <div className="text-[11px] text-[#6b7a94]">Based on {(Number(headlineProjection.myxG) + Number(headlineProjection.oppxG)).toFixed(2)} simulated goals</div>
           </div>
 
           <div className="grid grid-cols-[1fr_auto_1fr] items-end gap-2">
             <div className="text-center">
-              <div className="font-['Barlow_Condensed'] text-[28px] font-black leading-none text-[#00e676]">{simulation.myxG}</div>
+              <div className="font-['Barlow_Condensed'] text-[28px] font-black leading-none text-[#00e676]">{headlineProjection.myxG}</div>
               <div className="text-[9px] uppercase tracking-[0.12em] text-[#6b7a94]">You</div>
             </div>
             <div className="pb-1 font-['Barlow_Condensed'] text-2xl text-[#6b7a94]">:</div>
             <div className="text-center">
-              <div className="font-['Barlow_Condensed'] text-[28px] font-black leading-none text-[#ffab00]">{simulation.oppxG}</div>
+              <div className="font-['Barlow_Condensed'] text-[28px] font-black leading-none text-[#ffab00]">{headlineProjection.oppxG}</div>
               <div className="text-[9px] uppercase tracking-[0.12em] text-[#6b7a94]">Opp</div>
             </div>
           </div>
@@ -1900,11 +2032,120 @@ export default function OinkSoccerCalc() {
           </section>
         )}
 
-        {activeTab === 'opponent' && (
-          <section id="tab-opponent" className="space-y-4">
+        {activeTab === 'upcoming' && (
+          <section id="tab-upcoming" className="space-y-4">
             <div className="rounded-[10px] border border-[#1e2a3a] bg-[#161c28] p-4">
-              <div className="mb-1 text-sm font-bold">⟳ Import Opponent</div>
-              <div className="mb-3 text-xs text-[#6b7a94]">Search opponents by team name in the same league as your club.</div>
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                <div>
+                  <div className="mb-1 text-sm font-bold">Upcoming Matches</div>
+                  <div className="text-xs text-[#6b7a94]">
+                    {fixtureSeason
+                      ? `Season ${fixtureSeason}, round ${fixtureRound}${selectedLeagueName ? ` • ${selectedLeagueName}` : ''}`
+                      : 'Loading season and round...'}
+                  </div>
+                </div>
+                <div className="flex rounded-md border border-[#1e2a3a] bg-[#111620] p-1">
+                  {[
+                    ['home', 'Home'],
+                    ['away', 'Away'],
+                  ].map(([value, label]) => (
+                    <button
+                      key={value}
+                      type="button"
+                      onClick={() => handleHomeAdvantageChange(value)}
+                      className={`rounded px-3 py-1.5 text-xs font-semibold ${homeAdvantage === value ? 'bg-[#00e676] text-black' : 'text-[#9aa5bb]'}`}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-[180px,1fr]">
+                <select
+                  value={selectedLeagueId}
+                  onChange={(e) => {
+                    setSelectedLeagueId(e.target.value);
+                    setSelectedOpponentTeamId('');
+                    setSelectedFixtureKey('');
+                    setOpponentSearchInput('');
+                  }}
+                  disabled={importingTeamUrl || leagueIndexLoading}
+                  className="rounded-md border border-[#1e2a3a] bg-[#111620] px-3 py-2 text-sm text-[#e8edf5] outline-none focus:border-[#2979ff]"
+                >
+                  <option value="">{leagueIndexLoading ? 'Loading leagues...' : 'Select league'}</option>
+                  {leagueOptions.map((league) => (
+                    <option key={league.id} value={league.id}>{league.label}</option>
+                  ))}
+                </select>
+                <div className="rounded-md border border-[#1e2a3a] bg-[#111620] px-3 py-2 text-xs text-[#9aa5bb]">
+                  {myFixtureRows.length > 0
+                    ? 'Your fixture is detected from wallet-owned team assets.'
+                    : 'Connect the wallet that owns your team to auto-detect your fixture; otherwise choose a fixture or import an opponent below.'}
+                </div>
+              </div>
+
+              <div className="mt-3 space-y-2">
+                {fixturesLoading && (
+                  <div className="rounded-md border border-[#1e2a3a] bg-[#111620] p-3 text-xs text-[#9aa5bb]">Loading fixtures...</div>
+                )}
+
+                {!fixturesLoading && !selectedLeagueId && (
+                  <div className="rounded-md border border-[#1e2a3a] bg-[#111620] p-3 text-xs text-[#9aa5bb]">Choose a league to load current-round fixtures.</div>
+                )}
+
+                {!fixturesLoading && selectedLeagueId && visibleFixtures.length === 0 && (
+                  <div className="rounded-md border border-[#1e2a3a] bg-[#111620] p-3 text-xs text-[#9aa5bb]">No fixtures found for this league and round.</div>
+                )}
+
+                {!fixturesLoading && visibleFixtures.slice(0, 12).map((fixture) => {
+                  const isSelected = selectedFixtureKey === fixture.game_key;
+                  const myTeams = new Set(detectedMyTeamIds);
+                  const mySide = myTeams.has(fixture.home_team_id)
+                    ? 'home'
+                    : myTeams.has(fixture.away_team_id)
+                      ? 'away'
+                      : '';
+                  const opponentName = mySide === 'home'
+                    ? fixture.away_team_name
+                    : mySide === 'away'
+                      ? fixture.home_team_name
+                      : fixture.away_team_name;
+                  const result = fixture.game_result
+                    ? `${fixture.game_result.home_team_score}-${fixture.game_result.away_team_score}`
+                    : 'vs';
+                  const kickoff = fixture.game_time
+                    ? new Date(fixture.game_time).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })
+                    : 'Time TBC';
+
+                  return (
+                    <button
+                      key={fixture.game_key}
+                      type="button"
+                      onClick={() => void handleSelectFixture(fixture)}
+                      className={`w-full rounded-md border p-3 text-left transition ${isSelected
+                        ? 'border-[#00e676]/60 bg-[#0f2a1b] text-[#d7ffe9]'
+                        : 'border-[#1e2a3a] bg-[#111620] text-[#e8edf5] hover:border-[#2f3f59]'
+                        }`}
+                    >
+                      <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-2 text-xs sm:text-sm">
+                        <div className={`min-w-0 truncate text-right ${mySide === 'home' ? 'text-[#00e676]' : ''}`}>{fixture.home_team_name}</div>
+                        <div className="rounded bg-[#ffab00] px-2 py-1 font-bold text-black">{result}</div>
+                        <div className={`min-w-0 truncate ${mySide === 'away' ? 'text-[#00e676]' : ''}`}>{fixture.away_team_name}</div>
+                      </div>
+                      <div className="mt-2 flex flex-wrap items-center justify-between gap-2 text-[11px] text-[#7f8aa3]">
+                        <span>{kickoff}</span>
+                        <span>{mySide ? `Opponent: ${opponentName} • You are ${mySide}` : `Imports opponent: ${opponentName}`}</span>
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            <div className="rounded-[10px] border border-[#1e2a3a] bg-[#161c28] p-4">
+              <div className="mb-1 text-sm font-bold">Opponent Fallback</div>
+              <div className="mb-3 text-xs text-[#6b7a94]">Use this if your fixture is not detected or you want to test a different opponent.</div>
 
               <div className="grid grid-cols-1 gap-2 sm:grid-cols-[180px,1fr,auto]">
                 <select
@@ -1912,6 +2153,7 @@ export default function OinkSoccerCalc() {
                   onChange={(e) => {
                     setSelectedLeagueId(e.target.value);
                     setSelectedOpponentTeamId('');
+                    setSelectedFixtureKey('');
                     setOpponentSearchInput('');
                   }}
                   disabled={importingTeamUrl || leagueIndexLoading}
