@@ -30,6 +30,8 @@ import {
   BOOSTS,
   CHANCE_TYPES,
   DEFENSE_BIAS_MULTIPLIER,
+  DR_DECAY,
+  DR_MIN,
   FORMATIONS,
   FORMATION_CHANCE_RANGES,
   FORMATION_PROFILES,
@@ -752,6 +754,22 @@ const getHeldPerformanceItems = (heldItems) => (
     .filter((item) => item.boostKey && item.count > 0 && BOOSTS[item.boostKey])
 );
 
+const createPlannedItemBoostState = ({ boostKey, effectivenessPct, applications }) => {
+  const state = createManualFallbackBoostState(boostKey, applications + 1);
+  return {
+    ...state,
+    source: 'live',
+    daysBoosted: null,
+    effectivenessPct,
+  };
+};
+
+const getBoostEffectivenessForPlannedUse = (baseEffectivenessPct, plannedUseIndex) => {
+  const base = Number.isFinite(Number(baseEffectivenessPct)) ? Number(baseEffectivenessPct) : 100;
+  const decay = Math.max(DR_MIN, Math.pow(DR_DECAY, plannedUseIndex));
+  return Math.max(0, Math.min(100, base * decay));
+};
+
 export default function OinkSoccerCalc() {
   const { wallets } = useWallet();
   const persistedState = useMemo(() => loadCalculatorState(), []);
@@ -848,14 +866,25 @@ export default function OinkSoccerCalc() {
     [fixtures, selectedFixtureKey],
   );
 
+  const displayedFixtures = useMemo(() => {
+    if (connectedAddresses.length === 0) {
+      return fixtures;
+    }
+    if (detectedMyTeamIds.length === 0) {
+      return [];
+    }
+    const myTeams = new Set(detectedMyTeamIds);
+    return fixtures.filter((fixture) => myTeams.has(fixture.home_team_id) || myTeams.has(fixture.away_team_id));
+  }, [connectedAddresses.length, detectedMyTeamIds, fixtures]);
+
   const pastFixtures = useMemo(
-    () => sortFixturesByRoundAndTime(fixtures.filter((fixture) => fixture.game_result)),
-    [fixtures],
+    () => sortFixturesByRoundAndTime(displayedFixtures.filter((fixture) => fixture.game_result)),
+    [displayedFixtures],
   );
 
   const upcomingFixtures = useMemo(
-    () => sortFixturesByRoundAndTime(fixtures.filter((fixture) => !fixture.game_result)),
-    [fixtures],
+    () => sortFixturesByRoundAndTime(displayedFixtures.filter((fixture) => !fixture.game_result)),
+    [displayedFixtures],
   );
 
   const fixtureSeason = gameCounter?.season || catalogSeason;
@@ -1936,103 +1965,158 @@ export default function OinkSoccerCalc() {
     );
 
     const baseStats = calculateTeamScores(myTeam, myForm, TEAM_BOOST_STATE_EMPTY, myTactics);
+    const baseEffectivenessPct = myBoostState?.source === 'live' ? myBoostState.effectivenessPct : 100;
+    const boostCounts = Object.fromEntries(heldPerformanceItems.map((item) => [item.boostKey, item.count]));
+    const selectedWindows = [];
 
-    const recommendations = [];
-    remainingMyFixtures.forEach((fixture, startIndex) => {
+    const getOpponentModel = (fixture) => {
       const isHome = myTeamIds.has(fixture.home_team_id);
       const opponentId = isHome ? fixture.away_team_id : fixture.home_team_id;
       const opponentModel = seasonTeams[opponentId];
-      if (!opponentModel?.players?.length) return;
+      if (!opponentModel?.players?.length) return null;
 
       const opponentFormation = opponentModel.formationKey && FORMATIONS[opponentModel.formationKey]
         ? opponentModel.formationKey
         : 'Pyramid';
       const opponentStats = calculateTeamScores(opponentModel.players, opponentFormation, TEAM_BOOST_STATE_EMPTY, DEFAULT_TACTICS);
-      const baseProjection = projectMatch({
-        myStats: baseStats,
-        myForm,
-        myTactics,
-        oppStats: opponentStats,
-        oppForm: opponentFormation,
-        oppTactics: DEFAULT_TACTICS,
-        homeAdvantage: isHome ? 'home' : 'away',
+      return {
+        isHome,
+        opponentName: isHome ? fixture.away_team_name : fixture.home_team_name,
+        opponentFormation,
+        opponentStats,
+      };
+    };
+
+    const projectFixture = (fixture, stats) => {
+      const opponent = getOpponentModel(fixture);
+      if (!opponent) return null;
+      return {
+        opponent,
+        projection: projectMatch({
+          myStats: stats,
+          myForm,
+          myTactics,
+          oppStats: opponent.opponentStats,
+          oppForm: opponent.opponentFormation,
+          oppTactics: DEFAULT_TACTICS,
+          homeAdvantage: opponent.isHome ? 'home' : 'away',
+        }),
+      };
+    };
+
+    const intervalsOverlap = (startA, endA, startB, endB) => startA <= endB && startB <= endA;
+    const hasWindowConflict = (startTime, endTime) => selectedWindows.some((window) => (
+      intervalsOverlap(startTime, endTime, window.startTime, window.endTime)
+    ));
+
+    const evaluateCandidate = ({ fixture, startIndex, item, plannedUseIndex }) => {
+      const baseFirst = projectFixture(fixture, baseStats);
+      if (!baseFirst) return null;
+      const startsAt = getFixtureTimeValue(fixture);
+      const endsAt = Number.isFinite(startsAt)
+        ? startsAt + (item.maxDays * 24 * 60 * 60 * 1000)
+        : startsAt;
+      if (hasWindowConflict(startsAt, endsAt)) return null;
+
+      const effectivenessPct = getBoostEffectivenessForPlannedUse(baseEffectivenessPct, plannedUseIndex);
+      const boostState = createPlannedItemBoostState({
+        boostKey: item.boostKey,
+        effectivenessPct,
+        applications: plannedUseIndex,
+      });
+      const boostedStats = calculateTeamScores(myTeam, myForm, boostState, myTactics);
+      const windowFixtures = remainingMyFixtures
+        .slice(startIndex)
+        .filter((candidate) => {
+          const candidateTime = getFixtureTimeValue(candidate);
+          return candidateTime >= startsAt
+            && (candidateTime <= endsAt || candidate.game_key === fixture.game_key);
+        });
+      let seasonDelta = 0;
+      let firstFixtureDelta = 0;
+      let firstBoostedWin = baseFirst.projection.win;
+      let usableFixtureCount = 0;
+
+      windowFixtures.forEach((candidate, windowIndex) => {
+        const base = projectFixture(candidate, baseStats);
+        const boosted = projectFixture(candidate, boostedStats);
+        if (!base || !boosted) return;
+        const delta = boosted.projection.win - base.projection.win;
+        seasonDelta += delta;
+        usableFixtureCount += 1;
+        if (windowIndex === 0) {
+          firstFixtureDelta = delta;
+          firstBoostedWin = boosted.projection.win;
+        }
       });
 
-      heldPerformanceItems.forEach((item) => {
-        const boostState = createManualFallbackBoostState(item.boostKey, 1);
-        const boostedStats = calculateTeamScores(myTeam, myForm, boostState, myTactics);
-        const startsAt = getFixtureTimeValue(fixture);
-        const endsAt = Number.isFinite(startsAt)
-          ? startsAt + (item.maxDays * 24 * 60 * 60 * 1000)
-          : Number.NaN;
-        const windowFixtures = remainingMyFixtures
-          .slice(startIndex)
-          .filter((candidate) => (
-            !Number.isFinite(endsAt)
-            || getFixtureTimeValue(candidate) <= endsAt
-            || candidate.game_key === fixture.game_key
-          ));
-        let seasonDelta = 0;
-        let firstFixtureDelta = 0;
+      if (seasonDelta <= 0.05 || usableFixtureCount === 0) return null;
+      return {
+        fixture,
+        boostKey: item.boostKey,
+        boostLabel: item.label,
+        heldCount: item.count,
+        baseWin: baseFirst.projection.win,
+        boostedWin: firstBoostedWin,
+        delta: firstFixtureDelta,
+        seasonDelta,
+        effectivenessPct,
+        windowCount: usableFixtureCount,
+        startTime: startsAt,
+        endTime: endsAt,
+        opponentName: baseFirst.opponent.opponentName,
+      };
+    };
 
-        windowFixtures.forEach((candidate, windowIndex) => {
-          const candidateIsHome = myTeamIds.has(candidate.home_team_id);
-          const candidateOpponentId = candidateIsHome ? candidate.away_team_id : candidate.home_team_id;
-          const candidateOpponent = seasonTeams[candidateOpponentId];
-          if (!candidateOpponent?.players?.length) return;
-          const candidateOppFormation = candidateOpponent.formationKey && FORMATIONS[candidateOpponent.formationKey]
-            ? candidateOpponent.formationKey
-            : 'Pyramid';
-          const candidateOppStats = calculateTeamScores(candidateOpponent.players, candidateOppFormation, TEAM_BOOST_STATE_EMPTY, DEFAULT_TACTICS);
-          const candidateBase = projectMatch({
-            myStats: baseStats,
-            myForm,
-            myTactics,
-            oppStats: candidateOppStats,
-            oppForm: candidateOppFormation,
-            oppTactics: DEFAULT_TACTICS,
-            homeAdvantage: candidateIsHome ? 'home' : 'away',
+    const maxPlannedUses = heldPerformanceItems.reduce((sum, item) => sum + item.count, 0);
+    const remainingCounts = { ...boostCounts };
+    const schedule = [];
+
+    for (let plannedUseIndex = 0; plannedUseIndex < maxPlannedUses; plannedUseIndex += 1) {
+      let bestCandidate = null;
+      remainingMyFixtures.forEach((fixture, startIndex) => {
+        heldPerformanceItems.forEach((item) => {
+          if ((remainingCounts[item.boostKey] || 0) <= 0) return;
+          const candidate = evaluateCandidate({
+            fixture,
+            startIndex,
+            item,
+            plannedUseIndex,
           });
-          const boostedProjection = projectMatch({
-            myStats: boostedStats,
-            myForm,
-            myTactics,
-            oppStats: candidateOppStats,
-            oppForm: candidateOppFormation,
-            oppTactics: DEFAULT_TACTICS,
-            homeAdvantage: candidateIsHome ? 'home' : 'away',
-          });
-          const delta = boostedProjection.win - candidateBase.win;
-          seasonDelta += delta;
-          if (windowIndex === 0) {
-            firstFixtureDelta = delta;
+          if (!candidate) return;
+          if (
+            !bestCandidate
+            || candidate.seasonDelta > bestCandidate.seasonDelta
+            || (
+              candidate.seasonDelta === bestCandidate.seasonDelta
+              && getFixtureTimeValue(candidate.fixture) < getFixtureTimeValue(bestCandidate.fixture)
+            )
+          ) {
+            bestCandidate = candidate;
           }
         });
-
-        if (seasonDelta <= 0.05) return;
-        recommendations.push({
-          fixture,
-          boostKey: item.boostKey,
-          boostLabel: item.label,
-          heldCount: item.count,
-          baseWin: baseProjection.win,
-          boostedWin: baseProjection.win + firstFixtureDelta,
-          delta: firstFixtureDelta,
-          seasonDelta,
-          windowCount: windowFixtures.length,
-          opponentName: isHome ? fixture.away_team_name : fixture.home_team_name,
-        });
       });
-    });
 
-    return recommendations
+      if (!bestCandidate) break;
+      remainingCounts[bestCandidate.boostKey] = Math.max(0, remainingCounts[bestCandidate.boostKey] - 1);
+      selectedWindows.push({
+        startTime: bestCandidate.startTime,
+        endTime: bestCandidate.endTime,
+      });
+      schedule.push({
+        ...bestCandidate,
+        remainingAfterUse: remainingCounts[bestCandidate.boostKey],
+      });
+    }
+
+    return schedule
       .sort((a, b) => (
         getFixtureRound(a.fixture) - getFixtureRound(b.fixture)
         || getFixtureTimeValue(a.fixture) - getFixtureTimeValue(b.fixture)
         || b.seasonDelta - a.seasonDelta
       ))
-      .slice(0, 8);
-  }, [detectedMyTeamIds, heldItems, myForm, myTactics, myTeam, seasonFixtures, seasonTeams]);
+      .slice(0, 10);
+  }, [detectedMyTeamIds, heldItems, myBoostState, myForm, myTactics, myTeam, seasonFixtures, seasonTeams]);
 
   const copySuggestion = useCallback(async (suggestion) => {
     if (!suggestion?.formation) return;
@@ -2362,7 +2446,9 @@ export default function OinkSoccerCalc() {
                 selectedFixtureKey={selectedFixtureKey}
                 detectedMyTeamIds={detectedMyTeamIds}
                 loading={fixturesLoading}
-                emptyText={selectedLeagueId ? 'No upcoming fixtures found for this season.' : 'Connect your team wallet to load its league fixtures.'}
+                emptyText={connectedAddresses.length > 0
+                  ? 'No upcoming fixtures found for the connected wallet team.'
+                  : 'Connect your team wallet to load its league fixtures.'}
                 onSelect={(fixture) => void handleSelectFixture(fixture)}
               />
 
@@ -2464,7 +2550,7 @@ export default function OinkSoccerCalc() {
             <div className="rounded-[10px] border border-[#1e2a3a] bg-[#161c28] p-4">
               <div className="text-[11px] font-bold uppercase tracking-[0.14em] text-[#ffab00]">Item Timing</div>
               <div className="mt-1 text-xs text-[#6b7a94]">
-                Ranked by next usable round, using only performance items held in your wallet.
+                Planned across the season using held items, active windows, and diminishing effectiveness.
               </div>
 
               <div className="mt-3 space-y-2">
@@ -2473,7 +2559,7 @@ export default function OinkSoccerCalc() {
                 )}
                 {!seasonPredictionLoading && itemSuggestions.length === 0 && (
                   <div className="rounded-md border border-[#1e2a3a] bg-[#111620] p-3 text-xs text-[#9aa5bb]">
-                    No held performance items found in the connected wallet. Medical Kits are ignored unless injuries need healing.
+                    No efficient held performance item window found. Medical Kits are ignored unless injuries need healing.
                   </div>
                 )}
                 {!seasonPredictionLoading && itemSuggestions.map((item) => (
@@ -2482,7 +2568,7 @@ export default function OinkSoccerCalc() {
                       <div className="min-w-0">
                         <div className="text-sm font-semibold text-[#e8edf5]">{item.boostLabel} vs {item.opponentName}</div>
                         <div className="mt-1 text-xs text-[#7f8aa3]">
-                          Round {item.fixture.game_round || '?'} • {formatFixtureTime(item.fixture.game_time)} • Held: {formatNumber(item.heldCount, 0)}
+                          Use round {item.fixture.game_round || '?'} • {formatFixtureTime(item.fixture.game_time)} • {formatNumber(item.remainingAfterUse, 0)} left
                         </div>
                       </div>
                       <div className="text-right font-['Barlow_Condensed'] text-[22px] font-black text-[#00e676]">
@@ -2490,7 +2576,7 @@ export default function OinkSoccerCalc() {
                       </div>
                     </div>
                     <div className="mt-2 text-xs text-[#9aa5bb]">
-                      First match: {formatNumber(item.baseWin)}% to {formatNumber(item.boostedWin)}%. Window covers {item.windowCount} fixture{item.windowCount === 1 ? '' : 's'}.
+                      First match: {formatNumber(item.baseWin)}% to {formatNumber(item.boostedWin)}%. Covers {item.windowCount} fixture{item.windowCount === 1 ? '' : 's'} at {formatNumber(item.effectivenessPct)}% effectiveness.
                     </div>
                   </div>
                 ))}
