@@ -1,7 +1,7 @@
 {
-  "currentSeason": 15,
-  "catalogFile": "playable-assets.s15.json",
-  "generatedAt": "2026-04-10T08:16:02+01:00",
+  "currentSeason": 16,
+  "catalogFile": "playable-assets.s16.json",
+  "generatedAt": "2026-06-12T16:03:10+01:00",
   "sourceRepo": "https://github.com/stein-f/oink-soccer-common",
-  "sourceRef": "6022db268779e4fe6d8c688bc875e282e84a068d"
+  "sourceRef": "516aec9fdc9ad8a5d9f17892f940d3c8dfdef29d"
 }
