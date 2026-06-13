@@ -24,9 +24,16 @@ import {
 import { resolvePlayerImage } from './lib/assetImages';
 import {
   BOOSTS,
+  CHANCE_TYPES,
   DEFENSE_BIAS_MULTIPLIER,
   FORMATIONS,
   FORMATION_CHANCE_RANGES,
+  FORMATION_PROFILES,
+  OUT_OF_POSITION_SCALE,
+  PLAYER_ROLES,
+  POSITION_WEIGHTS,
+  SKILL_CURVE,
+  TACTICS,
 } from './lib/gameRules';
 
 // --- Game Constants ---
@@ -37,10 +44,24 @@ const POSITIONS = {
   FW: { label: 'Forward', short: 'FW', color: 'from-red-500 to-red-600' },
 };
 
-// --- Event Count Logic (Home/Away Bias) ---
-const getAverageEvents = (homeFormKey, awayFormKey, homeAdvantage) => {
+const DEFAULT_TACTICS = {
+  press: 'medium',
+  tempo: 'normal',
+  lineHeight: 'normal',
+  setPieceTaker: '',
+};
+
+const normalizeTactics = (value) => ({
+  ...DEFAULT_TACTICS,
+  ...(value || {}),
+});
+
+// --- Event Count Logic (Home/Away Bias + v2 Tempo) ---
+const getAverageEvents = (homeFormKey, awayFormKey, homeAdvantage, myTacticsInput = DEFAULT_TACTICS, oppTacticsInput = DEFAULT_TACTICS) => {
   const homeStyle = FORMATIONS[homeFormKey]?.style || 'BAL';
   const awayStyle = FORMATIONS[awayFormKey]?.style || 'BAL';
+  const myTactics = normalizeTactics(myTacticsInput);
+  const oppTactics = normalizeTactics(oppTacticsInput);
 
   // In the core game, the truth table is fixed as HOME:formation|AWAY:formation.
   // We need to decide which team is 'Home' and which is 'Away' based on the user's toggle.
@@ -54,7 +75,11 @@ const getAverageEvents = (homeFormKey, awayFormKey, homeAdvantage) => {
   }
 
   const range = FORMATION_CHANCE_RANGES[key] || { min: 3, max: 10 };
-  return (range.min + range.max) / 2;
+  const tempoFactor = (
+    (TACTICS.tempo[myTactics.tempo]?.chanceFactor || 1)
+    + (TACTICS.tempo[oppTactics.tempo]?.chanceFactor || 1)
+  ) / 2;
+  return ((range.min + range.max) / 2) * tempoFactor;
 };
 
 const INJURIES = {
@@ -65,22 +90,100 @@ const INJURIES = {
 };
 
 // --- Math Functions ---
-const getControlScore = (stats, pos, injuryMod = 1.0, boostMults = {}) => {
-  const spd = stats.SPD * (boostMults.SPD || 1.0);
-  const ctl = stats.CTL * (boostMults.CTL || 1.0);
-  return Math.round((((ctl * 4) + spd) / 5) * injuryMod);
+const getStat = (stats, key, fallbackKey = null) => {
+  const value = Number(stats?.[key]);
+  if (Number.isFinite(value) && value > 0) return value;
+  if (!fallbackKey) return 0;
+  const fallback = Number(stats?.[fallbackKey]);
+  return Number.isFinite(fallback) ? fallback : 0;
 };
 
-const getAttackScore = (stats, pos, injuryMod = 1.0, boostMults = {}) => {
-  const spd = stats.SPD * (boostMults.SPD || 1.0);
-  const att = stats.ATT * (boostMults.ATT || 1.0);
-  return Math.round((((att * 3) + spd) / 4) * injuryMod);
+const getBoostedStats = (stats, boostMults = {}) => ({
+  SPD: getStat(stats, 'SPD') * (boostMults.SPD || 1),
+  ATT: getStat(stats, 'ATT') * (boostMults.ATT || 1),
+  CTL: getStat(stats, 'CTL') * (boostMults.CTL || 1),
+  DEF: getStat(stats, 'DEF') * (boostMults.DEF || 1),
+  GKP: getStat(stats, 'GKP') * (boostMults.GKP || 1),
+  WRT: getStat(stats, 'WRT', 'SPD'),
+  FIN: getStat(stats, 'FIN', 'ATT'),
+  HDG: getStat(stats, 'HDG', 'ATT'),
+  TEC: getStat(stats, 'TEC', 'CTL'),
+  CMP: getStat(stats, 'CMP', 'CTL'),
+  TCK: getStat(stats, 'TCK', 'DEF'),
+});
+
+const weightedRounded = (numerator, divisor) => {
+  if (!divisor) return 0;
+  return Math.round(numerator / divisor);
 };
 
-const getDefenseScore = (stats, pos, injuryMod = 1.0, boostMults = {}) => {
-  const spd = stats.SPD * (boostMults.SPD || 1.0);
-  const def = (pos === 'GK' ? stats.GKP : stats.DEF) * (boostMults[pos === 'GK' ? 'GKP' : 'DEF'] || 1.0);
-  return Math.round((((def * 5) + spd) / 6) * injuryMod);
+const applySkillCurve = (raw) => {
+  if (raw <= 0) return SKILL_CURVE.floor;
+  if (raw >= 100) return 100;
+  return Math.max(SKILL_CURVE.floor, Math.pow(raw / 100, SKILL_CURVE.exponent) * 100);
+};
+
+const getControlScore = (stats, pos, injuryMod = 1.0, boostMults = {}, tacticsInput = DEFAULT_TACTICS) => {
+  const boosted = getBoostedStats(stats, boostMults);
+  const tactics = normalizeTactics(tacticsInput);
+  let raw;
+  if (tactics.press === 'high') {
+    raw = weightedRounded((boosted.CTL * 3) + (boosted.WRT * 2), 5);
+  } else if (tactics.press === 'low') {
+    raw = weightedRounded((boosted.CTL * 5) + boosted.WRT, 6);
+  } else {
+    raw = weightedRounded((boosted.CTL * 4) + boosted.WRT, 5);
+  }
+  return applySkillCurve(raw) * injuryMod;
+};
+
+const getAttackScoreForChance = (stats, chanceType = 'OpenPlay', injuryMod = 1.0, boostMults = {}) => {
+  const boosted = getBoostedStats(stats, boostMults);
+  let raw;
+  switch (chanceType) {
+    case 'Cross':
+      raw = weightedRounded((boosted.ATT * 2) + (boosted.HDG * 2) + boosted.SPD, 5);
+      break;
+    case 'Corner':
+      raw = weightedRounded((boosted.ATT * 2) + (boosted.HDG * 3), 5);
+      break;
+    case 'LongRange':
+      raw = weightedRounded((boosted.ATT * 2) + (boosted.TEC * 3), 5);
+      break;
+    case 'FreeKick':
+      raw = weightedRounded(boosted.ATT + (boosted.TEC * 3), 4);
+      break;
+    case 'Penalty':
+      raw = weightedRounded((boosted.ATT * 2) + (boosted.CMP * 3), 5);
+      break;
+    case 'GoalKeeperShot':
+      raw = weightedRounded(boosted.ATT + boosted.FIN + (boosted.SPD * 3), 5);
+      break;
+    case 'OpenPlay':
+    default:
+      raw = weightedRounded((boosted.ATT * 2) + boosted.FIN + boosted.SPD, 4);
+      break;
+  }
+  return applySkillCurve(raw) * injuryMod;
+};
+
+const getAttackScore = (stats, pos, injuryMod = 1.0, boostMults = {}) =>
+  getAttackScoreForChance(stats, 'OpenPlay', injuryMod, boostMults);
+
+const getDefenseScore = (stats, pos, injuryMod = 1.0, boostMults = {}, tacticsInput = DEFAULT_TACTICS) => {
+  const boosted = getBoostedStats(stats, boostMults);
+  const tactics = normalizeTactics(tacticsInput);
+  let raw;
+  if (pos === 'GK') {
+    raw = weightedRounded((boosted.GKP * 5) + boosted.SPD, 6);
+  } else if (tactics.lineHeight === 'high') {
+    raw = weightedRounded((boosted.DEF * 3) + (boosted.TCK * 2) + (boosted.SPD * 3), 8);
+  } else if (tactics.lineHeight === 'deep') {
+    raw = weightedRounded((boosted.DEF * 6) + (boosted.TCK * 2), 8);
+  } else {
+    raw = weightedRounded((boosted.DEF * 5) + (boosted.TCK * 2) + boosted.SPD, 8);
+  }
+  return applySkillCurve(raw) * injuryMod;
 };
 
 const getOfficialOvr = (stats, pos) => {
@@ -91,8 +194,146 @@ const getOfficialOvr = (stats, pos) => {
   return 0;
 };
 
-const calculateTeamScores = (players, formationKey, boostContext) => {
+const hasPlayablePosition = (player, position) => {
+  const valid = player.positions && player.positions.length > 0 ? player.positions : [player.pos];
+  return valid.includes(position);
+};
+
+const captainQuality = (player) => {
+  const stats = player?.stats || {};
+  const primary = player?.pos === 'GK' ? getStat(stats, 'GKP') : getStat(stats, 'CTL');
+  return (primary + getStat(stats, 'CMP', 'CTL')) / 2;
+};
+
+const captainBoost = (players) => {
+  const captain = players.find((player) => player.role === PLAYER_ROLES.captain.value);
+  if (!captain) return 1;
+  return 1 + ((captainQuality(captain) - 60) / 100) * 0.06;
+};
+
+const captainSelfBoost = (player) => {
+  if (player.role !== PLAYER_ROLES.captain.value) return 1;
+  return 1 + ((captainQuality(player) - 60) / 100) * 0.06;
+};
+
+const assignLineupPositions = (players, structure) => {
+  const slots = Object.entries(structure).flatMap(([pos, count]) => Array.from({ length: count }, () => pos));
+  if (players.length === 0 || slots.length === 0) return [];
+
+  let best = null;
+  let bestScore = -Infinity;
+  const used = new Set();
+
+  const backtrack = (slotIndex, current, score) => {
+    if (slotIndex === slots.length || current.length === players.length) {
+      if (score > bestScore) {
+        bestScore = score;
+        best = [...current];
+      }
+      return;
+    }
+
+    const selectedPosition = slots[slotIndex];
+    for (const player of players) {
+      if (used.has(player.id)) continue;
+      used.add(player.id);
+      const inPosition = hasPlayablePosition(player, selectedPosition);
+      const fit = getOfficialOvr(player.stats, selectedPosition) + (inPosition ? 100 : 0);
+      current.push({ ...player, selectedPosition, outOfPosition: !inPosition });
+      backtrack(slotIndex + 1, current, score + fit);
+      current.pop();
+      used.delete(player.id);
+    }
+  };
+
+  backtrack(0, [], 0);
+  return best || [];
+};
+
+const rolePositionAverage = (assignedPlayers, weights, scoreFn, roleWeights = {}) => {
+  const buckets = {
+    GK: { sum: 0, weight: 0 },
+    DF: { sum: 0, weight: 0 },
+    MF: { sum: 0, weight: 0 },
+    FW: { sum: 0, weight: 0 },
+  };
+
+  for (const player of assignedPlayers) {
+    const pos = player.selectedPosition || player.pos;
+    const bucket = buckets[pos];
+    if (!bucket) continue;
+    const roleWeight = roleWeights[player.role] || 1;
+    bucket.sum += scoreFn(player) * roleWeight;
+    bucket.weight += roleWeight;
+  }
+
+  let total = 0;
+  let populatedWeight = 0;
+  for (const [pos, bucket] of Object.entries(buckets)) {
+    if (bucket.weight <= 0) continue;
+    total += (bucket.sum / bucket.weight) * (weights[pos] || 0);
+    populatedWeight += weights[pos] || 0;
+  }
+
+  return populatedWeight > 0 ? total / populatedWeight : 0;
+};
+
+const cornerDeliveryFactor = (assignedPlayers, tacticsInput) => {
+  const tactics = normalizeTactics(tacticsInput);
+  if (!tactics.setPieceTaker) return 1;
+  const taker = assignedPlayers.find((player) => String(player.id) === String(tactics.setPieceTaker));
+  if (!taker) return 1;
+  const technique = getStat(taker.stats, 'TEC', 'CTL');
+  return Math.max(0.80, Math.min(1.20, 1 + ((technique - 60) / 100) * 0.40));
+};
+
+const expectedChanceAttack = (assignedPlayers, boostMults, tacticsInput) => {
+  if (assignedPlayers.length === 0) return 0;
+  const tactics = normalizeTactics(tacticsInput);
+  let totalWeightedAttack = 0;
+  let totalChanceWeight = 0;
+
+  for (const [chanceType, profile] of Object.entries(CHANCE_TYPES)) {
+    let attackerScore = 0;
+    let attackerWeight = 0;
+    const directSetPiece = tactics.setPieceTaker && ['FreeKick', 'Penalty'].includes(chanceType);
+    const excludedCornerTaker = tactics.setPieceTaker && chanceType === 'Corner';
+
+    for (const player of assignedPlayers) {
+      if (excludedCornerTaker && String(player.id) === String(tactics.setPieceTaker)) continue;
+      if (directSetPiece && String(player.id) !== String(tactics.setPieceTaker)) continue;
+
+      const posWeight = profile.positionWeights[player.selectedPosition || player.pos] || 0;
+      if (posWeight <= 0) continue;
+
+      const injuryMod = player.injury && INJURIES[player.injury] ? INJURIES[player.injury].reduction : 1;
+      const positionMod = player.outOfPosition ? OUT_OF_POSITION_SCALE : 1;
+      const selfMod = captainSelfBoost(player);
+      const score = getAttackScoreForChance(player.stats, chanceType, injuryMod * positionMod * selfMod, boostMults);
+      const roleWeight = player.role === PLAYER_ROLES.targetMan.value && ['Corner', 'Cross'].includes(chanceType) ? 2 : 1;
+      const weight = posWeight * Math.max(1, score) * roleWeight;
+      attackerScore += score * weight;
+      attackerWeight += weight;
+    }
+
+    if (attackerWeight <= 0) continue;
+    const delivery = chanceType === 'Corner' ? cornerDeliveryFactor(assignedPlayers, tactics) : 1;
+    totalWeightedAttack += (attackerScore / attackerWeight) * profile.attackBoost * delivery * profile.baseWeight;
+    totalChanceWeight += profile.baseWeight;
+  }
+
+  return totalChanceWeight > 0 ? totalWeightedAttack / totalChanceWeight : 0;
+};
+
+const calculateTeamScores = (players, formationKey, boostContext, tacticsInput = DEFAULT_TACTICS) => {
   const form = FORMATIONS[formationKey];
+  const profile = FORMATION_PROFILES[formationKey] || {
+    possession: 1,
+    chanceCreation: 1,
+    chanceQuality: 1,
+    defSolidity: 1,
+  };
+  const tactics = normalizeTactics(tacticsInput);
   const boostMults = getBoostMultipliersFromState(boostContext);
 
   const stats = {
@@ -103,110 +344,44 @@ const calculateTeamScores = (players, formationKey, boostContext) => {
 
   if (players.length === 0) return stats;
 
-  const assignPositions = (squad, structure) => {
-    let bestAssignment = null;
-    let minDeficit = Infinity;
+  const assignedPlayers = assignLineupPositions(players, form.structure);
+  const teamCaptainBoost = captainBoost(assignedPlayers);
 
-    const backtrack = (index, currentAssigned, currentCounts) => {
-      if (index === squad.length) {
-        let deficit = 0;
-        for (const pos of ['GK', 'DF', 'MF', 'FW']) {
-          deficit += Math.max(0, structure[pos] - currentCounts[pos]);
-        }
-        if (deficit < minDeficit) {
-          minDeficit = deficit;
-          bestAssignment = {
-            GK: [...currentAssigned.GK],
-            DF: [...currentAssigned.DF],
-            MF: [...currentAssigned.MF],
-            FW: [...currentAssigned.FW]
-          };
-        }
-        return;
-      }
-
-      const p = squad[index];
-      const validPos = p.positions && p.positions.length > 0 ? p.positions : [p.pos];
-
-      for (const pos of validPos) {
-        currentAssigned[pos].push(p);
-        currentCounts[pos]++;
-        backtrack(index + 1, currentAssigned, currentCounts);
-        currentCounts[pos]--;
-        currentAssigned[pos].pop();
-        if (minDeficit === 0) return; // Opt: first perfect assignment is sufficient
-      }
-    };
-
-    backtrack(0, { GK: [], DF: [], MF: [], FW: [] }, { GK: 0, DF: 0, MF: 0, FW: 0 });
-    return bestAssignment || { GK: [], DF: [], MF: [], FW: [] };
+  const getPlayerMod = (player) => {
+    const injuryMod = player.injury && INJURIES[player.injury] ? INJURIES[player.injury].reduction : 1;
+    const positionMod = player.outOfPosition ? OUT_OF_POSITION_SCALE : 1;
+    return injuryMod * positionMod * captainSelfBoost(player);
   };
 
-  const byPos = assignPositions(players, form.structure);
+  const rawControl = rolePositionAverage(
+    assignedPlayers,
+    POSITION_WEIGHTS.control,
+    (player) => getControlScore(player.stats, player.selectedPosition, getPlayerMod(player), boostMults, tactics),
+    { [PLAYER_ROLES.playmaker.value]: 2 },
+  );
 
-  const getAvgWithInjury = (list, scoreFn) => {
-    if (list.length === 0) return 0;
-    return list.reduce((sum, p) => {
-      const mod = p.injury && INJURIES[p.injury] ? INJURIES[p.injury].reduction : 1.0;
-      return sum + scoreFn(p.stats, p.pos, mod, boostMults);
-    }, 0) / list.length;
-  }
+  const rawDefense = rolePositionAverage(
+    assignedPlayers,
+    POSITION_WEIGHTS.defense,
+    (player) => getDefenseScore(player.stats, player.selectedPosition, getPlayerMod(player), boostMults, tactics),
+    { [PLAYER_ROLES.ballWinner.value]: 2 },
+  );
 
-  const avgCtl = {
-    GK: getAvgWithInjury(byPos.GK, getControlScore),
-    DF: getAvgWithInjury(byPos.DF, getControlScore),
-    MF: getAvgWithInjury(byPos.MF, getControlScore),
-    FW: getAvgWithInjury(byPos.FW, getControlScore)
-  };
+  stats.Control = rawControl
+    * profile.possession
+    * teamCaptainBoost;
 
-  const avgDef = {
-    GK: getAvgWithInjury(byPos.GK, getDefenseScore),
-    DF: getAvgWithInjury(byPos.DF, getDefenseScore),
-    MF: getAvgWithInjury(byPos.MF, getDefenseScore),
-    FW: getAvgWithInjury(byPos.FW, getDefenseScore)
-  };
+  stats.Defense = rawDefense
+    * profile.defSolidity
+    * (TACTICS.lineHeight[tactics.lineHeight]?.defenseFactor || 1)
+    * teamCaptainBoost
+    * DEFENSE_BIAS_MULTIPLIER;
 
-  const avgAtt = {
-    GK: getAvgWithInjury(byPos.GK, getAttackScore),
-    DF: getAvgWithInjury(byPos.DF, getAttackScore),
-    MF: getAvgWithInjury(byPos.MF, getAttackScore),
-    FW: getAvgWithInjury(byPos.FW, getAttackScore)
-  };
-
-  let ctlWeights, defWeights;
-
-  if (formationKey === 'Box') {
-    ctlWeights = { GK: 0.05, DF: 0.35, MF: 0.00, FW: 0.60 };
-    defWeights = { GK: 0.35, DF: 0.50, MF: 0.00, FW: 0.15 };
-  } else {
-    ctlWeights = { GK: 0.05, DF: 0.15, MF: 0.65, FW: 0.15 };
-    defWeights = { GK: 0.35, DF: 0.40, MF: 0.20, FW: 0.05 };
-  }
-
-  const rawControl =
-    (avgCtl.GK * ctlWeights.GK) +
-    (avgCtl.DF * ctlWeights.DF) +
-    (avgCtl.MF * ctlWeights.MF) +
-    (avgCtl.FW * ctlWeights.FW);
-
-  const rawDefense =
-    (avgDef.GK * defWeights.GK) +
-    (avgDef.DF * defWeights.DF) +
-    (avgDef.MF * defWeights.MF) +
-    (avgDef.FW * defWeights.FW);
-
-  stats.Control = rawControl * form.ctlMod;
-
-  stats.Defense = Math.min(100, rawDefense * form.defMod * DEFENSE_BIAS_MULTIPLIER);
-
-  const attChanceWeights = formationKey === 'Box'
-    ? { FW: 0.7, DF: 0.2, GK: 0.1 }
-    : { FW: 0.6, MF: 0.3, DF: 0.1, GK: 0 };
-
-  stats.Attack =
-    ((avgAtt.FW * (attChanceWeights.FW || 0)) +
-      (avgAtt.MF * (attChanceWeights.MF || 0)) +
-      (avgAtt.DF * (attChanceWeights.DF || 0))) * form.attMod;
+  stats.Attack = expectedChanceAttack(assignedPlayers, boostMults, tactics)
+    * profile.chanceCreation
+    * profile.chanceQuality
+    * (TACTICS.tempo[tactics.tempo]?.qualityFactor || 1)
+    * (TACTICS.press[tactics.press]?.fatigueFactor || 1);
 
   stats.Control = parseFloat(stats.Control.toFixed(1));
   stats.Defense = parseFloat(stats.Defense.toFixed(1));
@@ -214,6 +389,141 @@ const calculateTeamScores = (players, formationKey, boostContext) => {
 
   return stats;
 };
+
+const calcGoalProb = (att, def) => {
+  const total = Math.max(1, att) + Math.max(1, def);
+  return Math.max(0.01, Math.min(0.9, Math.max(1, att) / total));
+};
+
+const projectMatch = ({
+  myStats,
+  myForm,
+  myTactics,
+  oppStats,
+  oppForm,
+  oppTactics,
+  homeAdvantage,
+}) => {
+  if (myStats.Count === 0 || oppStats.Count === 0) {
+    return { win: 50, myPossession: 50, myxG: 0, oppxG: 0 };
+  }
+
+  const normalizedMyTactics = normalizeTactics(myTactics);
+  const normalizedOppTactics = normalizeTactics(oppTactics);
+  const adjustedMyControl = myStats.Control
+    * (TACTICS.press[normalizedOppTactics.press]?.controlFactor || 1)
+    * (TACTICS.lineHeight[normalizedOppTactics.lineHeight]?.controlFactor || 1);
+  const adjustedOppControl = oppStats.Control
+    * (TACTICS.press[normalizedMyTactics.press]?.controlFactor || 1)
+    * (TACTICS.lineHeight[normalizedMyTactics.lineHeight]?.controlFactor || 1);
+  const totalControl = adjustedMyControl + adjustedOppControl;
+  const myPossession = totalControl === 0 ? 0.5 : (adjustedMyControl / totalControl);
+
+  const myGoalProb = calcGoalProb(myStats.Attack, oppStats.Defense);
+  const oppGoalProb = calcGoalProb(oppStats.Attack, myStats.Defense);
+
+  const avgEvents = getAverageEvents(myForm, oppForm, homeAdvantage, normalizedMyTactics, normalizedOppTactics);
+  const myEvents = avgEvents * myPossession;
+  const oppEvents = avgEvents * (1 - myPossession);
+  const myxG = myEvents * myGoalProb;
+  const oppxG = oppEvents * oppGoalProb;
+  const totalxG = myxG + oppxG;
+  const win = totalxG === 0 ? 50 : (myxG / totalxG) * 100;
+
+  return {
+    win,
+    myPossession: myPossession * 100,
+    myxG,
+    oppxG,
+  };
+};
+
+const roughPlayerValue = (player) => (
+  getOfficialOvr(player.stats, player.pos)
+  + getStat(player.stats, 'WRT', 'SPD') * 0.08
+  + getStat(player.stats, 'HDG', 'ATT') * 0.06
+  + getStat(player.stats, 'TEC', 'CTL') * 0.06
+  + getStat(player.stats, 'CMP', 'CTL') * 0.04
+  + getStat(player.stats, 'TCK', 'DEF') * 0.06
+);
+
+const getRoleCandidateIds = (lineup, tactics) => ({
+  captain: [...lineup]
+    .sort((a, b) => captainQuality(b) - captainQuality(a))
+    .slice(0, 3)
+    .map((player) => player.id),
+  targetMan: [...lineup]
+    .sort((a, b) => (
+      (getAttackScoreForChance(b.stats, 'Corner') + getAttackScoreForChance(b.stats, 'Cross'))
+      - (getAttackScoreForChance(a.stats, 'Corner') + getAttackScoreForChance(a.stats, 'Cross'))
+    ))
+    .slice(0, 3)
+    .map((player) => player.id),
+  playmaker: [...lineup]
+    .sort((a, b) => getControlScore(b.stats, b.pos, 1, {}, tactics) - getControlScore(a.stats, a.pos, 1, {}, tactics))
+    .slice(0, 3)
+    .map((player) => player.id),
+  ballWinner: [...lineup]
+    .sort((a, b) => getDefenseScore(b.stats, b.pos, 1, {}, tactics) - getDefenseScore(a.stats, a.pos, 1, {}, tactics))
+    .slice(0, 3)
+    .map((player) => player.id),
+});
+
+const applyRolesToLineup = (lineup, roleById) => lineup.map((player) => ({
+  ...player,
+  role: roleById[String(player.id)] || '',
+}));
+
+const optimizeRolesForLineup = ({ lineup, formation, tactics, boostContext, oppStats, oppForm, oppTactics, homeAdvantage }) => {
+  const roleCandidates = getRoleCandidateIds(lineup, tactics);
+  const roleById = {};
+  const usedIds = new Set();
+  const roleOptions = [
+    ['captain', PLAYER_ROLES.captain.value, roleCandidates.captain],
+    ['targetMan', PLAYER_ROLES.targetMan.value, roleCandidates.targetMan],
+    ['playmaker', PLAYER_ROLES.playmaker.value, roleCandidates.playmaker],
+    ['ballWinner', PLAYER_ROLES.ballWinner.value, roleCandidates.ballWinner],
+  ];
+
+  for (const [, roleValue, candidates] of roleOptions) {
+    for (const candidateId of candidates) {
+      const id = String(candidateId);
+      if (usedIds.has(id)) continue;
+      const player = lineup.find((item) => String(item.id) === id);
+      if (roleValue === PLAYER_ROLES.captain.value && captainQuality(player) < 60) {
+        continue;
+      }
+      roleById[id] = roleValue;
+      usedIds.add(id);
+      break;
+    }
+  }
+
+  const roleLineup = applyRolesToLineup(lineup, roleById);
+  const stats = calculateTeamScores(roleLineup, formation, boostContext, tactics);
+  const projection = projectMatch({
+    myStats: stats,
+    myForm: formation,
+    myTactics: tactics,
+    oppStats,
+    oppForm,
+    oppTactics,
+    homeAdvantage,
+  });
+
+  return { lineup: roleLineup, roleById, stats, projection };
+};
+
+const getSetPieceCandidates = (lineup) => [
+  '',
+  ...[...lineup]
+    .sort((a, b) => (
+      (getAttackScoreForChance(b.stats, 'FreeKick') + getAttackScoreForChance(b.stats, 'Penalty') + getStat(b.stats, 'TEC', 'CTL'))
+      - (getAttackScoreForChance(a.stats, 'FreeKick') + getAttackScoreForChance(a.stats, 'Penalty') + getStat(a.stats, 'TEC', 'CTL'))
+    ))
+    .slice(0, 4)
+    .map((player) => player.id),
+];
 
 // --- Initial Fallback Data ---
 const initialMyTeam = [];
@@ -261,12 +571,14 @@ export default function OinkSoccerCalc() {
   const [opponentTeam, setOpponentTeam] = useState(persistedState.opponentTeam || initialOpponent);
   const [myForm, setMyForm] = useState(persistedState.myForm || 'Pyramid');
   const [oppForm, setOppForm] = useState(persistedState.oppForm || 'Pyramid');
+  const [myTactics, setMyTactics] = useState(normalizeTactics(persistedState.myTactics));
+  const [oppTactics, setOppTactics] = useState(normalizeTactics(persistedState.oppTactics));
 
   const [myBoost, setMyBoost] = useState(persistedState.myBoost || 'None');
   const [myBoostApps] = useState(persistedState.myBoostApps || 1);
   const [myBoostState, setMyBoostState] = useState(createManualFallbackBoostState(persistedState.myBoost || 'None', persistedState.myBoostApps || 1));
   const [oppBoostState, setOppBoostState] = useState(TEAM_BOOST_STATE_EMPTY);
-  const [homeAdvantage, setHomeAdvantage] = useState(persistedState.homeAdvantage || 'home'); // 'home' or 'away'
+  const [homeAdvantage] = useState(persistedState.homeAdvantage || 'home'); // 'home' or 'away'
   const [walletSyncMeta, setWalletSyncMeta] = useState(
     persistedState.walletSyncMeta || {
       lastSyncedAt: null,
@@ -287,7 +599,7 @@ export default function OinkSoccerCalc() {
 
   const [newPlayer, setNewPlayer] = useState({
     name: '', pos: 'FW',
-    stats: { DEF: 50, CTL: 50, ATT: 50, SPD: 50, GKP: 0 },
+    stats: { DEF: 50, CTL: 50, ATT: 50, SPD: 50, GKP: 0, WRT: 0, FIN: 0, HDG: 0, TEC: 0, CMP: 0, TCK: 0 },
     injury: null
   });
 
@@ -579,12 +891,14 @@ export default function OinkSoccerCalc() {
       opponentTeam: overrides.opponentTeam !== undefined ? overrides.opponentTeam : opponentTeam,
       myForm: overrides.myForm !== undefined ? overrides.myForm : myForm,
       oppForm: overrides.oppForm !== undefined ? overrides.oppForm : oppForm,
+      myTactics: overrides.myTactics !== undefined ? overrides.myTactics : myTactics,
+      oppTactics: overrides.oppTactics !== undefined ? overrides.oppTactics : oppTactics,
       myBoost: overrides.myBoost !== undefined ? overrides.myBoost : myBoost,
       myBoostApps: overrides.myBoostApps !== undefined ? overrides.myBoostApps : myBoostApps,
       homeAdvantage: overrides.homeAdvantage !== undefined ? overrides.homeAdvantage : homeAdvantage,
       walletSyncMeta: overrides.walletSyncMeta !== undefined ? overrides.walletSyncMeta : walletSyncMeta,
     });
-  }, [mySquad, myTeam, opponentTeam, myForm, oppForm, myBoost, myBoostApps, homeAdvantage, walletSyncMeta]);
+  }, [mySquad, myTeam, opponentTeam, myForm, oppForm, myTactics, oppTactics, myBoost, myBoostApps, homeAdvantage, walletSyncMeta]);
 
   useEffect(() => {
     saveCalculatorState({
@@ -593,49 +907,36 @@ export default function OinkSoccerCalc() {
       opponentTeam,
       myForm,
       oppForm,
+      myTactics,
+      oppTactics,
       myBoost,
       myBoostApps,
       homeAdvantage,
       walletSyncMeta,
     });
-  }, [mySquad, myTeam, opponentTeam, myForm, oppForm, myBoost, myBoostApps, homeAdvantage, walletSyncMeta]);
+  }, [mySquad, myTeam, opponentTeam, myForm, oppForm, myTactics, oppTactics, myBoost, myBoostApps, homeAdvantage, walletSyncMeta]);
 
-  const myStats = useMemo(() => calculateTeamScores(myTeam, myForm, mySimulationBoostContext), [myTeam, myForm, mySimulationBoostContext]);
-  const oppStats = useMemo(() => calculateTeamScores(opponentTeam, oppForm, oppBoostContext), [opponentTeam, oppForm, oppBoostContext]);
+  const myStats = useMemo(() => calculateTeamScores(myTeam, myForm, mySimulationBoostContext, myTactics), [myTeam, myForm, mySimulationBoostContext, myTactics]);
+  const oppStats = useMemo(() => calculateTeamScores(opponentTeam, oppForm, oppBoostContext, oppTactics), [opponentTeam, oppForm, oppBoostContext, oppTactics]);
 
   const simulation = useMemo(() => {
-    if (myStats.Count === 0 || oppStats.Count === 0) {
-      return { win: '50.0', myPossession: '50', myxG: '0.00', oppxG: '0.00' };
-    }
-
-    const totalControl = myStats.Control + oppStats.Control;
-    const myPossession = totalControl === 0 ? 0.5 : (myStats.Control / totalControl);
-
-    const calcGoalProb = (att, def) => {
-      const ratio = def === 0 ? 2 : att / def;
-      return Math.max(0.01, Math.min(0.9, 0.15 * (ratio ** 1.5)));
-    };
-
-    const myGoalProb = calcGoalProb(myStats.Attack, oppStats.Defense);
-    const oppGoalProb = calcGoalProb(oppStats.Attack, myStats.Defense);
-
-    const AVG_EVENTS = getAverageEvents(myForm, oppForm, homeAdvantage);
-    const myEvents = AVG_EVENTS * myPossession;
-    const oppEvents = AVG_EVENTS * (1 - myPossession);
-
-    const myxG = myEvents * myGoalProb;
-    const oppxG = oppEvents * oppGoalProb;
-
-    const totalxG = myxG + oppxG;
-    const winProb = totalxG === 0 ? 50 : (myxG / totalxG) * 100;
+    const projection = projectMatch({
+      myStats,
+      myForm,
+      myTactics,
+      oppStats,
+      oppForm,
+      oppTactics,
+      homeAdvantage,
+    });
 
     return {
-      win: winProb.toFixed(1),
-      myPossession: (myPossession * 100).toFixed(0),
-      myxG: myxG.toFixed(2),
-      oppxG: oppxG.toFixed(2)
+      win: projection.win.toFixed(1),
+      myPossession: projection.myPossession.toFixed(0),
+      myxG: projection.myxG.toFixed(2),
+      oppxG: projection.oppxG.toFixed(2),
     };
-  }, [myStats, oppStats, homeAdvantage, myForm, oppForm]);
+  }, [myStats, oppStats, homeAdvantage, myForm, oppForm, myTactics, oppTactics]);
 
   const handleSyncWalletAssets = useCallback(async (addressesOverride = connectedAddresses) => {
     const addressesToSync = Array.from(new Set((addressesOverride || []).filter(Boolean)));
@@ -767,14 +1068,39 @@ export default function OinkSoccerCalc() {
     saveToDb({ myBoost: boostType });
   }
 
-  const handleHomeAwayToggle = (value) => {
-    setHomeAdvantage(value);
-    saveToDb({ homeAdvantage: value });
-  }
+  const handleTacticChange = (teamType, key, value) => {
+    if (teamType === 'my') {
+      const next = normalizeTactics({ ...myTactics, [key]: value });
+      setMyTactics(next);
+      saveToDb({ myTactics: next });
+      return;
+    }
+    const next = normalizeTactics({ ...oppTactics, [key]: value });
+    setOppTactics(next);
+    saveToDb({ oppTactics: next });
+  };
+
+  const handleRoleChange = (player, role, teamType) => {
+    const isMySide = teamType === 'myTeam' || teamType === 'mySquad';
+    const normalizeRole = role === 'none' ? '' : role;
+
+    if (isMySide) {
+      const nextSquad = mySquad.map((item) => item.id === player.id ? { ...item, role: normalizeRole } : item);
+      const nextTeam = myTeam.map((item) => item.id === player.id ? { ...item, role: normalizeRole } : item);
+      setMySquad(nextSquad);
+      setMyTeam(nextTeam);
+      saveToDb({ mySquad: nextSquad, myTeam: nextTeam });
+      return;
+    }
+
+    const nextOpponent = opponentTeam.map((item) => item.id === player.id ? { ...item, role: normalizeRole } : item);
+    setOpponentTeam(nextOpponent);
+    saveToDb({ opponentTeam: nextOpponent });
+  };
 
   const handleCancelEdit = () => {
     setEditingId(null);
-    setNewPlayer({ name: '', pos: 'FW', stats: { DEF: 50, CTL: 50, ATT: 50, SPD: 50, GKP: 0 }, injury: null });
+    setNewPlayer({ name: '', pos: 'FW', stats: { DEF: 50, CTL: 50, ATT: 50, SPD: 50, GKP: 0, WRT: 0, FIN: 0, HDG: 0, TEC: 0, CMP: 0, TCK: 0 }, injury: null });
     setShowManualForm(false);
   };
 
@@ -789,6 +1115,7 @@ export default function OinkSoccerCalc() {
       ovr: getOfficialOvr(newPlayer.stats, newPlayer.pos),
       injury: newPlayer.injury === 'None' ? null : newPlayer.injury,
       source: existingPlayer?.source || 'manual',
+      role: existingPlayer?.role || '',
     };
     p.positions = existingPlayer?.positions || [p.pos];
 
@@ -913,6 +1240,14 @@ export default function OinkSoccerCalc() {
 
     const currentWin = parseFloat(simulation.win);
     const bestByFormation = {};
+    const tacticCombos = ['low', 'medium', 'high'].flatMap((press) =>
+      ['slow', 'normal', 'fast'].flatMap((tempo) =>
+        ['deep', 'normal', 'high'].map((lineHeight) => ({ press, tempo, lineHeight, setPieceTaker: '' })),
+      ),
+    );
+    const candidateLimitByPosition = 8;
+    const maxLineupsPerFormation = 35;
+    let evaluatedCount = 0;
 
     const byPos = { GK: [], DF: [], MF: [], FW: [] };
     mySquad.forEach(p => {
@@ -934,13 +1269,21 @@ export default function OinkSoccerCalc() {
         continue;
       }
 
-      let bestForThisForm = { win: -1, lineup: [] };
+      let bestForThisForm = { win: -1, lineup: [], tactics: DEFAULT_TACTICS };
+      const lineupCandidates = [];
+      const seenLineups = new Set();
+      const positionPools = {
+        GK: [...byPos.GK].sort((a, b) => roughPlayerValue(b) - roughPlayerValue(a)).slice(0, candidateLimitByPosition),
+        DF: [...byPos.DF].sort((a, b) => roughPlayerValue(b) - roughPlayerValue(a)).slice(0, candidateLimitByPosition),
+        MF: [...byPos.MF].sort((a, b) => roughPlayerValue(b) - roughPlayerValue(a)).slice(0, candidateLimitByPosition),
+        FW: [...byPos.FW].sort((a, b) => roughPlayerValue(b) - roughPlayerValue(a)).slice(0, candidateLimitByPosition),
+      };
 
       // Generate combinations for each position
-      const gkCombos = getCombinations(byPos.GK, structure.GK);
-      const dfCombos = getCombinations(byPos.DF, structure.DF);
-      const mfCombos = getCombinations(byPos.MF, structure.MF);
-      const fwCombos = getCombinations(byPos.FW, structure.FW);
+      const gkCombos = getCombinations(positionPools.GK, structure.GK);
+      const dfCombos = getCombinations(positionPools.DF, structure.DF);
+      const mfCombos = getCombinations(positionPools.MF, structure.MF);
+      const fwCombos = getCombinations(positionPools.FW, structure.FW);
 
       // Cartesian product of all position combos
       for (const gks of gkCombos) {
@@ -953,41 +1296,52 @@ export default function OinkSoccerCalc() {
               if (new Set(lineup.map(p => p.id)).size !== lineup.length) {
                 continue;
               }
-
-              // Calculate stats for this lineup
-              const stats = calculateTeamScores(lineup, formKey, mySimulationBoostContext);
-
-              // Calculate win prob against CURRENT opponent
-              // Re-implementing simulation logic here to avoid hook dependency issues inside loop
-              const totalControl = stats.Control + oppStats.Control;
-              const myPossession = totalControl === 0 ? 0.5 : (stats.Control / totalControl);
-
-              const calcGoalProb = (att, def) => {
-                const ratio = def === 0 ? 2 : att / def;
-                return Math.max(0.01, Math.min(0.9, 0.15 * (ratio ** 1.5)));
-              };
-
-              const myGoalProb = calcGoalProb(stats.Attack, oppStats.Defense);
-              const oppGoalProb = calcGoalProb(oppStats.Attack, stats.Defense);
-
-              const AVG_EVENTS = getAverageEvents(formKey, oppForm, homeAdvantage);
-              const myEvents = AVG_EVENTS * myPossession;
-              const oppEvents = AVG_EVENTS * (1 - myPossession);
-
-              const myxG = myEvents * myGoalProb;
-              const oppxG = oppEvents * oppGoalProb;
-
-              const totalxG = myxG + oppxG;
-              const winProb = totalxG === 0 ? 50 : (myxG / totalxG) * 100;
-
-              if (winProb > bestForThisForm.win) {
-                bestForThisForm = {
-                  formation: formKey,
-                  lineup: lineup,
-                  win: winProb,
-                  diff: winProb - currentWin
-                };
+              const key = lineup.map((p) => p.id).sort().join('|');
+              if (seenLineups.has(key)) {
+                continue;
               }
+              seenLineups.add(key);
+              lineupCandidates.push({
+                lineup,
+                roughScore: lineup.reduce((sum, player) => sum + roughPlayerValue(player), 0),
+              });
+            }
+          }
+        }
+      }
+
+      const shortlist = lineupCandidates
+        .sort((a, b) => b.roughScore - a.roughScore)
+        .slice(0, maxLineupsPerFormation);
+
+      for (const candidate of shortlist) {
+        const setPieceCandidates = getSetPieceCandidates(candidate.lineup);
+        for (const baseTactics of tacticCombos) {
+          for (const setPieceTaker of setPieceCandidates) {
+            const tactics = { ...baseTactics, setPieceTaker };
+            const roleResult = optimizeRolesForLineup({
+              lineup: candidate.lineup,
+              formation: formKey,
+              tactics,
+              boostContext: mySimulationBoostContext,
+              oppStats,
+              oppForm,
+              oppTactics,
+              homeAdvantage,
+            });
+            evaluatedCount += 1;
+            if (roleResult.projection.win > bestForThisForm.win) {
+              bestForThisForm = {
+                formation: formKey,
+                lineup: roleResult.lineup,
+                tactics,
+                stats: roleResult.stats,
+                win: roleResult.projection.win,
+                myxG: roleResult.projection.myxG,
+                oppxG: roleResult.projection.oppxG,
+                possession: roleResult.projection.myPossession,
+                diff: roleResult.projection.win - currentWin,
+              };
             }
           }
         }
@@ -998,15 +1352,26 @@ export default function OinkSoccerCalc() {
       }
     }
 
-    setSuggestions(bestByFormation);
+    setSuggestions({ ...bestByFormation, __meta: { evaluatedCount } });
     setAnalyzing(false);
   };
 
   const applySuggestion = (config) => {
     if (!config) return;
+    const roleById = new Map(config.lineup.map((player) => [player.id, player.role || '']));
+    const nextSquad = mySquad.map((player) => (
+      roleById.has(player.id) ? { ...player, role: roleById.get(player.id) } : player
+    ));
+    setMySquad(nextSquad);
     setMyTeam(config.lineup);
     setMyForm(config.formation);
-    saveToDb({ myTeam: config.lineup, myForm: config.formation });
+    setMyTactics(normalizeTactics(config.tactics));
+    saveToDb({
+      mySquad: nextSquad,
+      myTeam: config.lineup,
+      myForm: config.formation,
+      myTactics: normalizeTactics(config.tactics),
+    });
     setSuggestions({});
   };
 
@@ -1033,7 +1398,14 @@ export default function OinkSoccerCalc() {
 
   const topSuggestion = useMemo(() => (
     Object.values(suggestions)
+      .filter((suggestion) => suggestion?.formation)
       .sort((a, b) => b.win - a.win)[0] || null
+  ), [suggestions]);
+
+  const suggestionList = useMemo(() => (
+    Object.values(suggestions)
+      .filter((suggestion) => suggestion?.formation)
+      .sort((a, b) => b.win - a.win)
   ), [suggestions]);
 
   const openInjuryModal = useCallback((player, teamType) => {
@@ -1213,6 +1585,7 @@ export default function OinkSoccerCalc() {
                   player={p}
                   teamType="myTeam"
                   onInjuryOpen={() => openInjuryModal(p, 'myTeam')}
+                  onRoleChange={(role) => handleRoleChange(p, role, 'myTeam')}
                 />
               ))}
               {myTeam.length === 0 && (
@@ -1308,6 +1681,33 @@ export default function OinkSoccerCalc() {
                         />
                       </div>
                     )}
+                  </div>
+
+                  <div>
+                    <div className="mb-2 text-[10px] font-bold uppercase tracking-[0.1em] text-[#6b7a94]">Specialists</div>
+                    <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+                      {[
+                        ['WRT', 'Work rate'],
+                        ['FIN', 'Finishing'],
+                        ['HDG', 'Heading'],
+                        ['TEC', 'Technique'],
+                        ['CMP', 'Composure'],
+                        ['TCK', 'Tackling'],
+                      ].map(([key, label]) => (
+                        <div key={key}>
+                          <label className="mb-1 block text-[10px] font-bold uppercase tracking-[0.1em] text-[#6b7a94]">{label}</label>
+                          <input
+                            type="number"
+                            min="0"
+                            max="100"
+                            placeholder="Auto"
+                            className="w-full rounded-md border border-[#1e2a3a] bg-[#161c28] px-2 py-1.5 text-sm font-mono text-white outline-none focus:border-[#00e676]"
+                            value={newPlayer.stats[key] || ''}
+                            onChange={(e) => handleStatChange(key, e.target.value)}
+                          />
+                        </div>
+                      ))}
+                    </div>
                   </div>
 
                   <button
@@ -1452,6 +1852,7 @@ export default function OinkSoccerCalc() {
                 player={p}
                 teamType="opponent"
                 onInjuryOpen={() => openInjuryModal(p, 'opponent')}
+                onRoleChange={(role) => handleRoleChange(p, role, 'opponent')}
               />
             ))}
             {opponentTeam.length === 0 && (
@@ -1462,6 +1863,23 @@ export default function OinkSoccerCalc() {
 
         {activeTab === 'conditions' && (
           <section id="tab-conditions" className="space-y-4">
+            <div className="grid grid-cols-1 gap-3 min-[780px]:grid-cols-2">
+              <TacticsCard
+                title="My Tactics"
+                tone="my"
+                tactics={myTactics}
+                players={myTeam}
+                onChange={(key, value) => handleTacticChange('my', key, value)}
+              />
+              <TacticsCard
+                title="Opponent Tactics"
+                tone="opp"
+                tactics={oppTactics}
+                players={opponentTeam}
+                onChange={(key, value) => handleTacticChange('opp', key, value)}
+              />
+            </div>
+
             <div className="grid grid-cols-1 gap-3 min-[500px]:grid-cols-2">
               {/* Location selection hidden as it only affects match tempo (xG volume) without changing win probability ratios in core game logic */}
 
@@ -1523,29 +1941,52 @@ export default function OinkSoccerCalc() {
           <section id="tab-result" className="space-y-4">
             <div className="rounded-[10px] border border-[#1e2a3a] bg-[#161c28] p-4">
               <div className="mb-1 text-sm font-bold">⚡ Smart Coach</div>
-              <div className="mb-3 text-xs text-[#6b7a94]">Lineup suggestions for this matchup</div>
+              <div className="mb-3 text-xs text-[#6b7a94]">Formation, tactics, roles, and set-piece settings for this matchup</div>
               <div className="space-y-2">
-                {Object.values(suggestions).sort((a, b) => b.win - a.win).slice(0, 3).map((sugg) => (
+                {suggestionList.slice(0, 3).map((sugg) => {
+                  const setPiecePlayer = sugg.tactics?.setPieceTaker
+                    ? sugg.lineup.find((player) => String(player.id) === String(sugg.tactics.setPieceTaker))
+                    : null;
+                  const roleLabels = sugg.lineup
+                    .filter((player) => player.role)
+                    .map((player) => `${Object.values(PLAYER_ROLES).find((role) => role.value === player.role)?.label || player.role}: ${player.name}`);
+                  return (
                   <button
                     key={sugg.formation}
                     onClick={() => applySuggestion(sugg)}
                     className="w-full rounded-md border border-[#1e2a3a] border-l-[3px] border-l-[#00e676] bg-[#111620] p-3 text-left text-xs text-[#9aa5bb]"
                   >
-                    <strong className="text-[#00e676]">{FORMATIONS[sugg.formation].name}</strong> • {sugg.win.toFixed(1)}% ({sugg.diff >= 0 ? '+' : ''}{sugg.diff.toFixed(1)})
+                    <div>
+                      <strong className="text-[#00e676]">{FORMATIONS[sugg.formation].name}</strong>
+                      {' '}• {sugg.win.toFixed(1)}% ({sugg.diff >= 0 ? '+' : ''}{sugg.diff.toFixed(1)})
+                      {' '}• xG {sugg.myxG.toFixed(2)} : {sugg.oppxG.toFixed(2)}
+                    </div>
+                    <div className="mt-1 text-[#d0d7e5]">
+                      Press {TACTICS.press[sugg.tactics.press]?.label}, Tempo {TACTICS.tempo[sugg.tactics.tempo]?.label}, Line {TACTICS.lineHeight[sugg.tactics.lineHeight]?.label}, Set pieces {setPiecePlayer?.name || 'Auto'}
+                    </div>
+                    {roleLabels.length > 0 && (
+                      <div className="mt-1 text-[#7f8aa3]">{roleLabels.join(' · ')}</div>
+                    )}
                   </button>
-                ))}
-                {Object.keys(suggestions).length === 0 && (
+                  );
+                })}
+                {suggestionList.length === 0 && (
                   <div className="rounded-md border border-[#1e2a3a] bg-[#111620] p-3 text-xs text-[#9aa5bb]">
                     No suggestions yet. Analyze to generate matchup-specific recommendations.
                   </div>
                 )}
               </div>
+              {suggestions.__meta?.evaluatedCount ? (
+                <div className="mt-2 text-[11px] text-[#6b7a94]">
+                  Checked {suggestions.__meta.evaluatedCount.toLocaleString()} lineup/tactics configurations.
+                </div>
+              ) : null}
               <button
                 onClick={analyzeLineups}
-                disabled={analyzing || mySquad.length <= 5}
+                disabled={analyzing || mySquad.length < 5 || opponentTeam.length < 5}
                 className="mt-3 inline-flex w-full items-center justify-center gap-2 rounded-md border border-[#1e2a3a] bg-[#111620] px-3 py-2 text-xs font-semibold text-[#e8edf5] hover:border-[#00e676]/70 hover:text-[#00e676] disabled:cursor-not-allowed disabled:opacity-50"
               >
-                {analyzing ? <Loader2 size={13} className="animate-spin" /> : <Zap size={13} />} Analyze Full Bench →
+                {analyzing ? <Loader2 size={13} className="animate-spin" /> : <Zap size={13} />} Analyze Best Settings →
               </button>
             </div>
 
@@ -1599,6 +2040,7 @@ export default function OinkSoccerCalc() {
                 player={p}
                 teamType="mySquad"
                 onInjuryOpen={() => openInjuryModal(p, 'mySquad')}
+                onRoleChange={(role) => handleRoleChange(p, role, 'mySquad')}
                 onSwap={() => handleSwap(p)}
                 isBench
               />
@@ -1644,6 +2086,53 @@ export default function OinkSoccerCalc() {
   );
 }
 // --- Components ---
+
+function TacticsCard({ title, tone, tactics, players, onChange }) {
+  const accent = tone === 'opp' ? '#ffab00' : '#00e676';
+  const normalized = normalizeTactics(tactics);
+  const selectClass = "w-full rounded-md border border-[#1e2a3a] bg-[#111620] px-2 py-2 text-sm text-[#e8edf5] outline-none focus:border-[#00e676]";
+
+  return (
+    <div className="rounded-[10px] border border-[#1e2a3a] bg-[#111620] p-4">
+      <div className="mb-3 text-xs font-bold uppercase tracking-[0.1em]" style={{ color: accent }}>{title}</div>
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+        <label className="block">
+          <span className="mb-1 block text-[10px] font-bold uppercase tracking-[0.1em] text-[#6b7a94]">Press</span>
+          <select value={normalized.press} onChange={(event) => onChange('press', event.target.value)} className={selectClass}>
+            {Object.entries(TACTICS.press).map(([key, value]) => (
+              <option key={key} value={key}>{value.label}</option>
+            ))}
+          </select>
+        </label>
+        <label className="block">
+          <span className="mb-1 block text-[10px] font-bold uppercase tracking-[0.1em] text-[#6b7a94]">Tempo</span>
+          <select value={normalized.tempo} onChange={(event) => onChange('tempo', event.target.value)} className={selectClass}>
+            {Object.entries(TACTICS.tempo).map(([key, value]) => (
+              <option key={key} value={key}>{value.label}</option>
+            ))}
+          </select>
+        </label>
+        <label className="block">
+          <span className="mb-1 block text-[10px] font-bold uppercase tracking-[0.1em] text-[#6b7a94]">Line</span>
+          <select value={normalized.lineHeight} onChange={(event) => onChange('lineHeight', event.target.value)} className={selectClass}>
+            {Object.entries(TACTICS.lineHeight).map(([key, value]) => (
+              <option key={key} value={key}>{value.label}</option>
+            ))}
+          </select>
+        </label>
+        <label className="block">
+          <span className="mb-1 block text-[10px] font-bold uppercase tracking-[0.1em] text-[#6b7a94]">Set Pieces</span>
+          <select value={normalized.setPieceTaker} onChange={(event) => onChange('setPieceTaker', event.target.value)} className={selectClass}>
+            <option value="">Auto</option>
+            {players.map((player) => (
+              <option key={player.id} value={player.id}>{player.name}</option>
+            ))}
+          </select>
+        </label>
+      </div>
+    </div>
+  );
+}
 
 function ComparisonStat({ title, mine, opp }) {
   const delta = Number((mine - opp).toFixed(1));
@@ -1837,7 +2326,7 @@ function StatCell({ label, baseValue, boostedValue, isLast }) {
   );
 }
 
-function PlayerRow({ player, onInjuryOpen, onSwap, isBench }) {
+function PlayerRow({ player, onInjuryOpen, onRoleChange, onSwap, isBench }) {
   const injuryMod = player.injury && INJURIES[player.injury] ? INJURIES[player.injury].reduction : 1.0;
   const scores = {
     CTL: getControlScore(player.stats, player.pos, injuryMod),
@@ -1911,7 +2400,19 @@ function PlayerRow({ player, onInjuryOpen, onSwap, isBench }) {
         ))}
       </div>
 
-      <div className="flex items-center justify-end border-t border-[#1e2a3a] px-[14px] py-2">
+      <div className="flex flex-wrap items-center justify-end gap-2 border-t border-[#1e2a3a] px-[14px] py-2">
+        {typeof onRoleChange === 'function' && (
+          <select
+            value={player.role || ''}
+            onClick={(event) => event.stopPropagation()}
+            onChange={(event) => onRoleChange(event.target.value)}
+            className="rounded-[5px] border border-[#1e2a3a] bg-[#161c28] px-2 py-1.5 text-[11px] font-semibold text-[#9aa5bb] outline-none hover:border-[#00e676] focus:border-[#00e676]"
+          >
+            {Object.values(PLAYER_ROLES).map((role) => (
+              <option key={role.value || 'none'} value={role.value}>{role.label}</option>
+            ))}
+          </select>
+        )}
         <button
           onClick={onInjuryOpen}
           className={`inline-flex items-center gap-1 rounded-[5px] border px-3 py-1.5 text-[11px] font-semibold transition-colors ${player.injury

@@ -57,23 +57,18 @@ const parseStructure = (slotsBlock) => {
 };
 
 const parseFormationBlock = (source, varName, style) => {
-  const regex = new RegExp(`var\\s+${varName}\\s*=\\s*FormationConfig\\s*\\{([\\s\\S]*?)\\n\\}`, 'm');
+  const regex = new RegExp(`${varName}\\s*=\\s*map\\[uint64\\]PlayerPosition\\s*\\{([\\s\\S]*?)\\n\\s*\\}`, 'm');
   const match = source.match(regex);
   if (!match) {
     throw new Error(`Could not parse formation block for ${varName}`);
   }
-  const block = match[1];
-  const slotsBlockMatch = block.match(/Slots:\s*map\[uint64\]PlayerPosition\s*\{([\s\S]*?)\},/m);
-  if (!slotsBlockMatch) {
-    throw new Error(`Could not parse slots for ${varName}`);
-  }
 
   return {
     style,
-    defMod: parseFloatFrom(block, /DefenseModifier:\s*([0-9.]+)/, `${varName}.DefenseModifier`),
-    ctlMod: parseFloatFrom(block, /ControlModifier:\s*([0-9.]+)/, `${varName}.ControlModifier`),
-    attMod: parseFloatFrom(block, /AttackModifier:\s*([0-9.]+)/, `${varName}.AttackModifier`),
-    structure: parseStructure(slotsBlockMatch[1]),
+    defMod: 1,
+    ctlMod: 1,
+    attMod: 1,
+    structure: parseStructure(match[1]),
   };
 };
 
@@ -118,11 +113,60 @@ const getSourceMetadata = (commonRoot) => {
 
 const main = () => {
   const commonRoot = resolveCommonPath();
-  const formationSource = readFile(commonRoot, 'formation.go');
-  const teamSource = readFile(commonRoot, 'team.go');
-  const boostsSource = readFile(commonRoot, 'boosts.go');
-  const gameSource = readFile(commonRoot, 'game.go');
+  const formationSource = readFile(commonRoot, 'v2/formation.go');
+  const tuningSource = readFile(commonRoot, 'v2/internal/tuning/tuning.go');
   const sourceMetadata = getSourceMetadata(commonRoot);
+  const formationNameByKey = {
+    Box: 'The Box',
+    Diamond: 'The Diamond',
+    Pyramid: 'The Pyramid',
+    Y: 'The Y',
+  };
+  const formationStyleByKey = {
+    Box: 'BAL',
+    Diamond: 'BAL',
+    Pyramid: 'DEF',
+    Y: 'ATT',
+  };
+  const parseFormationProfile = (name) => {
+    const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const regex = new RegExp(`"${escaped}":\\s*\\{Possession:\\s*([0-9.]+),\\s*ChanceCreation:\\s*([0-9.]+),\\s*ChanceQuality:\\s*([0-9.]+),\\s*DefSolidity:\\s*([0-9.]+),\\s*InjuryRisk:\\s*([0-9.]+)\\}`);
+    const match = tuningSource.match(regex);
+    if (!match) {
+      throw new Error(`Could not parse formation profile for ${name}`);
+    }
+    return {
+      possession: Number.parseFloat(match[1]),
+      chanceCreation: Number.parseFloat(match[2]),
+      chanceQuality: Number.parseFloat(match[3]),
+      defSolidity: Number.parseFloat(match[4]),
+      injuryRisk: Number.parseFloat(match[5]),
+    };
+  };
+  const formationFor = (key, varName) => {
+    const profile = parseFormationProfile(formationNameByKey[key]);
+    return {
+      ...parseFormationBlock(formationSource, varName, formationStyleByKey[key]),
+      defMod: profile.defSolidity,
+      ctlMod: profile.possession,
+      attMod: profile.chanceCreation * profile.chanceQuality,
+      profile,
+    };
+  };
+
+  const parsePositionWeights = (name) => {
+    const regex = new RegExp(`${name}\\s*=\\s*PositionWeights\\{Goalkeeper:\\s*([0-9.]+),\\s*Defense:\\s*([0-9.]+),\\s*Midfield:\\s*([0-9.]+),\\s*Attack:\\s*([0-9.]+)\\}`);
+    const match = tuningSource.match(regex);
+    if (!match) {
+      throw new Error(`Could not parse ${name}`);
+    }
+    return {
+      GK: Number.parseFloat(match[1]),
+      DF: Number.parseFloat(match[2]),
+      MF: Number.parseFloat(match[3]),
+      FW: Number.parseFloat(match[4]),
+    };
+  };
 
   const snapshot = {
     generatedAt: sourceMetadata.generatedAt,
@@ -130,17 +174,51 @@ const main = () => {
     sourceRef: sourceMetadata.sourceRef,
     rules: {
       formations: {
-        Box: parseFormationBlock(formationSource, 'TheBoxFormation', 'BAL'),
-        Diamond: parseFormationBlock(formationSource, 'TheDiamondFormation', 'BAL'),
-        Pyramid: parseFormationBlock(formationSource, 'ThePyramidFormation', 'DEF'),
-        Y: parseFormationBlock(formationSource, 'TheYFormation', 'ATT'),
+        Box: formationFor('Box', 'slotsBox'),
+        Diamond: formationFor('Diamond', 'slotsDiamond'),
+        Pyramid: formationFor('Pyramid', 'slotsPyramid'),
+        Y: formationFor('Y', 'slotsY'),
       },
-      defenseBiasMultiplier: parseFloatFrom(teamSource, /const\s+defenseBiasMultiplier\s*=\s*([0-9.]+)/, 'defenseBiasMultiplier'),
+      defenseBiasMultiplier: parseFloatFrom(tuningSource, /DefenseBiasMultiplier\s*=\s*([0-9.]+)/, 'DefenseBiasMultiplier'),
       boosts: {
-        decayPerApplication: parseFloatFrom(boostsSource, /DRDecayPerApplication\s*=\s*([0-9.]+)/, 'DRDecayPerApplication'),
-        minMultiplier: parseFloatFrom(boostsSource, /DRMinMultiplier\s*=\s*([0-9.]+)/, 'DRMinMultiplier'),
+        decayPerApplication: parseFloatFrom(tuningSource, /BoostDecay\s*=\s*([0-9.]+)/, 'BoostDecay'),
+        minMultiplier: parseFloatFrom(tuningSource, /BoostMinMultiplier\s*=\s*([0-9.]+)/, 'BoostMinMultiplier'),
       },
-      chanceRanges: parseChanceRanges(gameSource),
+      skillCurve: {
+        exponent: parseFloatFrom(tuningSource, /SkillCurveExponent\s*=\s*([0-9.]+)/, 'SkillCurveExponent'),
+        floor: parseFloatFrom(tuningSource, /SkillCurveFloor\s*=\s*([0-9.]+)/, 'SkillCurveFloor'),
+      },
+      positionWeights: {
+        control: parsePositionWeights('ControlPositionWeights'),
+        defense: parsePositionWeights('DefensePositionWeights'),
+      },
+      tactics: {
+        press: {
+          low: { label: 'Low', controlFactor: 1.02, injuryFactor: 0.95, fatigueFactor: 1 },
+          medium: { label: 'Medium', controlFactor: 1, injuryFactor: 1, fatigueFactor: 1 },
+          high: { label: 'High', controlFactor: 0.94, injuryFactor: 1.10, fatigueFactor: 0.94 },
+        },
+        tempo: {
+          slow: { label: 'Slow', chanceFactor: 0.92, qualityFactor: 1.05 },
+          normal: { label: 'Normal', chanceFactor: 1, qualityFactor: 1 },
+          fast: { label: 'Fast', chanceFactor: 1.10, qualityFactor: 0.96 },
+        },
+        lineHeight: {
+          deep: { label: 'Deep', controlFactor: 1.03, defenseFactor: 1.05 },
+          normal: { label: 'Normal', controlFactor: 1, defenseFactor: 1 },
+          high: { label: 'High', controlFactor: 0.97, defenseFactor: 0.96 },
+        },
+      },
+      chanceTypes: {
+        OpenPlay: { label: 'Open Play', baseWeight: 8, attackBoost: 1, defenseScale: 1, positionWeights: { GK: 2, DF: 10, MF: 20, FW: 70 } },
+        Cross: { label: 'Cross', baseWeight: 5, attackBoost: 0.95, defenseScale: 1.05, positionWeights: { GK: 0, DF: 5, MF: 25, FW: 70 } },
+        Corner: { label: 'Corner', baseWeight: 3, attackBoost: 0.90, defenseScale: 1.10, positionWeights: { GK: 0, DF: 15, MF: 25, FW: 60 } },
+        LongRange: { label: 'Long Range', baseWeight: 3, attackBoost: 0.70, defenseScale: 1.20, positionWeights: { GK: 0, DF: 10, MF: 50, FW: 40 } },
+        FreeKick: { label: 'Free Kick', baseWeight: 3, attackBoost: 0.85, defenseScale: 1.10, positionWeights: { GK: 0, DF: 10, MF: 45, FW: 45 } },
+        Penalty: { label: 'Penalty', baseWeight: 2, attackBoost: 1.50, defenseScale: 0.50, positionWeights: { GK: 0, DF: 5, MF: 25, FW: 70 } },
+        GoalKeeperShot: { label: 'Breakaway', baseWeight: 2, attackBoost: 1.20, defenseScale: 0.70, positionWeights: { GK: 0, DF: 0, MF: 20, FW: 80 } },
+      },
+      chanceRanges: parseChanceRanges(tuningSource),
     },
   };
 

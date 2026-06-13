@@ -6,6 +6,18 @@ const DEFAULT_STATE = {
   opponentTeam: [],
   myForm: 'Pyramid',
   oppForm: 'Pyramid',
+  myTactics: {
+    press: 'medium',
+    tempo: 'normal',
+    lineHeight: 'normal',
+    setPieceTaker: '',
+  },
+  oppTactics: {
+    press: 'medium',
+    tempo: 'normal',
+    lineHeight: 'normal',
+    setPieceTaker: '',
+  },
   myBoost: 'None',
   myBoostApps: 1,
   homeAdvantage: 'home',
@@ -17,7 +29,8 @@ const DEFAULT_STATE = {
   },
 };
 
-const VALID_PLAYER_SOURCES = new Set(['wallet', 'manual', 'upload']);
+const VALID_PLAYER_SOURCES = new Set(['wallet', 'manual', 'upload', 'team-url']);
+const VALID_PLAYER_ROLES = new Set(['', 'captain', 'target_man', 'playmaker', 'ball_winner']);
 
 const normalizePlayer = (player) => {
   if (!player || typeof player !== 'object') {
@@ -29,7 +42,9 @@ const normalizePlayer = (player) => {
     source = 'manual';
   }
 
-  return { ...player, source };
+  const role = VALID_PLAYER_ROLES.has(player.role) ? player.role : '';
+
+  return { ...player, source, role };
 };
 
 const normalizeArray = (arr) => {
@@ -57,6 +72,14 @@ export const loadCalculatorState = () => {
       mySquad: normalizeArray(parsed.mySquad),
       myTeam: normalizeArray(parsed.myTeam),
       opponentTeam: normalizeArray(parsed.opponentTeam),
+      myTactics: {
+        ...DEFAULT_STATE.myTactics,
+        ...(parsed.myTactics || {}),
+      },
+      oppTactics: {
+        ...DEFAULT_STATE.oppTactics,
+        ...(parsed.oppTactics || {}),
+      },
       walletSyncMeta: {
         ...DEFAULT_STATE.walletSyncMeta,
         ...(parsed.walletSyncMeta || {}),

@@ -1,55 +1,83 @@
 {
-  "generatedAt": "2026-04-10T08:16:02+01:00",
+  "generatedAt": "2026-06-12T16:03:10+01:00",
   "sourceRepo": "https://github.com/stein-f/oink-soccer-common",
-  "sourceRef": "6022db268779e4fe6d8c688bc875e282e84a068d",
+  "sourceRef": "516aec9fdc9ad8a5d9f17892f940d3c8dfdef29d",
   "rules": {
     "formations": {
       "Box": {
         "style": "BAL",
-        "defMod": 1.05,
-        "ctlMod": 1,
-        "attMod": 1.05,
+        "defMod": 0.9,
+        "ctlMod": 1.12,
+        "attMod": 1.1025,
         "structure": {
           "GK": 1,
           "DF": 2,
           "MF": 0,
           "FW": 2
+        },
+        "profile": {
+          "possession": 1.12,
+          "chanceCreation": 1.05,
+          "chanceQuality": 1.05,
+          "defSolidity": 0.9,
+          "injuryRisk": 1.05
         }
       },
       "Diamond": {
         "style": "BAL",
-        "defMod": 0.94,
-        "ctlMod": 1.02,
-        "attMod": 0.94,
+        "defMod": 1,
+        "ctlMod": 1.03,
+        "attMod": 1,
         "structure": {
           "GK": 1,
           "DF": 1,
           "MF": 2,
           "FW": 1
+        },
+        "profile": {
+          "possession": 1.03,
+          "chanceCreation": 1,
+          "chanceQuality": 1,
+          "defSolidity": 1,
+          "injuryRisk": 1
         }
       },
       "Pyramid": {
         "style": "DEF",
-        "defMod": 1.05,
-        "ctlMod": 0.97,
-        "attMod": 0.94,
+        "defMod": 1.02,
+        "ctlMod": 1,
+        "attMod": 1.03,
         "structure": {
           "GK": 1,
           "DF": 2,
           "MF": 1,
           "FW": 1
+        },
+        "profile": {
+          "possession": 1,
+          "chanceCreation": 1,
+          "chanceQuality": 1.03,
+          "defSolidity": 1.02,
+          "injuryRisk": 1
         }
       },
       "Y": {
         "style": "ATT",
-        "defMod": 0.96,
-        "ctlMod": 0.98,
-        "attMod": 1.05,
+        "defMod": 0.97,
+        "ctlMod": 1,
+        "attMod": 1.0506,
         "structure": {
           "GK": 1,
           "DF": 1,
           "MF": 1,
           "FW": 2
+        },
+        "profile": {
+          "possession": 1,
+          "chanceCreation": 1.03,
+          "chanceQuality": 1.02,
+          "defSolidity": 0.97,
+          "injuryRisk": 1
         }
       }
     },
@@ -57,6 +85,166 @@
     "boosts": {
       "decayPerApplication": 0.97,
       "minMultiplier": 0.35
+    },
+    "skillCurve": {
+      "exponent": 4,
+      "floor": 1
+    },
+    "positionWeights": {
+      "control": {
+        "GK": 0.05,
+        "DF": 0.15,
+        "MF": 0.65,
+        "FW": 0.15
+      },
+      "defense": {
+        "GK": 0.35,
+        "DF": 0.4,
+        "MF": 0.2,
+        "FW": 0.05
+      }
+    },
+    "tactics": {
+      "press": {
+        "low": {
+          "label": "Low",
+          "controlFactor": 1.02,
+          "injuryFactor": 0.95,
+          "fatigueFactor": 1
+        },
+        "medium": {
+          "label": "Medium",
+          "controlFactor": 1,
+          "injuryFactor": 1,
+          "fatigueFactor": 1
+        },
+        "high": {
+          "label": "High",
+          "controlFactor": 0.94,
+          "injuryFactor": 1.1,
+          "fatigueFactor": 0.94
+        }
+      },
+      "tempo": {
+        "slow": {
+          "label": "Slow",
+          "chanceFactor": 0.92,
+          "qualityFactor": 1.05
+        },
+        "normal": {
+          "label": "Normal",
+          "chanceFactor": 1,
+          "qualityFactor": 1
+        },
+        "fast": {
+          "label": "Fast",
+          "chanceFactor": 1.1,
+          "qualityFactor": 0.96
+        }
+      },
+      "lineHeight": {
+        "deep": {
+          "label": "Deep",
+          "controlFactor": 1.03,
+          "defenseFactor": 1.05
+        },
+        "normal": {
+          "label": "Normal",
+          "controlFactor": 1,
+          "defenseFactor": 1
+        },
+        "high": {
+          "label": "High",
+          "controlFactor": 0.97,
+          "defenseFactor": 0.96
+        }
+      }
+    },
+    "chanceTypes": {
+      "OpenPlay": {
+        "label": "Open Play",
+        "baseWeight": 8,
+        "attackBoost": 1,
+        "defenseScale": 1,
+        "positionWeights": {
+          "GK": 2,
+          "DF": 10,
+          "MF": 20,
+          "FW": 70
+        }
+      },
+      "Cross": {
+        "label": "Cross",
+        "baseWeight": 5,
+        "attackBoost": 0.95,
+        "defenseScale": 1.05,
+        "positionWeights": {
+          "GK": 0,
+          "DF": 5,
+          "MF": 25,
+          "FW": 70
+        }
+      },
+      "Corner": {
+        "label": "Corner",
+        "baseWeight": 3,
+        "attackBoost": 0.9,
+        "defenseScale": 1.1,
+        "positionWeights": {
+          "GK": 0,
+          "DF": 15,
+          "MF": 25,
+          "FW": 60
+        }
+      },
+      "LongRange": {
+        "label": "Long Range",
+        "baseWeight": 3,
+        "attackBoost": 0.7,
+        "defenseScale": 1.2,
+        "positionWeights": {
+          "GK": 0,
+          "DF": 10,
+          "MF": 50,
+          "FW": 40
+        }
+      },
+      "FreeKick": {
+        "label": "Free Kick",
+        "baseWeight": 3,
+        "attackBoost": 0.85,
+        "defenseScale": 1.1,
+        "positionWeights": {
+          "GK": 0,
+          "DF": 10,
+          "MF": 45,
+          "FW": 45
+        }
+      },
+      "Penalty": {
+        "label": "Penalty",
+        "baseWeight": 2,
+        "attackBoost": 1.5,
+        "defenseScale": 0.5,
+        "positionWeights": {
+          "GK": 0,
+          "DF": 5,
+          "MF": 25,
+          "FW": 70
+        }
+      },
+      "GoalKeeperShot": {
+        "label": "Breakaway",
+        "baseWeight": 2,
+        "attackBoost": 1.2,
+        "defenseScale": 0.7,
+        "positionWeights": {
+          "GK": 0,
+          "DF": 0,
+          "MF": 20,
+          "FW": 80
+        }
+      }
     },
     "chanceRanges": {
       "HOME:ATT|AWAY:ATT": {
@@ -76,24 +264,24 @@
         "max": 12
       },
       "HOME:BAL|AWAY:BAL": {
-        "min": 4,
-        "max": 9
+        "min": 5,
+        "max": 10
       },
       "HOME:BAL|AWAY:DEF": {
-        "min": 3,
-        "max": 8
+        "min": 5,
+        "max": 10
       },
       "HOME:DEF|AWAY:ATT": {
         "min": 6,
         "max": 11
       },
       "HOME:DEF|AWAY:BAL": {
-        "min": 3,
-        "max": 8
+        "min": 5,
+        "max": 10
       },
       "HOME:DEF|AWAY:DEF": {
-        "min": 2,
-        "max": 6
+        "min": 5,
+        "max": 9
       }
     }
   }

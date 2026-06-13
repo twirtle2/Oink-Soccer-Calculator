@@ -94,6 +94,14 @@ const toInt = (value, fallback = 0) => {
   return Number.isFinite(parsed) ? parsed : fallback;
 };
 
+const avgInt = (values, fallback = 0) => {
+  const parsed = values
+    .map((value) => toInt(value, Number.NaN))
+    .filter((value) => Number.isFinite(value));
+  if (parsed.length === 0) return fallback;
+  return Math.round(parsed.reduce((sum, value) => sum + value, 0) / parsed.length);
+};
+
 const mapPosition = (value) => {
   const pos = (value || '').trim().toUpperCase();
   if (pos === 'GK') return 'GK';
@@ -118,7 +126,19 @@ const getStats = (fifaRow, pos) => {
   const ctl = toInt(fifaRow.passing, 50);
   const def = toInt(fifaRow.defending, 50);
   const gkp = toInt(fifaRow.goalkeeping_handling, pos === 'GK' ? 50 : 0);
-  return { SPD: spd, ATT: att, CTL: ctl, DEF: def, GKP: gkp };
+  return {
+    SPD: spd,
+    ATT: att,
+    CTL: ctl,
+    DEF: def,
+    GKP: gkp,
+    WRT: toInt(fifaRow.power_stamina, spd),
+    FIN: toInt(fifaRow.attacking_finishing, att),
+    HDG: avgInt([fifaRow.attacking_heading_accuracy, fifaRow.power_jumping], att),
+    TEC: avgInt([fifaRow.skill_curve, fifaRow.skill_fk_accuracy, fifaRow.power_long_shots], ctl),
+    CMP: toInt(fifaRow.mentality_composure, ctl),
+    TCK: avgInt([fifaRow.defending_standing_tackle, fifaRow.defending_sliding_tackle, fifaRow.mentality_interceptions], def),
+  };
 };
 
 const getOvr = (stats, pos) => {

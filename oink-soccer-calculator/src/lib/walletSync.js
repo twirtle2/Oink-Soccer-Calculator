@@ -53,6 +53,7 @@ export const buildWalletPlayers = (heldAssetIds, catalogByAssetId) => {
       stats: entry.stats,
       ovr: entry.ovr,
       injury: null,
+      role: '',
       source: 'wallet',
       assetId: entry.assetId,
       assetKey: entry.assetKey,

@@ -119,6 +119,12 @@ const mapTeamPayloadToPlayers = (teamId, payload) => {
       CTL: clampStat(attrs.control_rating, 50),
       DEF: clampStat(attrs.defense_rating, 50),
       GKP: clampStat(attrs.goalkeeper_rating, 0),
+      WRT: clampStat(attrs.work_rate, 0),
+      FIN: clampStat(attrs.finishing, 0),
+      HDG: clampStat(attrs.heading, 0),
+      TEC: clampStat(attrs.technique, 0),
+      CMP: clampStat(attrs.composure, 0),
+      TCK: clampStat(attrs.tackling, 0),
     };
 
     const pos = getPositionKey(attrs.position, stats);
@@ -140,6 +146,7 @@ const mapTeamPayloadToPlayers = (teamId, payload) => {
       stats,
       ovr,
       injury: null,
+      role: slot.role || slot.player_role || '',
       source: 'team-url',
       imageUrl: slot.asset?.image_url || slot.asset?.image || attrs.image_url || null,
       positions: Array.isArray(attrs.positions) && attrs.positions.length > 0
