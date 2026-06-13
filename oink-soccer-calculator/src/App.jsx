@@ -217,7 +217,9 @@ const captainSelfBoost = (player) => {
 };
 
 const assignLineupPositions = (players, structure) => {
-  const slots = Object.entries(structure).flatMap(([pos, count]) => Array.from({ length: count }, () => pos));
+  const slots = Object.entries(structure).flatMap(([pos, count]) => (
+    Array.from({ length: count }, (_, index) => ({ pos, index }))
+  ));
   if (players.length === 0 || slots.length === 0) return [];
 
   let best = null;
@@ -233,13 +235,19 @@ const assignLineupPositions = (players, structure) => {
       return;
     }
 
-    const selectedPosition = slots[slotIndex];
+    const slot = slots[slotIndex];
+    const selectedPosition = slot.pos;
     for (const player of players) {
       if (used.has(player.id)) continue;
       used.add(player.id);
       const inPosition = hasPlayablePosition(player, selectedPosition);
       const fit = getOfficialOvr(player.stats, selectedPosition) + (inPosition ? 100 : 0);
-      current.push({ ...player, selectedPosition, outOfPosition: !inPosition });
+      current.push({
+        ...player,
+        selectedPosition,
+        slotIndex: slot.index,
+        outOfPosition: !inPosition,
+      });
       backtrack(slotIndex + 1, current, score + fit);
       current.pop();
       used.delete(player.id);
@@ -511,7 +519,9 @@ const optimizeRolesForLineup = ({ lineup, formation, tactics, boostContext, oppS
     homeAdvantage,
   });
 
-  return { lineup: roleLineup, roleById, stats, projection };
+  const assignedLineup = assignLineupPositions(roleLineup, FORMATIONS[formation].structure);
+
+  return { lineup: assignedLineup, roleById, stats, projection };
 };
 
 const getSetPieceCandidates = (lineup) => [
@@ -537,12 +547,36 @@ const formatStatValue = (value) => {
   return Math.abs(parsed) >= 10 ? String(Math.round(parsed)) : parsed.toFixed(1);
 };
 
+function getFormationRows(suggestion) {
+  if (!suggestion?.formation || !Array.isArray(suggestion.lineup)) return [];
+  const order = ['FW', 'MF', 'DF', 'GK'];
+  const grouped = suggestion.lineup.reduce((acc, player) => {
+    const pos = player.selectedPosition || player.pos;
+    if (!acc[pos]) acc[pos] = [];
+    acc[pos].push(player);
+    return acc;
+  }, {});
+
+  return order
+    .map((pos) => ({
+      pos,
+      label: POSITIONS[pos]?.label || pos,
+      players: [...(grouped[pos] || [])].sort((a, b) => {
+        const slotA = Number.isFinite(a.slotIndex) ? a.slotIndex : 0;
+        const slotB = Number.isFinite(b.slotIndex) ? b.slotIndex : 0;
+        return slotA - slotB;
+      }),
+    }))
+    .filter((row) => row.players.length > 0);
+}
+
 const getSuggestionDetails = (suggestion) => {
   if (!suggestion?.formation) {
     return {
       formation: '',
       setPiecePlayer: null,
       roleLabels: [],
+      rows: [],
     };
   }
 
@@ -557,6 +591,7 @@ const getSuggestionDetails = (suggestion) => {
     formation: FORMATIONS[suggestion.formation]?.name || suggestion.formation,
     setPiecePlayer,
     roleLabels,
+    rows: getFormationRows(suggestion),
   };
 };
 
@@ -575,6 +610,11 @@ const getSuggestionCopyText = (suggestion) => {
     lines.push('Roles:');
     lines.push(...details.roleLabels.map((role) => `- ${role}`));
   }
+
+  lines.push('Lineup:');
+  details.rows.forEach((row) => {
+    lines.push(`${row.label}: ${row.players.map((player) => player.name).join(', ')}`);
+  });
 
   lines.push(`Projected: ${formatNumber(suggestion.win)}% win, xG ${formatNumber(suggestion.myxG)}:${formatNumber(suggestion.oppxG)}`);
   return lines.join('\n');
@@ -2239,8 +2279,8 @@ function BestSetupCard({ suggestion, analyzing, canAnalyze, copied, onApply, onC
   const details = getSuggestionDetails(suggestion);
 
   return (
-    <section className="mb-4 rounded-[10px] border border-[rgba(0,230,118,0.28)] bg-[#111620] p-4">
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+    <section className="mb-4 overflow-hidden rounded-[10px] border border-[rgba(0,230,118,0.28)] bg-[#111620]">
+      <div className="flex flex-col gap-3 border-b border-[#1e2a3a] p-4 sm:flex-row sm:items-start sm:justify-between">
         <div className="min-w-0">
           <div className="text-[11px] font-bold uppercase tracking-[0.14em] text-[#00e676]">Best Setup</div>
           <div className="mt-1 font-['Barlow_Condensed'] text-[26px] font-black leading-none text-[#e8edf5]">
@@ -2276,7 +2316,143 @@ function BestSetupCard({ suggestion, analyzing, canAnalyze, copied, onApply, onC
           </button>
         </div>
       </div>
+      <FormationPitch suggestion={suggestion} details={details} />
     </section>
+  );
+}
+
+function FormationPitch({ suggestion, details }) {
+  const rows = details.rows;
+  const pitchStyle = {
+    backgroundColor: '#49b83f',
+    backgroundImage: [
+      'linear-gradient(90deg, rgba(255,255,255,0.08) 50%, transparent 50%)',
+      'linear-gradient(0deg, rgba(255,255,255,0.08) 50%, transparent 50%)',
+      'linear-gradient(90deg, rgba(7,17,12,0.14) 1px, transparent 1px)',
+      'linear-gradient(0deg, rgba(7,17,12,0.14) 1px, transparent 1px)',
+    ].join(', '),
+    backgroundSize: '96px 96px, 96px 96px, 24px 24px, 24px 24px',
+  };
+
+  return (
+    <div className="p-3">
+      <div className="relative overflow-hidden rounded-[8px] border border-[#1e2a3a]" style={pitchStyle}>
+        <div className="pointer-events-none absolute inset-x-0 top-1/2 h-px bg-white/20" />
+        <div className="pointer-events-none absolute left-1/2 top-1/2 h-24 w-24 -translate-x-1/2 -translate-y-1/2 rounded-full border border-white/20" />
+        <div className="pointer-events-none absolute inset-x-[18%] bottom-0 h-[19%] border border-b-0 border-white/20" />
+        <div className="pointer-events-none absolute inset-x-[18%] top-0 h-[19%] border border-t-0 border-white/20" />
+
+        <div className="relative z-10 flex min-h-[430px] flex-col justify-between gap-4 px-3 py-4 sm:min-h-[520px] sm:px-5">
+          {rows.map((row) => (
+            <div key={row.pos} className="min-w-0">
+              <div className="mb-1 text-center font-['Barlow_Condensed'] text-[13px] font-black uppercase tracking-[0.18em] text-[#0d2414]/65">
+                {row.label}
+              </div>
+              <div
+                className="grid justify-center gap-2.5 sm:gap-4"
+                style={{ gridTemplateColumns: `repeat(${row.players.length}, minmax(0, 128px))` }}
+              >
+                {row.players.map((player) => (
+                  <FormationPlayerCard
+                    key={`${row.pos}-${player.id}`}
+                    player={player}
+                    setPieceTaker={suggestion.tactics?.setPieceTaker}
+                  />
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function FormationPlayerCard({ player, setPieceTaker }) {
+  const role = player.role
+    ? Object.values(PLAYER_ROLES).find((entry) => entry.value === player.role)
+    : null;
+  const roleLabel = role?.label
+    ? role.label.replace('Target Man', 'Target').replace('Ball Winner', 'Winner')
+    : '';
+  const selectedPosition = player.selectedPosition || player.pos;
+  const isSetPieceTaker = setPieceTaker && String(setPieceTaker) === String(player.id);
+  const positionTone = selectedPosition === 'GK'
+    ? 'from-[#f4d44d] to-[#b58a13] text-[#1d1703]'
+    : selectedPosition === 'DF'
+      ? 'from-[#3c8df0] to-[#18539a] text-white'
+      : selectedPosition === 'MF'
+        ? 'from-[#59d171] to-[#217a35] text-[#06130a]'
+        : 'from-[#ff7070] to-[#b52235] text-white';
+
+  return (
+    <div className="min-w-0 overflow-hidden rounded-[8px] border border-[#142315] bg-[#d8c22f] shadow-[4px_5px_0_rgba(7,17,12,0.35)]">
+      <div className="flex items-center justify-between gap-1 bg-[#d9bd2b] px-2 py-1">
+        <div className="min-w-0 truncate font-['Barlow_Condensed'] text-[15px] font-black uppercase tracking-[0.08em] text-[#2a2713]">
+          {player.name}
+        </div>
+        <div className={`shrink-0 rounded-[4px] bg-gradient-to-b px-1.5 py-0.5 font-['Barlow_Condensed'] text-[12px] font-black ${positionTone}`}>
+          {selectedPosition}
+        </div>
+      </div>
+      <div className="relative bg-[#f0e6a1]">
+        <PlayerCardPortrait player={player} />
+        <div className="absolute bottom-0 left-0 right-0 flex items-center justify-between bg-[rgba(17,22,32,0.72)] px-2 py-1 font-['Barlow_Condensed'] text-[14px] font-black text-white">
+          <span>{isSetPieceTaker ? 'SP' : roleLabel}</span>
+          <span>{player.outOfPosition ? 'OOP' : ''}</span>
+        </div>
+      </div>
+      <div className="flex items-center justify-center gap-2 bg-[#c9ad28] px-2 py-1 font-['Barlow_Condensed'] text-[17px] font-black uppercase tracking-[0.08em] text-[#4a4114]">
+        <span>{selectedPosition}</span>
+        <span className="text-[#6a5c1a]">|</span>
+        <span>{player.ovr}</span>
+      </div>
+    </div>
+  );
+}
+
+function PlayerCardPortrait({ player }) {
+  const [imageSrc, setImageSrc] = useState(player.imageUrl || null);
+
+  useEffect(() => {
+    let cancelled = false;
+    if (player.imageUrl) {
+      setImageSrc(player.imageUrl);
+      return undefined;
+    }
+    if (!player.assetId) {
+      setImageSrc(null);
+      return undefined;
+    }
+
+    const controller = new AbortController();
+    resolvePlayerImage({ assetId: player.assetId, imageUrl: player.imageUrl }, controller.signal).then((resolved) => {
+      if (!cancelled) {
+        setImageSrc(resolved || null);
+      }
+    });
+
+    return () => {
+      cancelled = true;
+      controller.abort();
+    };
+  }, [player.assetId, player.imageUrl, player.id]);
+
+  if (!imageSrc) {
+    return (
+      <div className="flex aspect-square w-full items-center justify-center bg-[#d9d1a5] font-['Barlow_Condensed'] text-[20px] font-black text-[#6c653f]">
+        NFT
+      </div>
+    );
+  }
+
+  return (
+    <img
+      src={imageSrc}
+      alt={player.name}
+      className="aspect-square w-full object-cover"
+      loading="lazy"
+    />
   );
 }
 
