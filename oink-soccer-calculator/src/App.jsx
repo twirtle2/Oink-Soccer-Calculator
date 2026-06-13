@@ -525,6 +525,61 @@ const getSetPieceCandidates = (lineup) => [
     .map((player) => player.id),
 ];
 
+const formatNumber = (value, decimals = 1) => {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return '0';
+  return parsed.toFixed(decimals);
+};
+
+const formatStatValue = (value) => {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return '0';
+  return Math.abs(parsed) >= 10 ? String(Math.round(parsed)) : parsed.toFixed(1);
+};
+
+const getSuggestionDetails = (suggestion) => {
+  if (!suggestion?.formation) {
+    return {
+      formation: '',
+      setPiecePlayer: null,
+      roleLabels: [],
+    };
+  }
+
+  const setPiecePlayer = suggestion.tactics?.setPieceTaker
+    ? suggestion.lineup.find((player) => String(player.id) === String(suggestion.tactics.setPieceTaker))
+    : null;
+  const roleLabels = suggestion.lineup
+    .filter((player) => player.role)
+    .map((player) => `${Object.values(PLAYER_ROLES).find((role) => role.value === player.role)?.label || player.role}: ${player.name}`);
+
+  return {
+    formation: FORMATIONS[suggestion.formation]?.name || suggestion.formation,
+    setPiecePlayer,
+    roleLabels,
+  };
+};
+
+const getSuggestionCopyText = (suggestion) => {
+  if (!suggestion?.formation) return '';
+  const details = getSuggestionDetails(suggestion);
+  const lines = [
+    `Formation: ${details.formation}`,
+    `Press: ${TACTICS.press[suggestion.tactics.press]?.label || suggestion.tactics.press}`,
+    `Tempo: ${TACTICS.tempo[suggestion.tactics.tempo]?.label || suggestion.tactics.tempo}`,
+    `Line: ${TACTICS.lineHeight[suggestion.tactics.lineHeight]?.label || suggestion.tactics.lineHeight}`,
+    `Set pieces: ${details.setPiecePlayer?.name || 'Auto'}`,
+  ];
+
+  if (details.roleLabels.length > 0) {
+    lines.push('Roles:');
+    lines.push(...details.roleLabels.map((role) => `- ${role}`));
+  }
+
+  lines.push(`Projected: ${formatNumber(suggestion.win)}% win, xG ${formatNumber(suggestion.myxG)}:${formatNumber(suggestion.oppxG)}`);
+  return lines.join('\n');
+};
+
 // --- Initial Fallback Data ---
 const initialMyTeam = [];
 
@@ -605,6 +660,9 @@ export default function OinkSoccerCalc() {
 
   const [suggestions, setSuggestions] = useState({});
   const [analyzing, setAnalyzing] = useState(false);
+  const [autoSuggestions, setAutoSuggestions] = useState({});
+  const [autoAnalyzing, setAutoAnalyzing] = useState(false);
+  const [copiedPlan, setCopiedPlan] = useState(false);
   const [injuryModalState, setInjuryModalState] = useState({
     open: false,
     playerId: null,
@@ -1222,23 +1280,16 @@ export default function OinkSoccerCalc() {
     return players;
   }, [benchPool, benchFilter, benchSort]);
 
-  const getCombinations = (arr, k) => {
+  const getCombinations = useCallback((arr, k) => {
     if (k === 0) return [[]];
     if (arr.length === 0) return [];
     const [first, ...rest] = arr;
     const withFirst = getCombinations(rest, k - 1).map(c => [first, ...c]);
     const withoutFirst = getCombinations(rest, k);
     return [...withFirst, ...withoutFirst];
-  };
+  }, []);
 
-  const analyzeLineups = async () => {
-    setAnalyzing(true);
-    setSuggestions({});
-
-    // Allow UI to update before heavy calculation
-    await new Promise(resolve => setTimeout(resolve, 100));
-
-    const currentWin = parseFloat(simulation.win);
+  const buildSettingsSuggestions = useCallback((currentWin = parseFloat(simulation.win)) => {
     const bestByFormation = {};
     const tacticCombos = ['low', 'medium', 'high'].flatMap((press) =>
       ['slow', 'normal', 'fast'].flatMap((tempo) =>
@@ -1352,9 +1403,46 @@ export default function OinkSoccerCalc() {
       }
     }
 
-    setSuggestions({ ...bestByFormation, __meta: { evaluatedCount } });
+    return { ...bestByFormation, __meta: { evaluatedCount } };
+  }, [
+    getCombinations,
+    homeAdvantage,
+    mySimulationBoostContext,
+    mySquad,
+    oppForm,
+    oppStats,
+    oppTactics,
+    simulation.win,
+  ]);
+
+  const analyzeLineups = async () => {
+    setAnalyzing(true);
+    setSuggestions({});
+
+    // Allow UI to update before heavy calculation
+    await new Promise(resolve => setTimeout(resolve, 100));
+
+    setSuggestions(buildSettingsSuggestions(parseFloat(simulation.win)));
     setAnalyzing(false);
   };
+
+  useEffect(() => {
+    if (mySquad.length < 5 || opponentTeam.length < 5) {
+      setAutoSuggestions({});
+      setAutoAnalyzing(false);
+      return undefined;
+    }
+
+    setAutoAnalyzing(true);
+    const timeoutId = window.setTimeout(() => {
+      setAutoSuggestions(buildSettingsSuggestions(parseFloat(simulation.win)));
+      setAutoAnalyzing(false);
+    }, 120);
+
+    return () => {
+      window.clearTimeout(timeoutId);
+    };
+  }, [buildSettingsSuggestions, mySquad.length, opponentTeam.length, simulation.win]);
 
   const applySuggestion = (config) => {
     if (!config) return;
@@ -1396,17 +1484,33 @@ export default function OinkSoccerCalc() {
   const defenseDelta = Number((myStats.Defense - oppStats.Defense).toFixed(1));
   const attackDelta = Number((myStats.Attack - oppStats.Attack).toFixed(1));
 
-  const topSuggestion = useMemo(() => (
-    Object.values(suggestions)
-      .filter((suggestion) => suggestion?.formation)
-      .sort((a, b) => b.win - a.win)[0] || null
-  ), [suggestions]);
-
   const suggestionList = useMemo(() => (
     Object.values(suggestions)
       .filter((suggestion) => suggestion?.formation)
       .sort((a, b) => b.win - a.win)
   ), [suggestions]);
+
+  const activeSuggestions = suggestionList.length > 0 ? suggestions : autoSuggestions;
+
+  const activeSuggestionList = useMemo(() => (
+    Object.values(activeSuggestions)
+      .filter((suggestion) => suggestion?.formation)
+      .sort((a, b) => b.win - a.win)
+  ), [activeSuggestions]);
+
+  const topSuggestion = activeSuggestionList[0] || null;
+
+  const copySuggestion = useCallback(async (suggestion) => {
+    if (!suggestion?.formation) return;
+    const text = getSuggestionCopyText(suggestion);
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopiedPlan(true);
+      window.setTimeout(() => setCopiedPlan(false), 1800);
+    } catch (_) {
+      setUploadStatus({ tone: 'error', message: 'Copy failed. Select the setup text and copy it manually.' });
+    }
+  }, []);
 
   const openInjuryModal = useCallback((player, teamType) => {
     setInjuryModalState({
@@ -1544,6 +1648,15 @@ export default function OinkSoccerCalc() {
       </section>
 
       <main className="mx-auto max-w-[900px] px-4 py-5 md:px-6 md:py-6">
+        <BestSetupCard
+          suggestion={topSuggestion}
+          analyzing={autoAnalyzing}
+          canAnalyze={mySquad.length >= 5 && opponentTeam.length >= 5}
+          copied={copiedPlan}
+          onApply={() => applySuggestion(topSuggestion)}
+          onCopy={() => void copySuggestion(topSuggestion)}
+        />
+
         {activeTab === 'squad' && (
           <section id="tab-squad" className="space-y-4">
             <div className="grid grid-cols-1 gap-3 rounded-[10px] border border-[#1e2a3a] bg-[#111620] p-4 md:grid-cols-[1fr_auto_1fr]">
@@ -1943,42 +2056,52 @@ export default function OinkSoccerCalc() {
               <div className="mb-1 text-sm font-bold">⚡ Smart Coach</div>
               <div className="mb-3 text-xs text-[#6b7a94]">Formation, tactics, roles, and set-piece settings for this matchup</div>
               <div className="space-y-2">
-                {suggestionList.slice(0, 3).map((sugg) => {
-                  const setPiecePlayer = sugg.tactics?.setPieceTaker
-                    ? sugg.lineup.find((player) => String(player.id) === String(sugg.tactics.setPieceTaker))
-                    : null;
-                  const roleLabels = sugg.lineup
-                    .filter((player) => player.role)
-                    .map((player) => `${Object.values(PLAYER_ROLES).find((role) => role.value === player.role)?.label || player.role}: ${player.name}`);
+                {activeSuggestionList.slice(0, 3).map((sugg) => {
+                  const details = getSuggestionDetails(sugg);
                   return (
-                  <button
+                  <div
                     key={sugg.formation}
-                    onClick={() => applySuggestion(sugg)}
-                    className="w-full rounded-md border border-[#1e2a3a] border-l-[3px] border-l-[#00e676] bg-[#111620] p-3 text-left text-xs text-[#9aa5bb]"
+                    className="rounded-md border border-[#1e2a3a] bg-[#111620] p-3 text-xs text-[#9aa5bb]"
                   >
                     <div>
                       <strong className="text-[#00e676]">{FORMATIONS[sugg.formation].name}</strong>
-                      {' '}• {sugg.win.toFixed(1)}% ({sugg.diff >= 0 ? '+' : ''}{sugg.diff.toFixed(1)})
-                      {' '}• xG {sugg.myxG.toFixed(2)} : {sugg.oppxG.toFixed(2)}
+                      {' '}• {formatNumber(sugg.win)}% ({sugg.diff >= 0 ? '+' : ''}{formatNumber(sugg.diff)})
+                      {' '}• xG {formatNumber(sugg.myxG)} : {formatNumber(sugg.oppxG)}
                     </div>
                     <div className="mt-1 text-[#d0d7e5]">
-                      Press {TACTICS.press[sugg.tactics.press]?.label}, Tempo {TACTICS.tempo[sugg.tactics.tempo]?.label}, Line {TACTICS.lineHeight[sugg.tactics.lineHeight]?.label}, Set pieces {setPiecePlayer?.name || 'Auto'}
+                      Press {TACTICS.press[sugg.tactics.press]?.label}, Tempo {TACTICS.tempo[sugg.tactics.tempo]?.label}, Line {TACTICS.lineHeight[sugg.tactics.lineHeight]?.label}, Set pieces {details.setPiecePlayer?.name || 'Auto'}
                     </div>
-                    {roleLabels.length > 0 && (
-                      <div className="mt-1 text-[#7f8aa3]">{roleLabels.join(' · ')}</div>
+                    {details.roleLabels.length > 0 && (
+                      <div className="mt-1 text-[#7f8aa3]">{details.roleLabels.join(' · ')}</div>
                     )}
-                  </button>
+                    <div className="mt-3 grid grid-cols-2 gap-2">
+                      <button
+                        type="button"
+                        onClick={() => void copySuggestion(sugg)}
+                        className="rounded border border-[#00e676]/35 bg-[#00e676] px-2 py-1.5 text-[11px] font-bold text-[#07110c]"
+                      >
+                        Copy
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => applySuggestion(sugg)}
+                        className="rounded border border-[#253040] bg-[#161c28] px-2 py-1.5 text-[11px] font-semibold text-[#e8edf5]"
+                      >
+                        Apply
+                      </button>
+                    </div>
+                  </div>
                   );
                 })}
-                {suggestionList.length === 0 && (
+                {activeSuggestionList.length === 0 && (
                   <div className="rounded-md border border-[#1e2a3a] bg-[#111620] p-3 text-xs text-[#9aa5bb]">
-                    No suggestions yet. Analyze to generate matchup-specific recommendations.
+                    {autoAnalyzing ? 'Calculating best settings...' : 'Load your squad and opponent to generate matchup-specific recommendations.'}
                   </div>
                 )}
               </div>
-              {suggestions.__meta?.evaluatedCount ? (
+              {activeSuggestions.__meta?.evaluatedCount ? (
                 <div className="mt-2 text-[11px] text-[#6b7a94]">
-                  Checked {suggestions.__meta.evaluatedCount.toLocaleString()} lineup/tactics configurations.
+                  Checked {activeSuggestions.__meta.evaluatedCount.toLocaleString()} lineup/tactics configurations.
                 </div>
               ) : null}
               <button
@@ -2086,6 +2209,76 @@ export default function OinkSoccerCalc() {
   );
 }
 // --- Components ---
+
+function BestSetupCard({ suggestion, analyzing, canAnalyze, copied, onApply, onCopy }) {
+  if (!canAnalyze) {
+    return (
+      <section className="mb-4 rounded-[10px] border border-[#1e2a3a] bg-[#111620] p-4">
+        <div className="text-[11px] font-bold uppercase tracking-[0.14em] text-[#00e676]">Best Setup</div>
+        <div className="mt-1 text-sm font-semibold text-[#e8edf5]">Load your squad and next opponent</div>
+        <div className="mt-1 text-xs text-[#6b7a94]">Once both teams are available, the calculator will pick the setup automatically.</div>
+      </section>
+    );
+  }
+
+  if (analyzing && !suggestion) {
+    return (
+      <section className="mb-4 rounded-[10px] border border-[#1e2a3a] bg-[#111620] p-4">
+        <div className="flex items-center gap-2 text-sm font-semibold text-[#e8edf5]">
+          <Loader2 size={14} className="animate-spin text-[#00e676]" />
+          Calculating best setup...
+        </div>
+      </section>
+    );
+  }
+
+  if (!suggestion) {
+    return null;
+  }
+
+  const details = getSuggestionDetails(suggestion);
+
+  return (
+    <section className="mb-4 rounded-[10px] border border-[rgba(0,230,118,0.28)] bg-[#111620] p-4">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+        <div className="min-w-0">
+          <div className="text-[11px] font-bold uppercase tracking-[0.14em] text-[#00e676]">Best Setup</div>
+          <div className="mt-1 font-['Barlow_Condensed'] text-[26px] font-black leading-none text-[#e8edf5]">
+            {details.formation}
+          </div>
+          <div className="mt-2 flex flex-wrap gap-2 text-xs text-[#d0d7e5]">
+            <span className="rounded border border-[#253040] bg-[#161c28] px-2 py-1">Press {TACTICS.press[suggestion.tactics.press]?.label}</span>
+            <span className="rounded border border-[#253040] bg-[#161c28] px-2 py-1">Tempo {TACTICS.tempo[suggestion.tactics.tempo]?.label}</span>
+            <span className="rounded border border-[#253040] bg-[#161c28] px-2 py-1">Line {TACTICS.lineHeight[suggestion.tactics.lineHeight]?.label}</span>
+            <span className="rounded border border-[#253040] bg-[#161c28] px-2 py-1">Set pieces {details.setPiecePlayer?.name || 'Auto'}</span>
+          </div>
+          {details.roleLabels.length > 0 && (
+            <div className="mt-2 text-xs leading-5 text-[#9aa5bb]">{details.roleLabels.join(' · ')}</div>
+          )}
+          <div className="mt-2 text-xs text-[#6b7a94]">
+            Projection: {formatNumber(suggestion.win)}% win, xG {formatNumber(suggestion.myxG)}:{formatNumber(suggestion.oppxG)}
+          </div>
+        </div>
+        <div className="grid grid-cols-2 gap-2 sm:w-[180px] sm:grid-cols-1">
+          <button
+            type="button"
+            onClick={onCopy}
+            className="rounded-md border border-[#00e676]/40 bg-[#00e676] px-3 py-2 text-xs font-bold text-[#07110c]"
+          >
+            {copied ? 'Copied' : 'Copy'}
+          </button>
+          <button
+            type="button"
+            onClick={onApply}
+            className="rounded-md border border-[#253040] bg-[#161c28] px-3 py-2 text-xs font-semibold text-[#e8edf5]"
+          >
+            Apply
+          </button>
+        </div>
+      </div>
+    </section>
+  );
+}
 
 function TacticsCard({ title, tone, tactics, players, onChange }) {
   const accent = tone === 'opp' ? '#ffab00' : '#00e676';
@@ -2314,13 +2507,13 @@ function StatCell({ label, baseValue, boostedValue, isLast }) {
   const boostedClass = isUp ? 'text-[#00e676]' : isDown ? 'text-[#ff4444]' : 'text-[#6b7a94]';
 
   return (
-    <div className={`relative px-[14px] py-2 ${isLast ? '' : 'border-r border-[#1e2a3a]'}`}>
+    <div className={`relative min-w-0 px-3 py-2 ${isLast ? '' : 'border-r border-[#1e2a3a]'}`}>
       {isUp && <div className="absolute right-2 top-[7px] h-[5px] w-[5px] rounded-full bg-[#00e676] shadow-[0_0_5px_#00e676]" />}
       <div className="mb-1 text-[9px] font-bold uppercase tracking-[0.15em] text-[#6b7a94]">{label}</div>
-      <div className="flex items-baseline gap-1">
-        <span className="font-['Barlow_Condensed'] text-[20px] font-bold leading-none text-[#e8edf5]">{base}</span>
+      <div className="flex min-w-0 items-baseline gap-1">
+        <span className="font-['Barlow_Condensed'] text-[20px] font-bold leading-none text-[#e8edf5]">{formatStatValue(base)}</span>
         <span className="text-[10px] text-[#253040]">{separator}</span>
-        <span className={`font-['Barlow_Condensed'] text-[14px] font-bold leading-none ${boostedClass}`}>{boosted}</span>
+        <span className={`min-w-0 truncate font-['Barlow_Condensed'] text-[14px] font-bold leading-none ${boostedClass}`}>{formatStatValue(boosted)}</span>
       </div>
     </div>
   );
