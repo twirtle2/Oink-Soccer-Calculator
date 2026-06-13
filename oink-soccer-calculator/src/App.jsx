@@ -455,24 +455,49 @@ const roughPlayerValue = (player) => (
   + getStat(player.stats, 'TCK', 'DEF') * 0.06
 );
 
+const ROLE_ELIGIBLE_POSITIONS = {
+  [PLAYER_ROLES.captain.value]: ['GK', 'DF', 'MF', 'FW'],
+  [PLAYER_ROLES.targetMan.value]: ['FW'],
+  [PLAYER_ROLES.playmaker.value]: ['MF'],
+  [PLAYER_ROLES.ballWinner.value]: ['DF', 'MF'],
+};
+
+const isEligibleForRole = (player, roleValue) => {
+  const eligiblePositions = ROLE_ELIGIBLE_POSITIONS[roleValue] || [];
+  const selectedPosition = player.selectedPosition || player.pos;
+  return eligiblePositions.includes(selectedPosition);
+};
+
+const positionPenaltyMod = (player) => (player.outOfPosition ? OUT_OF_POSITION_SCALE : 1);
+
 const getRoleCandidateIds = (lineup, tactics) => ({
   captain: [...lineup]
+    .filter((player) => isEligibleForRole(player, PLAYER_ROLES.captain.value))
     .sort((a, b) => captainQuality(b) - captainQuality(a))
     .slice(0, 3)
     .map((player) => player.id),
   targetMan: [...lineup]
+    .filter((player) => isEligibleForRole(player, PLAYER_ROLES.targetMan.value))
     .sort((a, b) => (
-      (getAttackScoreForChance(b.stats, 'Corner') + getAttackScoreForChance(b.stats, 'Cross'))
-      - (getAttackScoreForChance(a.stats, 'Corner') + getAttackScoreForChance(a.stats, 'Cross'))
+      (getAttackScoreForChance(b.stats, 'Corner', positionPenaltyMod(b)) + getAttackScoreForChance(b.stats, 'Cross', positionPenaltyMod(b)))
+      - (getAttackScoreForChance(a.stats, 'Corner', positionPenaltyMod(a)) + getAttackScoreForChance(a.stats, 'Cross', positionPenaltyMod(a)))
     ))
     .slice(0, 3)
     .map((player) => player.id),
   playmaker: [...lineup]
-    .sort((a, b) => getControlScore(b.stats, b.pos, 1, {}, tactics) - getControlScore(a.stats, a.pos, 1, {}, tactics))
+    .filter((player) => isEligibleForRole(player, PLAYER_ROLES.playmaker.value))
+    .sort((a, b) => (
+      getControlScore(b.stats, b.selectedPosition || b.pos, positionPenaltyMod(b), {}, tactics)
+      - getControlScore(a.stats, a.selectedPosition || a.pos, positionPenaltyMod(a), {}, tactics)
+    ))
     .slice(0, 3)
     .map((player) => player.id),
   ballWinner: [...lineup]
-    .sort((a, b) => getDefenseScore(b.stats, b.pos, 1, {}, tactics) - getDefenseScore(a.stats, a.pos, 1, {}, tactics))
+    .filter((player) => isEligibleForRole(player, PLAYER_ROLES.ballWinner.value))
+    .sort((a, b) => (
+      getDefenseScore(b.stats, b.selectedPosition || b.pos, positionPenaltyMod(b), {}, tactics)
+      - getDefenseScore(a.stats, a.selectedPosition || a.pos, positionPenaltyMod(a), {}, tactics)
+    ))
     .slice(0, 3)
     .map((player) => player.id),
 });
@@ -483,7 +508,8 @@ const applyRolesToLineup = (lineup, roleById) => lineup.map((player) => ({
 }));
 
 const optimizeRolesForLineup = ({ lineup, formation, tactics, boostContext, oppStats, oppForm, oppTactics, homeAdvantage }) => {
-  const roleCandidates = getRoleCandidateIds(lineup, tactics);
+  const assignedBaseLineup = assignLineupPositions(lineup, FORMATIONS[formation].structure);
+  const roleCandidates = getRoleCandidateIds(assignedBaseLineup, tactics);
   const roleById = {};
   const usedIds = new Set();
   const roleOptions = [
@@ -497,7 +523,7 @@ const optimizeRolesForLineup = ({ lineup, formation, tactics, boostContext, oppS
     for (const candidateId of candidates) {
       const id = String(candidateId);
       if (usedIds.has(id)) continue;
-      const player = lineup.find((item) => String(item.id) === id);
+      const player = assignedBaseLineup.find((item) => String(item.id) === id);
       if (roleValue === PLAYER_ROLES.captain.value && captainQuality(player) < 60) {
         continue;
       }
@@ -507,7 +533,7 @@ const optimizeRolesForLineup = ({ lineup, formation, tactics, boostContext, oppS
     }
   }
 
-  const roleLineup = applyRolesToLineup(lineup, roleById);
+  const roleLineup = applyRolesToLineup(assignedBaseLineup, roleById);
   const stats = calculateTeamScores(roleLineup, formation, boostContext, tactics);
   const projection = projectMatch({
     myStats: stats,
@@ -519,9 +545,7 @@ const optimizeRolesForLineup = ({ lineup, formation, tactics, boostContext, oppS
     homeAdvantage,
   });
 
-  const assignedLineup = assignLineupPositions(roleLineup, FORMATIONS[formation].structure);
-
-  return { lineup: assignedLineup, roleById, stats, projection };
+  return { lineup: roleLineup, roleById, stats, projection };
 };
 
 const getSetPieceCandidates = (lineup) => [
@@ -2376,6 +2400,8 @@ function FormationPlayerCard({ player, setPieceTaker }) {
     ? role.label.replace('Target Man', 'Target').replace('Ball Winner', 'Winner')
     : '';
   const selectedPosition = player.selectedPosition || player.pos;
+  const playablePositions = player.positions && player.positions.length > 0 ? player.positions : [player.pos];
+  const playableLabel = playablePositions.join('/');
   const isSetPieceTaker = setPieceTaker && String(setPieceTaker) === String(player.id);
   const positionTone = selectedPosition === 'GK'
     ? 'from-[#f4d44d] to-[#b58a13] text-[#1d1703]'
@@ -2399,7 +2425,7 @@ function FormationPlayerCard({ player, setPieceTaker }) {
         <PlayerCardPortrait player={player} />
         <div className="absolute bottom-0 left-0 right-0 flex items-center justify-between bg-[rgba(17,22,32,0.72)] px-2 py-1 font-['Barlow_Condensed'] text-[14px] font-black text-white">
           <span>{isSetPieceTaker ? 'SP' : roleLabel}</span>
-          <span>{player.outOfPosition ? 'OOP' : ''}</span>
+          <span>{player.outOfPosition ? `OOP ${playableLabel}` : playableLabel}</span>
         </div>
       </div>
       <div className="flex items-center justify-center gap-2 bg-[#c9ad28] px-2 py-1 font-['Barlow_Condensed'] text-[17px] font-black uppercase tracking-[0.08em] text-[#4a4114]">
