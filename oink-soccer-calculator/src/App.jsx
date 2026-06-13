@@ -2374,7 +2374,7 @@ function FormationPitch({ suggestion, details }) {
               </div>
               <div
                 className="grid justify-center gap-2.5 sm:gap-4"
-                style={{ gridTemplateColumns: `repeat(${row.players.length}, minmax(0, 128px))` }}
+                style={{ gridTemplateColumns: `repeat(${row.players.length}, minmax(0, 150px))` }}
               >
                 {row.players.map((player) => (
                   <FormationPlayerCard
@@ -2413,8 +2413,8 @@ function FormationPlayerCard({ player, setPieceTaker }) {
 
   return (
     <div className="min-w-0 overflow-hidden rounded-[8px] border border-[#142315] bg-[#d8c22f] shadow-[4px_5px_0_rgba(7,17,12,0.35)]">
-      <div className="flex items-center justify-between gap-1 bg-[#d9bd2b] px-2 py-1">
-        <div className="min-w-0 truncate font-['Barlow_Condensed'] text-[15px] font-black uppercase tracking-[0.08em] text-[#2a2713]">
+      <div className="flex min-h-[42px] items-start justify-between gap-1 bg-[#d9bd2b] px-2 py-1">
+        <div className="min-w-0 whitespace-normal break-words font-['Barlow_Condensed'] text-[13px] font-black uppercase leading-[0.95] tracking-[0.04em] text-[#2a2713]">
           {player.name}
         </div>
         <div className={`shrink-0 rounded-[4px] bg-gradient-to-b px-1.5 py-0.5 font-['Barlow_Condensed'] text-[12px] font-black ${positionTone}`}>

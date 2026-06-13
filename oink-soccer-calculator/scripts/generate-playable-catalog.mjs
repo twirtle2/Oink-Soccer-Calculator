@@ -108,16 +108,16 @@ const mapPosition = (value) => {
   if (['CB', 'LCB', 'RCB', 'LB', 'LWB', 'RB', 'RWB', 'CDM', 'LDM', 'RDM'].includes(pos)) return 'DF';
   if (['CM', 'LCM', 'RCM', 'CAM', 'LAM', 'RAM', 'LM', 'LW', 'RM', 'RW'].includes(pos)) return 'MF';
   if (['CF', 'LF', 'RF', 'ST', 'LS', 'RS'].includes(pos)) return 'FW';
-  return 'FW';
+  return null;
 };
 
 const getPreferredPosition = (fifaRow) => {
   const clubPos = mapPosition(fifaRow.club_position);
-  if (fifaRow.club_position) {
+  if (clubPos) {
     return clubPos;
   }
   const firstPlayerPos = (fifaRow.player_positions || '').split(',')[0] || '';
-  return mapPosition(firstPlayerPos);
+  return mapPosition(firstPlayerPos) || 'FW';
 };
 
 const getStats = (fifaRow, pos) => {
@@ -141,7 +141,9 @@ const getStats = (fifaRow, pos) => {
   };
 };
 
-const getOvr = (stats, pos) => {
+const getOvr = (fifaRow, stats, pos) => {
+  const upstreamOverall = toInt(fifaRow.overall, Number.NaN);
+  if (Number.isFinite(upstreamOverall)) return upstreamOverall;
   if (pos === 'GK') return Math.round(((stats.GKP * 5) + stats.SPD) / 6);
   if (pos === 'DF') return Math.round(((stats.DEF * 5) + stats.SPD) / 6);
   if (pos === 'MF') return Math.round(((stats.CTL * 4) + stats.SPD) / 5);
@@ -199,7 +201,7 @@ const main = () => {
 
     const pos = getPreferredPosition(fifaRow);
     const stats = getStats(fifaRow, pos);
-    const ovr = getOvr(stats, pos);
+    const ovr = getOvr(fifaRow, stats, pos);
 
     assets[assetId] = {
       assetId,
