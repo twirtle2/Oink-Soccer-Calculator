@@ -5,6 +5,8 @@ import {
   fetchCurrentSeason,
   fetchGameCounter,
   fetchLeagueRoundFixtures,
+  fetchLeagueSeasonFixtures,
+  fetchTeamLineup,
   fetchTeamActiveBoosts,
   fetchTeamBoostEffectiveness,
   fetchTeamBoostState,
@@ -74,6 +76,93 @@ test('fetchLeagueRoundFixtures uses the game fixture endpoint', async () => {
     assert.equal(result.round, 3);
     assert.equal(result.fixtures.length, 1);
     assert.equal(result.fixtures[0].away_team_id, 'AlgorandAsset:2');
+  });
+});
+
+test('fetchLeagueSeasonFixtures loads all requested rounds', async () => {
+  const calls = [];
+  await withMockedFetch(async (url) => {
+    const text = String(url);
+    calls.push(text);
+    const round = text.match(/\/round\/(\d+)\/fixtures$/)?.[1];
+    return okResponse({
+      fixtures: [
+        {
+          game_key: `fixture-${round}`,
+          home_team_id: `AlgorandAsset:${round}1`,
+          away_team_id: `AlgorandAsset:${round}2`,
+        },
+      ],
+    });
+  }, async () => {
+    const fixtures = await fetchLeagueSeasonFixtures({ leagueId: '2', season: 16, rounds: 3 });
+    assert.equal(calls.length, 3);
+    assert.deepEqual(fixtures.map((fixture) => fixture.game_round), [1, 2, 3]);
+    assert.deepEqual(fixtures.map((fixture) => fixture.game_key), ['fixture-1', 'fixture-2', 'fixture-3']);
+  });
+});
+
+test('fetchLeagueSeasonFixtures skips failed rounds', async () => {
+  await withMockedFetch(async (url) => {
+    const text = String(url);
+    const round = text.match(/\/round\/(\d+)\/fixtures$/)?.[1];
+    if (round === '2') {
+      return {
+        ok: false,
+        status: 500,
+        json: async () => ({ message: 'round failed' }),
+      };
+    }
+    return okResponse({
+      fixtures: [
+        {
+          game_key: `fixture-${round}`,
+          home_team_id: `AlgorandAsset:${round}1`,
+          away_team_id: `AlgorandAsset:${round}2`,
+        },
+      ],
+    });
+  }, async () => {
+    const fixtures = await fetchLeagueSeasonFixtures({ leagueId: '2', season: 16, rounds: 3 });
+    assert.deepEqual(fixtures.map((fixture) => fixture.game_round), [1, 3]);
+  });
+});
+
+test('fetchTeamLineup returns mapped team players', async () => {
+  await withMockedFetch(async (url) => {
+    assert.match(String(url), /\/v2\/soccer\/team\/AlgorandAsset%3A123$/);
+    return okResponse({
+      team: {
+        id: 'AlgorandAsset:123',
+        custom_name: 'Fixture FC',
+        formation: 'The Diamond (1-2-1)',
+      },
+      team_selection: {
+        slots: {
+          0: {
+            role: 'captain',
+            asset: { name: 'Keeper', image_url: 'https://example.com/keeper.png' },
+            player_attributes: {
+              based_on_player: 'Keeper',
+              position: 'Goalkeeper',
+              overall_rating: 81,
+              speed_rating: 55,
+              attack_rating: 10,
+              control_rating: 70,
+              defense_rating: 80,
+              goalkeeper_rating: 82,
+            },
+          },
+        },
+      },
+    });
+  }, async () => {
+    const lineup = await fetchTeamLineup('AlgorandAsset:123');
+    assert.equal(lineup.teamLabel, 'Fixture FC');
+    assert.equal(lineup.formationKey, 'Diamond');
+    assert.equal(lineup.players.length, 1);
+    assert.equal(lineup.players[0].pos, 'GK');
+    assert.equal(lineup.players[0].ovr, 81);
   });
 });
 

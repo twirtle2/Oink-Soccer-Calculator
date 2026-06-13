@@ -296,6 +296,29 @@ export const fetchLeagueRoundFixtures = async ({ leagueId, season, round }) => {
   };
 };
 
+export const fetchLeagueSeasonFixtures = async ({ leagueId, season, rounds }) => {
+  const totalRounds = Number.parseInt(String(rounds || 0), 10) || 44;
+  const roundNumbers = Array.from({ length: totalRounds }, (_, index) => index + 1);
+  const payloads = await Promise.allSettled(
+    roundNumbers.map((round) => fetchLeagueRoundFixtures({ leagueId, season, round })),
+  );
+
+  const fulfilled = payloads
+    .filter((result) => result.status === 'fulfilled')
+    .map((result) => result.value);
+
+  if (fulfilled.length === 0) {
+    throw new Error('No season fixtures could be loaded.');
+  }
+
+  return fulfilled.flatMap((payload) => (
+    payload.fixtures.map((fixture) => ({
+      ...fixture,
+      game_round: payload.round,
+    }))
+  ));
+};
+
 export const fetchLeagueTableTeams = async (leagueId) => {
   const payload = await fetchJsonOrThrow(
     `/soccer/league/${encodeURIComponent(String(leagueId))}/table`,
@@ -434,6 +457,22 @@ export const importOpponentFromTeamInput = async (input) => {
   const teamId = extractTeamIdFromInput(input);
   const payload = await fetchTeamPayload(teamId);
   const mapped = mapTeamPayloadToPlayers(teamId, payload);
+
+  if (mapped.players.length === 0) {
+    throw new Error('No active lineup found for this team.');
+  }
+
+  return mapped;
+};
+
+export const fetchTeamLineup = async (teamId) => {
+  const normalizedTeamId = normalizeTeamId(teamId);
+  if (!normalizedTeamId) {
+    throw new Error('Invalid teamId.');
+  }
+
+  const payload = await fetchTeamPayload(normalizedTeamId);
+  const mapped = mapTeamPayloadToPlayers(normalizedTeamId, payload);
 
   if (mapped.players.length === 0) {
     throw new Error('No active lineup found for this team.');

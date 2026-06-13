@@ -10,17 +10,17 @@ import {
   fetchCurrentSeason,
   fetchGameCounter,
   fetchLeagueRoundFixtures,
+  fetchLeagueSeasonFixtures,
   fetchLeagueTableTeams,
   fetchLeagueTeamsIndex,
+  fetchTeamLineup,
   fetchTeamBoostState,
-  findTeamsByName,
   importOpponentFromTeamInput,
   resolveOwnedTeamLeagues,
 } from './lib/lostPigsTeamImport';
 import {
   createEmptyTeamBoostState,
   createManualFallbackBoostState,
-  formatBoostEffectRange,
   getBoostMultipliersFromState,
 } from './lib/boosts';
 import { resolvePlayerImage } from './lib/assetImages';
@@ -656,14 +656,15 @@ const TEAM_BOOST_STATE_EMPTY = createEmptyTeamBoostState();
 const getErrorMessage = (error, fallback = 'Failed to load boost data.') =>
   error instanceof Error ? error.message : fallback;
 
-const formatBoostTypeLabel = (entry) => {
-  const boost = entry?.boost || {};
-  if (boost.boost_type === 'Position Boost' && boost.boost_position === 'Midfield') {
-    return 'Control boost';
-  }
-  return boost.boost_type || 'Unknown boost';
+const formatFixtureTime = (value) => {
+  if (!value) return 'Time TBC';
+  return new Date(value).toLocaleString([], {
+    month: 'short',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+  });
 };
-
 
 export default function OinkSoccerCalc() {
   const { wallets } = useWallet();
@@ -672,24 +673,23 @@ export default function OinkSoccerCalc() {
 
   const [importingTeamUrl, setImportingTeamUrl] = useState(false);
   const [uploadStatus, setUploadStatus] = useState(null);
-  const [teamUrlInput, setTeamUrlInput] = useState('');
   const [leagueIndex, setLeagueIndex] = useState(null);
   const [leagueIndexLoading, setLeagueIndexLoading] = useState(false);
   const [selectedLeagueId, setSelectedLeagueId] = useState('');
   const [selectedLeagueName, setSelectedLeagueName] = useState('');
   const [leagueTeams, setLeagueTeams] = useState([]);
-  const [leagueTeamsLoading, setLeagueTeamsLoading] = useState(false);
   const [gameCounter, setGameCounter] = useState(null);
   const [fixtures, setFixtures] = useState([]);
   const [fixturesLoading, setFixturesLoading] = useState(false);
   const [selectedFixtureKey, setSelectedFixtureKey] = useState('');
+  const [seasonFixtures, setSeasonFixtures] = useState([]);
+  const [seasonTeams, setSeasonTeams] = useState({});
+  const [seasonPredictionLoading, setSeasonPredictionLoading] = useState(false);
+  const [seasonPredictionError, setSeasonPredictionError] = useState('');
   const [detectedMyTeamIds, setDetectedMyTeamIds] = useState([]);
-  const [opponentSearchInput, setOpponentSearchInput] = useState('');
-  const [selectedOpponentTeamId, setSelectedOpponentTeamId] = useState('');
   const [importedOpponentTeamId, setImportedOpponentTeamId] = useState(null);
   const [catalogSeason, setCatalogSeason] = useState(null);
   const [walletSyncing, setWalletSyncing] = useState(false);
-  const [boostStatesLoading, setBoostStatesLoading] = useState(false);
 
   const [mySquad, setMySquad] = useState(persistedState.mySquad || initialMyTeam); // Full roster
   const [myTeam, setMyTeam] = useState(persistedState.myTeam || initialMyTeam.slice(0, 5)); // Active 5
@@ -697,9 +697,9 @@ export default function OinkSoccerCalc() {
   const [myForm, setMyForm] = useState(persistedState.myForm || 'Pyramid');
   const [oppForm, setOppForm] = useState(persistedState.oppForm || 'Pyramid');
   const [myTactics, setMyTactics] = useState(normalizeTactics(persistedState.myTactics));
-  const [oppTactics, setOppTactics] = useState(normalizeTactics(persistedState.oppTactics));
+  const [oppTactics] = useState(normalizeTactics(persistedState.oppTactics));
 
-  const [myBoost, setMyBoost] = useState(persistedState.myBoost || 'None');
+  const [myBoost] = useState(persistedState.myBoost || 'None');
   const [myBoostApps] = useState(persistedState.myBoostApps || 1);
   const [myBoostState, setMyBoostState] = useState(createManualFallbackBoostState(persistedState.myBoost || 'None', persistedState.myBoostApps || 1));
   const [oppBoostState, setOppBoostState] = useState(TEAM_BOOST_STATE_EMPTY);
@@ -764,12 +764,6 @@ export default function OinkSoccerCalc() {
       .map((id) => ({ id, label: leagueNames[id] || `League ${id}` }));
   }, [leagueIndex]);
 
-  const filteredOpponentOptions = useMemo(() => {
-    const blocked = new Set(detectedMyTeamIds);
-    const candidates = (leagueTeams || []).filter((team) => !blocked.has(team.teamId));
-    return findTeamsByName(candidates, opponentSearchInput).slice(0, 25);
-  }, [detectedMyTeamIds, leagueTeams, opponentSearchInput]);
-
   const myFixtureRows = useMemo(() => {
     if (detectedMyTeamIds.length === 0) return [];
     const myTeams = new Set(detectedMyTeamIds);
@@ -777,6 +771,23 @@ export default function OinkSoccerCalc() {
   }, [detectedMyTeamIds, fixtures]);
 
   const visibleFixtures = myFixtureRows.length > 0 ? myFixtureRows : fixtures;
+
+  const selectedFixture = useMemo(
+    () => visibleFixtures.find((fixture) => fixture.game_key === selectedFixtureKey)
+      || fixtures.find((fixture) => fixture.game_key === selectedFixtureKey)
+      || null,
+    [fixtures, selectedFixtureKey, visibleFixtures],
+  );
+
+  const pastFixtures = useMemo(
+    () => visibleFixtures.filter((fixture) => fixture.game_result),
+    [visibleFixtures],
+  );
+
+  const upcomingFixtures = useMemo(
+    () => visibleFixtures.filter((fixture) => !fixture.game_result),
+    [visibleFixtures],
+  );
 
   const fixtureRound = gameCounter?.game_round && gameCounter.game_round > 0
     ? gameCounter.game_round
@@ -825,8 +836,6 @@ export default function OinkSoccerCalc() {
       ? myBoostState
       : createManualFallbackBoostState(myBoost, myBoostApps, myBoostState.fetchError)
   ), [hasLiveMyTeamBoosts, myBoost, myBoostApps, myBoostState]);
-
-  const myDisplayBoostState = myBoostState;
 
   const oppBoostContext = useMemo(() => (
     oppBoostState.source === 'live'
@@ -942,7 +951,6 @@ export default function OinkSoccerCalc() {
     }
 
     let cancelled = false;
-    setLeagueTeamsLoading(true);
 
     void fetchLeagueTableTeams(selectedLeagueId)
       .then((payload) => {
@@ -957,11 +965,6 @@ export default function OinkSoccerCalc() {
         setLeagueTeams([]);
         setSelectedLeagueName('');
       })
-      .finally(() => {
-        if (!cancelled) {
-          setLeagueTeamsLoading(false);
-        }
-      });
 
     return () => {
       cancelled = true;
@@ -1011,10 +1014,60 @@ export default function OinkSoccerCalc() {
   }, [fixtureRound, fixtureSeason, selectedLeagueId]);
 
   useEffect(() => {
-    if (!selectedOpponentTeamId) return;
-    if (filteredOpponentOptions.some((team) => team.teamId === selectedOpponentTeamId)) return;
-    setSelectedOpponentTeamId('');
-  }, [filteredOpponentOptions, selectedOpponentTeamId]);
+    if (activeTab !== 'season' || !selectedLeagueId || !fixtureSeason) {
+      return undefined;
+    }
+
+    let cancelled = false;
+    const rounds = Math.max(1, Math.min(60, gameCounter?.games_per_season || 44));
+    setSeasonPredictionLoading(true);
+    setSeasonPredictionError('');
+
+    const loadSeasonPredictionInputs = async () => {
+      const nextFixtures = await fetchLeagueSeasonFixtures({
+        leagueId: selectedLeagueId,
+        season: fixtureSeason,
+        rounds,
+      });
+
+      if (cancelled) return;
+      setSeasonFixtures(nextFixtures);
+
+      const teamIds = Array.from(new Set(
+        nextFixtures.flatMap((fixture) => [fixture.home_team_id, fixture.away_team_id]).filter(Boolean),
+      ));
+      const loadedEntries = await Promise.all(
+        teamIds.map(async (teamId) => {
+          try {
+            const lineup = await fetchTeamLineup(teamId);
+            return [teamId, lineup];
+          } catch (error) {
+            return [teamId, { fetchError: getErrorMessage(error, 'Lineup unavailable.') }];
+          }
+        }),
+      );
+
+      if (cancelled) return;
+      setSeasonTeams(Object.fromEntries(loadedEntries));
+    };
+
+    void loadSeasonPredictionInputs()
+      .catch((error) => {
+        if (cancelled) return;
+        setSeasonFixtures([]);
+        setSeasonTeams({});
+        setSeasonPredictionError(getErrorMessage(error, 'Failed to load season prediction.'));
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setSeasonPredictionLoading(false);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [activeTab, fixtureSeason, gameCounter?.games_per_season, selectedLeagueId]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1028,14 +1081,11 @@ export default function OinkSoccerCalc() {
 
       if (!canFetchMyTeam && !canFetchOppTeam) {
         if (!cancelled) {
-          setBoostStatesLoading(false);
           setMyBoostState(myFallback);
           setOppBoostState(oppFallback);
         }
         return;
       }
-
-      setBoostStatesLoading(true);
 
       try {
         const season = await fetchCurrentSeason();
@@ -1065,10 +1115,6 @@ export default function OinkSoccerCalc() {
         const message = getErrorMessage(error);
         setMyBoostState(createManualFallbackBoostState(myBoost, myBoostApps, message));
         setOppBoostState(createEmptyTeamBoostState(message));
-      } finally {
-        if (!cancelled) {
-          setBoostStatesLoading(false);
-        }
       }
     };
 
@@ -1214,9 +1260,6 @@ export default function OinkSoccerCalc() {
         : oppForm;
 
       setImportedOpponentTeamId(imported.teamId || null);
-      if (imported.teamId) {
-        setSelectedOpponentTeamId(imported.teamId);
-      }
       setOppForm(nextFormation);
       setOpponentTeam(imported.players);
       saveToDb({ opponentTeam: imported.players, oppForm: nextFormation });
@@ -1238,23 +1281,6 @@ export default function OinkSoccerCalc() {
       setImportingTeamUrl(false);
     }
   }, [importingTeamUrl, oppForm, saveToDb]);
-
-  const handleImportTeamUrl = useCallback(async () => {
-    if (!teamUrlInput.trim()) {
-      setUploadStatus({ tone: 'error', message: 'Enter a Lost Pigs team URL or teamId first.' });
-      return;
-    }
-    await importOpponentFromInput(teamUrlInput.trim());
-  }, [importOpponentFromInput, teamUrlInput]);
-
-  const handleImportSelectedOpponent = useCallback(async () => {
-    const candidateTeamId = selectedOpponentTeamId || filteredOpponentOptions[0]?.teamId;
-    if (!candidateTeamId) {
-      setUploadStatus({ tone: 'error', message: 'Select an opponent team first.' });
-      return;
-    }
-    await importOpponentFromInput(candidateTeamId);
-  }, [filteredOpponentOptions, importOpponentFromInput, selectedOpponentTeamId]);
 
   const handleHomeAdvantageChange = useCallback((value) => {
     setHomeAdvantage(value);
@@ -1302,23 +1328,6 @@ export default function OinkSoccerCalc() {
       setOppForm(val);
       saveToDb({ oppForm: val });
     }
-  };
-
-  const handleBoostChange = (boostType) => {
-    setMyBoost(boostType);
-    saveToDb({ myBoost: boostType });
-  }
-
-  const handleTacticChange = (teamType, key, value) => {
-    if (teamType === 'my') {
-      const next = normalizeTactics({ ...myTactics, [key]: value });
-      setMyTactics(next);
-      saveToDb({ myTactics: next });
-      return;
-    }
-    const next = normalizeTactics({ ...oppTactics, [key]: value });
-    setOppTactics(next);
-    saveToDb({ oppTactics: next });
   };
 
   const handleRoleChange = (player, role, teamType) => {
@@ -1648,8 +1657,7 @@ export default function OinkSoccerCalc() {
 
   const tabItems = useMemo(() => ([
     { key: 'upcoming', icon: '📅', label: 'Upcoming' },
-    { key: 'squad', icon: '👥', label: 'Squad' },
-    { key: 'conditions', icon: '⚡', label: 'Conditions' },
+    { key: 'season', icon: '📈', label: 'Season' },
     { key: 'bench', icon: '🪑', label: 'Bench' },
   ]), []);
 
@@ -1692,9 +1700,217 @@ export default function OinkSoccerCalc() {
   const forecastLoss = Number((100 - drawPct - forecastWin).toFixed(1));
   const forecastDraw = Number((100 - forecastWin - forecastLoss).toFixed(1));
 
-  const controlDelta = Number((myStats.Control - oppStats.Control).toFixed(1));
-  const defenseDelta = Number((myStats.Defense - oppStats.Defense).toFixed(1));
-  const attackDelta = Number((myStats.Attack - oppStats.Attack).toFixed(1));
+  const opponentPitchSuggestion = useMemo(() => {
+    if (opponentTeam.length === 0 || !FORMATIONS[oppForm]) return null;
+    return {
+      formation: oppForm,
+      lineup: assignLineupPositions(opponentTeam, FORMATIONS[oppForm].structure),
+      tactics: normalizeTactics(oppTactics),
+    };
+  }, [oppForm, oppTactics, opponentTeam]);
+
+  const seasonForecast = useMemo(() => {
+    const rows = new Map();
+    const ensureRow = (teamId, teamName) => {
+      if (!teamId) return null;
+      if (!rows.has(teamId)) {
+        rows.set(teamId, {
+          teamId,
+          teamName: teamName || seasonTeams[teamId]?.teamLabel || teamId,
+          played: 0,
+          projected: 0,
+          won: 0,
+          drawn: 0,
+          lost: 0,
+          gf: 0,
+          ga: 0,
+          points: 0,
+          unavailable: 0,
+        });
+      }
+      return rows.get(teamId);
+    };
+
+    leagueTeams.forEach((team) => ensureRow(team.teamId, team.teamName));
+
+    const getModel = (teamId) => {
+      const model = seasonTeams[teamId];
+      if (!model?.players?.length) return null;
+      const formation = model.formationKey && FORMATIONS[model.formationKey] ? model.formationKey : 'Pyramid';
+      const tactics = DEFAULT_TACTICS;
+      return {
+        ...model,
+        formation,
+        tactics,
+        stats: calculateTeamScores(model.players, formation, TEAM_BOOST_STATE_EMPTY, tactics),
+      };
+    };
+
+    const projectedFixtures = [];
+
+    seasonFixtures.forEach((fixture) => {
+      const home = ensureRow(fixture.home_team_id, fixture.home_team_name);
+      const away = ensureRow(fixture.away_team_id, fixture.away_team_name);
+      if (!home || !away) return;
+
+      if (fixture.game_result) {
+        const homeGoals = Number(fixture.game_result.home_team_score || 0);
+        const awayGoals = Number(fixture.game_result.away_team_score || 0);
+        home.played += 1;
+        away.played += 1;
+        home.gf += homeGoals;
+        home.ga += awayGoals;
+        away.gf += awayGoals;
+        away.ga += homeGoals;
+        if (homeGoals > awayGoals) {
+          home.won += 1;
+          away.lost += 1;
+          home.points += 3;
+        } else if (awayGoals > homeGoals) {
+          away.won += 1;
+          home.lost += 1;
+          away.points += 3;
+        } else {
+          home.drawn += 1;
+          away.drawn += 1;
+          home.points += 1;
+          away.points += 1;
+        }
+        return;
+      }
+
+      const homeModel = getModel(fixture.home_team_id);
+      const awayModel = getModel(fixture.away_team_id);
+      if (!homeModel || !awayModel) {
+        home.unavailable += 1;
+        away.unavailable += 1;
+        return;
+      }
+
+      const projection = projectMatch({
+        myStats: homeModel.stats,
+        myForm: homeModel.formation,
+        myTactics: homeModel.tactics,
+        oppStats: awayModel.stats,
+        oppForm: awayModel.formation,
+        oppTactics: awayModel.tactics,
+        homeAdvantage: 'home',
+      });
+      const homeGoals = projection.myxG;
+      const awayGoals = projection.oppxG;
+      const goalGap = homeGoals - awayGoals;
+      const isDraw = Math.abs(goalGap) < 0.18;
+
+      home.projected += 1;
+      away.projected += 1;
+      home.gf += homeGoals;
+      home.ga += awayGoals;
+      away.gf += awayGoals;
+      away.ga += homeGoals;
+
+      if (isDraw) {
+        home.drawn += 1;
+        away.drawn += 1;
+        home.points += 1;
+        away.points += 1;
+      } else if (goalGap > 0) {
+        home.won += 1;
+        away.lost += 1;
+        home.points += 3;
+      } else {
+        away.won += 1;
+        home.lost += 1;
+        away.points += 3;
+      }
+
+      projectedFixtures.push({
+        fixture,
+        homeWin: projection.win,
+        homeXg: projection.myxG,
+        awayXg: projection.oppxG,
+        predicted: isDraw ? 'Draw' : goalGap > 0 ? fixture.home_team_name : fixture.away_team_name,
+      });
+    });
+
+    return {
+      rows: Array.from(rows.values())
+        .map((row) => ({
+          ...row,
+          gd: row.gf - row.ga,
+        }))
+        .sort((a, b) => (
+          b.points - a.points
+          || b.gd - a.gd
+          || b.gf - a.gf
+          || a.teamName.localeCompare(b.teamName)
+        )),
+      projectedFixtures,
+    };
+  }, [leagueTeams, seasonFixtures, seasonTeams]);
+
+  const itemSuggestions = useMemo(() => {
+    if (myTeam.length < 5 || detectedMyTeamIds.length === 0 || seasonFixtures.length === 0) return [];
+    const myTeamIds = new Set(detectedMyTeamIds);
+    const remainingMyFixtures = seasonFixtures
+      .filter((fixture) => !fixture.game_result && (myTeamIds.has(fixture.home_team_id) || myTeamIds.has(fixture.away_team_id)))
+      .slice(0, 12);
+
+    const baseBoostContext = mySimulationBoostContext;
+    const baseStats = calculateTeamScores(myTeam, myForm, baseBoostContext, myTactics);
+
+    const recommendations = [];
+    remainingMyFixtures.forEach((fixture) => {
+      const isHome = myTeamIds.has(fixture.home_team_id);
+      const opponentId = isHome ? fixture.away_team_id : fixture.home_team_id;
+      const opponentModel = seasonTeams[opponentId];
+      if (!opponentModel?.players?.length) return;
+
+      const opponentFormation = opponentModel.formationKey && FORMATIONS[opponentModel.formationKey]
+        ? opponentModel.formationKey
+        : 'Pyramid';
+      const opponentStats = calculateTeamScores(opponentModel.players, opponentFormation, TEAM_BOOST_STATE_EMPTY, DEFAULT_TACTICS);
+      const baseProjection = projectMatch({
+        myStats: baseStats,
+        myForm,
+        myTactics,
+        oppStats: opponentStats,
+        oppForm: opponentFormation,
+        oppTactics: DEFAULT_TACTICS,
+        homeAdvantage: isHome ? 'home' : 'away',
+      });
+
+      Object.keys(BOOSTS)
+        .filter((boostKey) => boostKey !== 'None')
+        .forEach((boostKey) => {
+          const boostedStats = calculateTeamScores(myTeam, myForm, createManualFallbackBoostState(boostKey, 1), myTactics);
+          const boostedProjection = projectMatch({
+            myStats: boostedStats,
+            myForm,
+            myTactics,
+            oppStats: opponentStats,
+            oppForm: opponentFormation,
+            oppTactics: DEFAULT_TACTICS,
+            homeAdvantage: isHome ? 'home' : 'away',
+          });
+          const delta = boostedProjection.win - baseProjection.win;
+          if (delta <= 0.05) return;
+          recommendations.push({
+            fixture,
+            boostKey,
+            boostLabel: BOOSTS[boostKey]?.label || boostKey,
+            baseWin: baseProjection.win,
+            boostedWin: boostedProjection.win,
+            delta,
+            opponentName: isHome ? fixture.away_team_name : fixture.home_team_name,
+            score: (100 - baseProjection.win) + (delta * 2),
+          });
+        });
+    });
+
+    return recommendations
+      .sort((a, b) => b.score - a.score)
+      .slice(0, 5);
+  }, [detectedMyTeamIds, myForm, mySimulationBoostContext, myTactics, myTeam, seasonFixtures, seasonTeams]);
 
   const copySuggestion = useCallback(async (suggestion) => {
     if (!suggestion?.formation) return;
@@ -1739,25 +1955,6 @@ export default function OinkSoccerCalc() {
     }
     closeInjuryModal();
   }, [closeInjuryModal, handleInjuryChange, injuryModalState, mySquad, opponentTeam]);
-
-  const manualBoostFallbackActive = !hasLiveMyTeamBoosts;
-
-  const annotation = useMemo(() => {
-    const worstDelta = Math.min(controlDelta, defenseDelta, attackDelta);
-    if (topSuggestion && topSuggestion.formation && topSuggestion.diff > 0) {
-      return `Smart Coach sees an upgrade: ${FORMATIONS[topSuggestion.formation].name} projects ${topSuggestion.win.toFixed(1)}% win (${topSuggestion.diff.toFixed(1)} higher than current).`;
-    }
-    if (worstDelta >= 0) {
-      return `You are ahead across key metrics. Keep ${FORMATIONS[myForm]?.name || myForm} and preserve pressure with ${myBoost === 'None' ? 'No Boost' : BOOSTS[myBoost]?.label}.`;
-    }
-    if (controlDelta === worstDelta) {
-      return `Control gap detected: you are ${Math.abs(controlDelta).toFixed(1)} behind. Run Smart Coach to find the highest-win formation from your current bench.`;
-    }
-    if (defenseDelta === worstDelta) {
-      return `Defense is trailing by ${Math.abs(defenseDelta).toFixed(1)}. Home location and lineup optimization can reduce opponent xG before kickoff.`;
-    }
-    return `Attack is trailing by ${Math.abs(attackDelta).toFixed(1)}. Run Smart Coach to identify the best attacking lineup from available players.`;
-  }, [attackDelta, controlDelta, defenseDelta, myBoost, myForm, topSuggestion]);
 
   return (
     <div className="min-h-screen bg-[#0a0d12] text-[#e8edf5] font-sans pb-8">
@@ -1844,15 +2041,6 @@ export default function OinkSoccerCalc() {
       </section>
 
       <main className="mx-auto max-w-[900px] px-4 py-5 md:px-6 md:py-6">
-        <BestSetupCard
-          suggestion={topSuggestion}
-          analyzing={autoAnalyzing}
-          canAnalyze={mySquad.length >= 5 && opponentTeam.length >= 5}
-          copied={copiedPlan}
-          onApply={() => applySuggestion(topSuggestion)}
-          onCopy={() => void copySuggestion(topSuggestion)}
-        />
-
         {activeTab === 'squad' && (
           <section id="tab-squad" className="space-y-4">
             <div className="grid grid-cols-1 gap-3 rounded-[10px] border border-[#1e2a3a] bg-[#111620] p-4 md:grid-cols-[1fr_auto_1fr]">
@@ -2037,7 +2225,7 @@ export default function OinkSoccerCalc() {
             <div className="rounded-[10px] border border-[#1e2a3a] bg-[#161c28] p-4">
               <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                 <div>
-                  <div className="mb-1 text-sm font-bold">Upcoming Matches</div>
+                  <div className="mb-1 text-sm font-bold">Fixtures</div>
                   <div className="text-xs text-[#6b7a94]">
                     {fixtureSeason
                       ? `Season ${fixtureSeason}, round ${fixtureRound}${selectedLeagueName ? ` • ${selectedLeagueName}` : ''}`
@@ -2066,9 +2254,7 @@ export default function OinkSoccerCalc() {
                   value={selectedLeagueId}
                   onChange={(e) => {
                     setSelectedLeagueId(e.target.value);
-                    setSelectedOpponentTeamId('');
                     setSelectedFixtureKey('');
-                    setOpponentSearchInput('');
                   }}
                   disabled={importingTeamUrl || leagueIndexLoading}
                   className="rounded-md border border-[#1e2a3a] bg-[#111620] px-3 py-2 text-sm text-[#e8edf5] outline-none focus:border-[#2979ff]"
@@ -2081,177 +2267,29 @@ export default function OinkSoccerCalc() {
                 <div className="rounded-md border border-[#1e2a3a] bg-[#111620] px-3 py-2 text-xs text-[#9aa5bb]">
                   {myFixtureRows.length > 0
                     ? 'Your fixture is detected from wallet-owned team assets.'
-                    : 'Connect the wallet that owns your team to auto-detect your fixture; otherwise choose a fixture or import an opponent below.'}
+                    : 'Connect the wallet that owns your team to auto-detect your fixture, or choose any fixture to inspect the matchup.'}
                 </div>
               </div>
 
-              <div className="mt-3 space-y-2">
-                {fixturesLoading && (
-                  <div className="rounded-md border border-[#1e2a3a] bg-[#111620] p-3 text-xs text-[#9aa5bb]">Loading fixtures...</div>
-                )}
+              <FixtureTableSection
+                title="Upcoming Fixtures"
+                fixtures={upcomingFixtures}
+                selectedFixtureKey={selectedFixtureKey}
+                detectedMyTeamIds={detectedMyTeamIds}
+                loading={fixturesLoading}
+                emptyText={selectedLeagueId ? 'No upcoming fixtures in this round.' : 'Choose a league to load fixtures.'}
+                onSelect={(fixture) => void handleSelectFixture(fixture)}
+              />
 
-                {!fixturesLoading && !selectedLeagueId && (
-                  <div className="rounded-md border border-[#1e2a3a] bg-[#111620] p-3 text-xs text-[#9aa5bb]">Choose a league to load current-round fixtures.</div>
-                )}
-
-                {!fixturesLoading && selectedLeagueId && visibleFixtures.length === 0 && (
-                  <div className="rounded-md border border-[#1e2a3a] bg-[#111620] p-3 text-xs text-[#9aa5bb]">No fixtures found for this league and round.</div>
-                )}
-
-                {!fixturesLoading && visibleFixtures.slice(0, 12).map((fixture) => {
-                  const isSelected = selectedFixtureKey === fixture.game_key;
-                  const myTeams = new Set(detectedMyTeamIds);
-                  const mySide = myTeams.has(fixture.home_team_id)
-                    ? 'home'
-                    : myTeams.has(fixture.away_team_id)
-                      ? 'away'
-                      : '';
-                  const opponentName = mySide === 'home'
-                    ? fixture.away_team_name
-                    : mySide === 'away'
-                      ? fixture.home_team_name
-                      : fixture.away_team_name;
-                  const result = fixture.game_result
-                    ? `${fixture.game_result.home_team_score}-${fixture.game_result.away_team_score}`
-                    : 'vs';
-                  const kickoff = fixture.game_time
-                    ? new Date(fixture.game_time).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })
-                    : 'Time TBC';
-
-                  return (
-                    <button
-                      key={fixture.game_key}
-                      type="button"
-                      onClick={() => void handleSelectFixture(fixture)}
-                      className={`w-full rounded-md border p-3 text-left transition ${isSelected
-                        ? 'border-[#00e676]/60 bg-[#0f2a1b] text-[#d7ffe9]'
-                        : 'border-[#1e2a3a] bg-[#111620] text-[#e8edf5] hover:border-[#2f3f59]'
-                        }`}
-                    >
-                      <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-2 text-xs sm:text-sm">
-                        <div className={`min-w-0 truncate text-right ${mySide === 'home' ? 'text-[#00e676]' : ''}`}>{fixture.home_team_name}</div>
-                        <div className="rounded bg-[#ffab00] px-2 py-1 font-bold text-black">{result}</div>
-                        <div className={`min-w-0 truncate ${mySide === 'away' ? 'text-[#00e676]' : ''}`}>{fixture.away_team_name}</div>
-                      </div>
-                      <div className="mt-2 flex flex-wrap items-center justify-between gap-2 text-[11px] text-[#7f8aa3]">
-                        <span>{kickoff}</span>
-                        <span>{mySide ? `Opponent: ${opponentName} • You are ${mySide}` : `Imports opponent: ${opponentName}`}</span>
-                      </div>
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-
-            <div className="rounded-[10px] border border-[#1e2a3a] bg-[#161c28] p-4">
-              <div className="mb-1 text-sm font-bold">Opponent Fallback</div>
-              <div className="mb-3 text-xs text-[#6b7a94]">Use this if your fixture is not detected or you want to test a different opponent.</div>
-
-              <div className="grid grid-cols-1 gap-2 sm:grid-cols-[180px,1fr,auto]">
-                <select
-                  value={selectedLeagueId}
-                  onChange={(e) => {
-                    setSelectedLeagueId(e.target.value);
-                    setSelectedOpponentTeamId('');
-                    setSelectedFixtureKey('');
-                    setOpponentSearchInput('');
-                  }}
-                  disabled={importingTeamUrl || leagueIndexLoading}
-                  className="rounded-md border border-[#1e2a3a] bg-[#111620] px-3 py-2 text-sm text-[#e8edf5] outline-none focus:border-[#2979ff]"
-                >
-                  <option value="">{leagueIndexLoading ? 'Loading leagues...' : 'Select league'}</option>
-                  {leagueOptions.map((league) => (
-                    <option key={league.id} value={league.id}>{league.label}</option>
-                  ))}
-                </select>
-
-                <input
-                  type="text"
-                  value={opponentSearchInput}
-                  onChange={(e) => {
-                    setOpponentSearchInput(e.target.value);
-                    setSelectedOpponentTeamId('');
-                  }}
-                  placeholder={selectedLeagueId ? 'Search opponent by team name...' : 'Select a league first'}
-                  className="min-w-0 rounded-md border border-[#1e2a3a] bg-[#111620] px-3 py-2 text-sm text-[#e8edf5] outline-none focus:border-[#2979ff]"
-                  disabled={importingTeamUrl || !selectedLeagueId || leagueTeamsLoading}
-                />
-
-                <button
-                  onClick={() => void handleImportSelectedOpponent()}
-                  disabled={importingTeamUrl || !selectedLeagueId || leagueTeamsLoading || filteredOpponentOptions.length === 0}
-                  className="rounded-md bg-[#2979ff] px-4 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:bg-slate-700"
-                >
-                  {importingTeamUrl ? 'Loading...' : 'Import Selected'}
-                </button>
-              </div>
-
-              <div className="mt-2 rounded-md border border-[#1e2a3a] bg-[#111620] p-2">
-                <div className="mb-1 text-[11px] uppercase tracking-[0.1em] text-[#6b7a94]">
-                  {selectedLeagueId
-                    ? `Teams${selectedLeagueName ? ` • ${selectedLeagueName}` : ''}`
-                    : 'Teams'}
-                </div>
-
-                {leagueTeamsLoading && (
-                  <div className="text-xs text-[#9aa5bb]">Loading league teams...</div>
-                )}
-
-                {!leagueTeamsLoading && !selectedLeagueId && (
-                  <div className="text-xs text-[#9aa5bb]">Choose a league to browse opponent teams.</div>
-                )}
-
-                {!leagueTeamsLoading && selectedLeagueId && filteredOpponentOptions.length === 0 && (
-                  <div className="text-xs text-[#9aa5bb]">
-                    {opponentSearchInput.trim() ? 'No teams match your search.' : 'No opponent teams available.'}
-                  </div>
-                )}
-
-                {!leagueTeamsLoading && selectedLeagueId && filteredOpponentOptions.length > 0 && (
-                  <div className="max-h-40 space-y-1 overflow-auto pr-1">
-                    {filteredOpponentOptions.map((team) => (
-                      <button
-                        key={team.teamId}
-                        onClick={() => setSelectedOpponentTeamId(team.teamId)}
-                        className={`w-full rounded-md border px-2 py-1.5 text-left text-xs transition ${selectedOpponentTeamId === team.teamId
-                          ? 'border-[#2979ff] bg-[#0f1f39] text-[#9fc6ff]'
-                          : 'border-[#1e2a3a] bg-[#141a26] text-[#d0d7e5] hover:border-[#2f3f59]'
-                          }`}
-                      >
-                        <div className="font-semibold">{team.teamName}</div>
-                        <div className="text-[10px] text-[#7f8aa3]">{team.teamId}</div>
-                      </button>
-                    ))}
-                  </div>
-                )}
-              </div>
-
-              <div className="mt-3 border-t border-[#1e2a3a] pt-3">
-                <div className="mb-2 text-xs font-semibold text-[#9aa5bb]">Manual fallback: URL or teamId</div>
-                <div className="flex gap-2">
-                  <input
-                    type="text"
-                    value={teamUrlInput}
-                    onChange={(e) => setTeamUrlInput(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter') {
-                        e.preventDefault();
-                        void handleImportTeamUrl();
-                      }
-                    }}
-                    placeholder="https://www.thelostpigs.com/oink-soccer/team?teamId=..."
-                    className="min-w-0 flex-1 rounded-md border border-[#1e2a3a] bg-[#111620] px-3 py-2 text-sm text-[#e8edf5] outline-none focus:border-[#2979ff]"
-                    disabled={importingTeamUrl}
-                  />
-                  <button
-                    onClick={() => void handleImportTeamUrl()}
-                    disabled={importingTeamUrl}
-                    className="rounded-md bg-[#24344f] px-4 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:bg-slate-700"
-                  >
-                    {importingTeamUrl ? 'Loading...' : 'Import URL'}
-                  </button>
-                </div>
-              </div>
+              <FixtureTableSection
+                title="Past Matches"
+                fixtures={pastFixtures}
+                selectedFixtureKey={selectedFixtureKey}
+                detectedMyTeamIds={detectedMyTeamIds}
+                loading={false}
+                emptyText="No completed matches in this round yet."
+                onSelect={(fixture) => void handleSelectFixture(fixture)}
+              />
 
               {uploadStatus && (
                 <div className={`mt-2 rounded-md border px-2 py-1.5 text-xs ${uploadStatus.tone === 'success'
@@ -2265,93 +2303,111 @@ export default function OinkSoccerCalc() {
               )}
             </div>
 
-            {opponentTeam.map((p) => (
-              <PlayerRow
-                key={p.id}
-                player={p}
-                teamType="opponent"
-                onInjuryOpen={() => openInjuryModal(p, 'opponent')}
-                onRoleChange={(role) => handleRoleChange(p, role, 'opponent')}
-              />
-            ))}
-            {opponentTeam.length === 0 && (
-              <div className="rounded-md border border-dashed border-[#1e2a3a] p-4 text-sm text-[#6b7a94]">No opponent lineup imported yet.</div>
-            )}
+            <section className="space-y-4">
+              <div className="rounded-[10px] border border-[#1e2a3a] bg-[#161c28] p-4">
+                <div className="text-[11px] font-bold uppercase tracking-[0.14em] text-[#00e676]">Selected Matchup</div>
+                {selectedFixture ? (
+                  <div className="mt-2 grid grid-cols-[1fr_auto_1fr] items-center gap-2 text-sm">
+                    <div className={`min-w-0 truncate text-right ${homeAdvantage === 'home' ? 'text-[#00e676]' : 'text-[#e8edf5]'}`}>{selectedFixture.home_team_name}</div>
+                    <div className="rounded bg-[#ffab00] px-2 py-1 text-xs font-bold text-black">
+                      {selectedFixture.game_result
+                        ? `${selectedFixture.game_result.home_team_score}-${selectedFixture.game_result.away_team_score}`
+                        : 'vs'}
+                    </div>
+                    <div className={`min-w-0 truncate ${homeAdvantage === 'away' ? 'text-[#00e676]' : 'text-[#e8edf5]'}`}>{selectedFixture.away_team_name}</div>
+                  </div>
+                ) : (
+                  <div className="mt-2 text-sm text-[#9aa5bb]">Select a fixture to load the matchup-specific squad views.</div>
+                )}
+              </div>
+
+              {selectedFixture ? (
+                <>
+                  <BestSetupCard
+                    suggestion={topSuggestion}
+                    analyzing={autoAnalyzing || importingTeamUrl}
+                    canAnalyze={mySquad.length >= 5 && opponentTeam.length >= 5}
+                    copied={copiedPlan}
+                    onApply={() => applySuggestion(topSuggestion)}
+                    onCopy={() => void copySuggestion(topSuggestion)}
+                  />
+
+                  <TeamFormationCard
+                    title="Opponent Squad"
+                    subtitle={FORMATIONS[oppForm]?.name || 'Current formation'}
+                    suggestion={opponentPitchSuggestion}
+                    emptyText={importingTeamUrl ? 'Loading opponent lineup...' : 'Select a fixture to load the opponent squad.'}
+                    tone="opp"
+                  />
+                </>
+              ) : null}
+            </section>
           </section>
         )}
 
-        {activeTab === 'conditions' && (
-          <section id="tab-conditions" className="space-y-4">
-            <div className="grid grid-cols-1 gap-3 min-[780px]:grid-cols-2">
-              <TacticsCard
-                title="My Tactics"
-                tone="my"
-                tactics={myTactics}
-                players={myTeam}
-                onChange={(key, value) => handleTacticChange('my', key, value)}
-              />
-              <TacticsCard
-                title="Opponent Tactics"
-                tone="opp"
-                tactics={oppTactics}
-                players={opponentTeam}
-                onChange={(key, value) => handleTacticChange('opp', key, value)}
-              />
-            </div>
-
-            <div className="grid grid-cols-1 gap-3 min-[500px]:grid-cols-2">
-              {/* Location selection hidden as it only affects match tempo (xG volume) without changing win probability ratios in core game logic */}
-
-              <div className="rounded-[10px] border border-[#1e2a3a] bg-[#161c28] p-4">
-                <div className="mb-2 text-[11px] font-bold uppercase tracking-[0.1em] text-[#6b7a94]">⚡ Active Boost</div>
-                <div className="flex flex-wrap gap-2">
-                  {Object.keys(BOOSTS).map((key) => (
-                    <button
-                      key={key}
-                      disabled={!manualBoostFallbackActive}
-                      onClick={() => handleBoostChange(key)}
-                      className={`rounded-full border px-3 py-1 text-xs font-semibold ${myBoost === key
-                        ? key === 'None'
-                          ? 'border-[#253040] bg-[#161c28] text-[#e8edf5]'
-                          : 'border-[#ffab00] bg-[#ffab00] text-black'
-                        : 'border-[#1e2a3a] bg-[#111620] text-[#9aa5bb]'
-                        } ${manualBoostFallbackActive ? '' : 'cursor-not-allowed opacity-50'}`}
-                    >
-                      {BOOSTS[key].label}
-                    </button>
-                  ))}
+        {activeTab === 'season' && (
+          <section id="tab-season" className="space-y-4">
+            <div className="rounded-[10px] border border-[#1e2a3a] bg-[#161c28] p-4">
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                <div>
+                  <div className="text-[11px] font-bold uppercase tracking-[0.14em] text-[#00e676]">Season Prediction</div>
+                  <div className="mt-1 text-sm font-semibold text-[#e8edf5]">
+                    {selectedLeagueName || 'Select a league'}
+                  </div>
+                  <div className="mt-1 text-xs text-[#6b7a94]">
+                    Uses actual results already played, then projects remaining fixtures from current team lineups.
+                  </div>
                 </div>
-                <div className="mt-2 text-xs text-[#6b7a94]">
-                  {manualBoostFallbackActive
-                    ? 'Manual boosts are enabled for simulation because no live active boost is currently applied.'
-                    : 'Live boost data is active. Manual boosts are disabled until fallback is needed.'}
+                <div className="rounded-md border border-[#253040] bg-[#111620] px-3 py-2 text-xs text-[#9aa5bb]">
+                  {seasonPredictionLoading
+                    ? 'Loading season...'
+                    : `${seasonForecast.projectedFixtures.length} projected fixtures`}
                 </div>
               </div>
+
+              {seasonPredictionError && (
+                <div className="mt-3 rounded-md border border-[#ff4444]/50 bg-[#ff4444]/10 px-3 py-2 text-xs text-[#ff9e9e]">
+                  {seasonPredictionError}
+                </div>
+              )}
+
+              <SeasonPredictionTable rows={seasonForecast.rows} loading={seasonPredictionLoading} myTeamIds={detectedMyTeamIds} />
             </div>
 
-            <div className="grid grid-cols-1 gap-3 min-[780px]:grid-cols-2">
-              <BoostStateCard
-                title="My Team Boost State"
-                boostState={myDisplayBoostState}
-                loading={boostStatesLoading}
-              />
-              <BoostStateCard
-                title="Opponent Boost State"
-                boostState={oppBoostContext}
-                loading={boostStatesLoading}
-              />
-            </div>
+            <div className="rounded-[10px] border border-[#1e2a3a] bg-[#161c28] p-4">
+              <div className="text-[11px] font-bold uppercase tracking-[0.14em] text-[#ffab00]">Item Timing</div>
+              <div className="mt-1 text-xs text-[#6b7a94]">
+                Ranked by projected win-probability gain against your remaining fixtures.
+              </div>
 
-            <div className="rounded-[10px] border border-[#1e2a3a] bg-[#111620] p-4">
-              <ComparisonStat title="Team Control" mine={myStats.Control} opp={oppStats.Control} />
-              <div className="my-3" />
-              <ComparisonStat title="Team Defense" mine={myStats.Defense} opp={oppStats.Defense} />
-              <div className="my-3" />
-              <ComparisonStat title="Eff. Attack" mine={myStats.Attack} opp={oppStats.Attack} />
-            </div>
-
-            <div className="rounded-lg border border-[rgba(0,230,118,0.18)] bg-[rgba(0,230,118,0.06)] px-4 py-3 text-sm text-[#9bd7bd]">
-              ⚠️ <strong className="text-[#00e676]">Insight:</strong> {annotation}
+              <div className="mt-3 space-y-2">
+                {seasonPredictionLoading && (
+                  <div className="rounded-md border border-[#1e2a3a] bg-[#111620] p-3 text-xs text-[#9aa5bb]">Checking item windows...</div>
+                )}
+                {!seasonPredictionLoading && itemSuggestions.length === 0 && (
+                  <div className="rounded-md border border-[#1e2a3a] bg-[#111620] p-3 text-xs text-[#9aa5bb]">
+                    Connect your team wallet and load the season forecast to see item timing suggestions.
+                  </div>
+                )}
+                {!seasonPredictionLoading && itemSuggestions.map((item) => (
+                  <div key={`${item.fixture.game_key}-${item.boostKey}`} className="rounded-md border border-[#1e2a3a] bg-[#111620] p-3">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div className="min-w-0">
+                        <div className="text-sm font-semibold text-[#e8edf5]">{item.boostLabel} vs {item.opponentName}</div>
+                        <div className="mt-1 text-xs text-[#7f8aa3]">
+                          Round {item.fixture.game_round || '?'} • {formatFixtureTime(item.fixture.game_time)}
+                        </div>
+                      </div>
+                      <div className="text-right font-['Barlow_Condensed'] text-[22px] font-black text-[#00e676]">
+                        +{formatNumber(item.delta)}%
+                      </div>
+                    </div>
+                    <div className="mt-2 text-xs text-[#9aa5bb]">
+                      Projects {formatNumber(item.baseWin)}% without item, {formatNumber(item.boostedWin)}% with item.
+                    </div>
+                  </div>
+                ))}
+              </div>
             </div>
           </section>
         )}
@@ -2515,6 +2571,118 @@ export default function OinkSoccerCalc() {
   );
 }
 // --- Components ---
+
+function FixtureTableSection({ title, fixtures, selectedFixtureKey, detectedMyTeamIds, loading, emptyText, onSelect }) {
+  const myTeams = new Set(detectedMyTeamIds);
+
+  return (
+    <div className="mt-4">
+      <div className="mb-2 flex items-center justify-between">
+        <div className="text-[11px] font-bold uppercase tracking-[0.14em] text-[#9aa5bb]">{title}</div>
+        <div className="text-[11px] text-[#6b7a94]">{fixtures.length} matches</div>
+      </div>
+      <div className="overflow-hidden rounded-md border border-[#1e2a3a] bg-[#111620]">
+        {loading && (
+          <div className="p-3 text-xs text-[#9aa5bb]">Loading fixtures...</div>
+        )}
+        {!loading && fixtures.length === 0 && (
+          <div className="p-3 text-xs text-[#9aa5bb]">{emptyText}</div>
+        )}
+        {!loading && fixtures.map((fixture) => {
+          const isSelected = selectedFixtureKey === fixture.game_key;
+          const mySide = myTeams.has(fixture.home_team_id)
+            ? 'home'
+            : myTeams.has(fixture.away_team_id)
+              ? 'away'
+              : '';
+          const result = fixture.game_result
+            ? `${fixture.game_result.home_team_score}-${fixture.game_result.away_team_score}`
+            : 'vs';
+
+          return (
+            <button
+              key={fixture.game_key}
+              type="button"
+              onClick={() => onSelect(fixture)}
+              className={`grid w-full grid-cols-[1fr_auto_1fr] items-center gap-2 border-b border-[#1e2a3a] px-2 py-2 text-left text-xs transition last:border-b-0 sm:text-sm ${isSelected
+                ? 'bg-[#0f2a1b] text-[#d7ffe9]'
+                : 'text-[#e8edf5] hover:bg-[#161c28]'
+                }`}
+            >
+              <div className={`min-w-0 truncate text-right ${mySide === 'home' ? 'text-[#00e676]' : ''}`}>{fixture.home_team_name}</div>
+              <div className="flex min-w-[74px] flex-col items-center">
+                <span className="rounded bg-[#ffab00] px-2 py-1 font-bold text-black">{result}</span>
+                <span className="mt-1 text-[10px] text-[#7f8aa3]">{formatFixtureTime(fixture.game_time)}</span>
+              </div>
+              <div className={`min-w-0 truncate ${mySide === 'away' ? 'text-[#00e676]' : ''}`}>{fixture.away_team_name}</div>
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function TeamFormationCard({ title, subtitle, suggestion, emptyText, tone = 'my' }) {
+  if (!suggestion) {
+    return (
+      <section className="rounded-[10px] border border-[#1e2a3a] bg-[#111620] p-4">
+        <div className={`text-[11px] font-bold uppercase tracking-[0.14em] ${tone === 'opp' ? 'text-[#ffab00]' : 'text-[#00e676]'}`}>{title}</div>
+        <div className="mt-1 text-sm text-[#9aa5bb]">{emptyText}</div>
+      </section>
+    );
+  }
+
+  const details = getSuggestionDetails(suggestion);
+
+  return (
+    <section className="overflow-hidden rounded-[10px] border border-[#1e2a3a] bg-[#111620]">
+      <div className="border-b border-[#1e2a3a] p-4">
+        <div className={`text-[11px] font-bold uppercase tracking-[0.14em] ${tone === 'opp' ? 'text-[#ffab00]' : 'text-[#00e676]'}`}>{title}</div>
+        <div className="mt-1 font-['Barlow_Condensed'] text-[24px] font-black leading-none text-[#e8edf5]">
+          {subtitle || details.formation}
+        </div>
+      </div>
+      <FormationPitch suggestion={suggestion} details={details} />
+    </section>
+  );
+}
+
+function SeasonPredictionTable({ rows, loading, myTeamIds }) {
+  const myTeams = new Set(myTeamIds);
+
+  return (
+    <div className="mt-4 overflow-hidden rounded-md border border-[#1e2a3a] bg-[#111620]">
+      <div className="grid grid-cols-[34px_1fr_44px_44px_44px] gap-2 border-b border-[#1e2a3a] px-2 py-2 text-[10px] font-bold uppercase tracking-[0.1em] text-[#6b7a94] sm:grid-cols-[40px_1fr_48px_48px_48px_48px]">
+        <div>#</div>
+        <div>Team</div>
+        <div className="text-right">Pts</div>
+        <div className="text-right">GD</div>
+        <div className="text-right">Pld</div>
+        <div className="hidden text-right sm:block">Proj</div>
+      </div>
+      {loading && (
+        <div className="p-3 text-xs text-[#9aa5bb]">Loading every team configuration...</div>
+      )}
+      {!loading && rows.length === 0 && (
+        <div className="p-3 text-xs text-[#9aa5bb]">Open this tab after selecting a league to generate the season prediction.</div>
+      )}
+      {!loading && rows.slice(0, 24).map((row, index) => (
+        <div
+          key={row.teamId}
+          className={`grid grid-cols-[34px_1fr_44px_44px_44px] gap-2 border-b border-[#1e2a3a] px-2 py-2 text-xs last:border-b-0 sm:grid-cols-[40px_1fr_48px_48px_48px_48px] ${myTeams.has(row.teamId) ? 'bg-[#0f2a1b] text-[#d7ffe9]' : 'text-[#d0d7e5]'}`}
+        >
+          <div className="font-bold text-[#6b7a94]">{index + 1}</div>
+          <div className="min-w-0 truncate font-semibold">{row.teamName}</div>
+          <div className="text-right font-bold text-[#00e676]">{formatNumber(row.points, 0)}</div>
+          <div className="text-right">{formatNumber(row.gd, 1)}</div>
+          <div className="text-right">{row.played}</div>
+          <div className="hidden text-right sm:block">{row.projected}</div>
+        </div>
+      ))}
+    </div>
+  );
+}
 
 function BestSetupCard({ suggestion, analyzing, canAnalyze, copied, onApply, onCopy }) {
   if (!canAnalyze) {
@@ -2724,79 +2892,6 @@ function PlayerCardPortrait({ player }) {
   );
 }
 
-function TacticsCard({ title, tone, tactics, players, onChange }) {
-  const accent = tone === 'opp' ? '#ffab00' : '#00e676';
-  const normalized = normalizeTactics(tactics);
-  const selectClass = "w-full rounded-md border border-[#1e2a3a] bg-[#111620] px-2 py-2 text-sm text-[#e8edf5] outline-none focus:border-[#00e676]";
-
-  return (
-    <div className="rounded-[10px] border border-[#1e2a3a] bg-[#111620] p-4">
-      <div className="mb-3 text-xs font-bold uppercase tracking-[0.1em]" style={{ color: accent }}>{title}</div>
-      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-        <label className="block">
-          <span className="mb-1 block text-[10px] font-bold uppercase tracking-[0.1em] text-[#6b7a94]">Press</span>
-          <select value={normalized.press} onChange={(event) => onChange('press', event.target.value)} className={selectClass}>
-            {Object.entries(TACTICS.press).map(([key, value]) => (
-              <option key={key} value={key}>{value.label}</option>
-            ))}
-          </select>
-        </label>
-        <label className="block">
-          <span className="mb-1 block text-[10px] font-bold uppercase tracking-[0.1em] text-[#6b7a94]">Tempo</span>
-          <select value={normalized.tempo} onChange={(event) => onChange('tempo', event.target.value)} className={selectClass}>
-            {Object.entries(TACTICS.tempo).map(([key, value]) => (
-              <option key={key} value={key}>{value.label}</option>
-            ))}
-          </select>
-        </label>
-        <label className="block">
-          <span className="mb-1 block text-[10px] font-bold uppercase tracking-[0.1em] text-[#6b7a94]">Line</span>
-          <select value={normalized.lineHeight} onChange={(event) => onChange('lineHeight', event.target.value)} className={selectClass}>
-            {Object.entries(TACTICS.lineHeight).map(([key, value]) => (
-              <option key={key} value={key}>{value.label}</option>
-            ))}
-          </select>
-        </label>
-        <label className="block">
-          <span className="mb-1 block text-[10px] font-bold uppercase tracking-[0.1em] text-[#6b7a94]">Set Pieces</span>
-          <select value={normalized.setPieceTaker} onChange={(event) => onChange('setPieceTaker', event.target.value)} className={selectClass}>
-            <option value="">Auto</option>
-            {players.map((player) => (
-              <option key={player.id} value={player.id}>{player.name}</option>
-            ))}
-          </select>
-        </label>
-      </div>
-    </div>
-  );
-}
-
-function ComparisonStat({ title, mine, opp }) {
-  const delta = Number((mine - opp).toFixed(1));
-  const deltaPositive = delta >= 0;
-
-  return (
-    <div>
-      <div className="mb-1 flex items-end justify-between gap-3">
-        <div className="inline-flex items-center gap-2">
-          <span className="text-[11px] font-bold uppercase tracking-[0.12em] text-[#6b7a94]">{title}</span>
-          <span className={`rounded-full border px-2 py-0.5 text-[10px] font-bold ${deltaPositive ? 'border-[#00e676]/40 bg-[#00e676]/10 text-[#00e676]' : 'border-[#ff4444]/40 bg-[#ff4444]/10 text-[#ff4444]'}`}>
-            {deltaPositive ? '+' : ''}{delta} vs Opp
-          </span>
-        </div>
-        <div className="flex items-end gap-1">
-          <span className="font-['Barlow_Condensed'] text-2xl font-bold text-[#00e676]">{mine.toFixed(1)}</span>
-          <span className="font-['Barlow_Condensed'] text-lg font-semibold text-[#9aa5bb]">/ {opp.toFixed(1)}</span>
-        </div>
-      </div>
-      <div className="relative h-1.5 rounded bg-[#161c28]">
-        <div className="absolute left-0 top-0 h-1.5 rounded bg-[#00e676]" style={{ width: `${Math.max(0, Math.min(100, mine))}%` }} />
-        <div className="absolute top-[-2px] h-2.5 w-1 rounded bg-[#ffab00]" style={{ left: `${Math.max(0, Math.min(100, opp))}%` }} />
-      </div>
-    </div>
-  );
-}
-
 function OutcomeBar({ label, value, color, textClass }) {
   return (
     <div className="flex items-center gap-2">
@@ -2805,78 +2900,6 @@ function OutcomeBar({ label, value, color, textClass }) {
         <div className="h-full rounded" style={{ width: `${Math.max(0, Math.min(100, value))}%`, backgroundColor: color }} />
       </div>
       <div className={`w-12 text-right font-['Barlow_Condensed'] text-base font-bold ${textClass}`}>{value.toFixed(1)}%</div>
-    </div>
-  );
-}
-
-function BoostStateCard({ title, boostState, loading }) {
-  const boosts = Array.isArray(boostState?.boosts) ? boostState.boosts : [];
-  const sourceLabel = boostState?.source === 'live' ? 'Live' : 'Manual fallback';
-  const sourceClass = boostState?.source === 'live'
-    ? 'border-[rgba(0,230,118,0.35)] bg-[rgba(0,230,118,0.1)] text-[#00e676]'
-    : 'border-[#253040] bg-[#161c28] text-[#9aa5bb]';
-
-  return (
-    <div className="rounded-[10px] border border-[#1e2a3a] bg-[#111620] p-4">
-      <div className="mb-3 flex items-center justify-between">
-        <div className="text-xs font-bold uppercase tracking-[0.1em] text-[#9aa5bb]">{title}</div>
-        <span className={`rounded-full border px-2 py-0.5 text-[10px] font-semibold ${sourceClass}`}>
-          {sourceLabel}
-        </span>
-      </div>
-
-      {loading ? (
-        <div className="text-xs text-[#6b7a94]">Loading boost state...</div>
-      ) : (
-        <>
-          <div className="mb-3 grid grid-cols-2 gap-2 text-xs">
-            <div className="rounded border border-[#1e2a3a] bg-[#161c28] px-2 py-1.5">
-              <div className="text-[10px] uppercase tracking-[0.1em] text-[#6b7a94]">Days boosted</div>
-              <div className="font-['Barlow_Condensed'] text-xl font-bold text-[#e8edf5]">
-                {boostState?.daysBoosted ?? '—'}
-              </div>
-            </div>
-            <div className="rounded border border-[#1e2a3a] bg-[#161c28] px-2 py-1.5">
-              <div className="text-[10px] uppercase tracking-[0.1em] text-[#6b7a94]">Effectiveness</div>
-              <div className="font-['Barlow_Condensed'] text-xl font-bold text-[#e8edf5]">
-                {boostState?.effectivenessPct == null ? '—' : `${Number(boostState.effectivenessPct).toFixed(1)}%`}
-              </div>
-            </div>
-          </div>
-
-          {boostState?.fetchError && (
-            <div className="mb-3 rounded border border-[rgba(255,68,68,0.35)] bg-[rgba(255,68,68,0.08)] px-2 py-1.5 text-xs text-[#ff8b8b]">
-              {boostState.fetchError}
-            </div>
-          )}
-
-          <div className="space-y-2">
-            {boosts.length === 0 && (
-              <div className="rounded border border-dashed border-[#253040] px-2 py-2 text-xs text-[#6b7a94]">
-                No active boosts.
-              </div>
-            )}
-            {boosts.map((entry, index) => {
-              const boost = entry?.boost || {};
-              const expires = entry?.expires ? new Date(entry.expires) : null;
-              const expiresText = expires && !Number.isNaN(expires.getTime())
-                ? expires.toLocaleString()
-                : 'N/A';
-              return (
-                <div key={`${boost.boost_type || 'boost'}-${index}`} className="rounded border border-[#1e2a3a] bg-[#161c28] px-2 py-2">
-                  <div className="flex items-center justify-between gap-2 text-xs">
-                    <div className="font-semibold text-[#e8edf5]">{formatBoostTypeLabel(entry)}</div>
-                    <div className="text-[#9aa5bb]">{formatBoostEffectRange(entry)}</div>
-                  </div>
-                  <div className="mt-1 text-[11px] text-[#6b7a94]">
-                    Applications: {Number(boost.applications ?? 0)} · Expires: {expiresText}
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        </>
-      )}
     </div>
   );
 }
