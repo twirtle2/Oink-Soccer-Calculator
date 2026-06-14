@@ -708,6 +708,7 @@ const WALLET_ITEM_DEFINITIONS = [
     boostKey: 'MagicTruffle',
     label: 'Magic Truffle',
     icon: '🍄',
+    minDays: 1,
     maxDays: 3,
   },
   {
@@ -716,6 +717,7 @@ const WALLET_ITEM_DEFINITIONS = [
     boostKey: 'GoldenTruffle',
     label: 'Golden Truffle',
     icon: '🟡',
+    minDays: 3,
     maxDays: 5,
   },
   {
@@ -724,6 +726,7 @@ const WALLET_ITEM_DEFINITIONS = [
     boostKey: 'IridiumTruffle',
     label: 'Iridium Truffle',
     icon: '💎',
+    minDays: 3,
     maxDays: 5,
   },
   {
@@ -732,6 +735,7 @@ const WALLET_ITEM_DEFINITIONS = [
     boostKey: 'HalftimeOrange',
     label: 'Half-time Orange',
     icon: '🍊',
+    minDays: 3,
     maxDays: 5,
   },
   {
@@ -740,6 +744,7 @@ const WALLET_ITEM_DEFINITIONS = [
     boostKey: null,
     label: 'Medical Kit',
     icon: '🩹',
+    minDays: 0,
     maxDays: 0,
   },
 ];
@@ -2139,15 +2144,22 @@ export default function OinkSoccerCalc() {
     const hasWindowConflict = (startTime, endTime) => selectedWindows.some((window) => (
       intervalsOverlap(startTime, endTime, window.startTime, window.endTime)
     ));
+    const getDurationDays = (item) => {
+      const minDays = Math.max(0, Math.floor(Number(item.minDays ?? item.maxDays ?? 0)));
+      const maxDays = Math.max(minDays, Math.floor(Number(item.maxDays ?? minDays)));
+      return Array.from({ length: (maxDays - minDays) + 1 }, (_, index) => minDays + index);
+    };
 
     const evaluateCandidate = ({ fixture, startIndex, item, plannedUseIndex }) => {
       const baseFirst = projectFixture(fixture, baseStats);
       if (!baseFirst) return null;
       const startsAt = getFixtureTimeValue(fixture);
-      const endsAt = Number.isFinite(startsAt)
-        ? startsAt + (item.maxDays * 24 * 60 * 60 * 1000)
+      const durationDays = getDurationDays(item);
+      const maxDurationDays = durationDays[durationDays.length - 1] || 0;
+      const maxEndsAt = Number.isFinite(startsAt)
+        ? startsAt + (maxDurationDays * 24 * 60 * 60 * 1000)
         : startsAt;
-      if (hasWindowConflict(startsAt, endsAt)) return null;
+      if (hasWindowConflict(startsAt, maxEndsAt)) return null;
 
       const effectivenessPct = getBoostEffectivenessForPlannedUse(baseEffectivenessPct, plannedUseIndex);
       const boostState = createPlannedItemBoostState({
@@ -2158,30 +2170,45 @@ export default function OinkSoccerCalc() {
       const boostedStats = calculateTeamScores(myTeam, myForm, boostState, myTactics);
       const windowFixtures = remainingMyFixtures
         .slice(startIndex)
-        .filter((candidate) => {
+        .map((candidate) => {
           const candidateTime = getFixtureTimeValue(candidate);
-          return candidateTime >= startsAt
-            && (candidateTime <= endsAt || candidate.game_key === fixture.game_key);
-        });
+          const coverageCount = durationDays.filter((days) => {
+            const endsAt = Number.isFinite(startsAt)
+              ? startsAt + (days * 24 * 60 * 60 * 1000)
+              : startsAt;
+            return candidateTime >= startsAt
+              && (candidateTime <= endsAt || candidate.game_key === fixture.game_key);
+          }).length;
+
+          return {
+            fixture: candidate,
+            coverageChance: durationDays.length > 0 ? coverageCount / durationDays.length : 0,
+          };
+        })
+        .filter((candidate) => candidate.coverageChance > 0);
       let seasonDelta = 0;
       let firstFixtureDelta = 0;
       let firstBoostedWin = baseFirst.projection.win;
-      let usableFixtureCount = 0;
+      let expectedFixtureCount = 0;
+      let guaranteedFixtureCount = 0;
+      let maxFixtureCount = 0;
 
       windowFixtures.forEach((candidate, windowIndex) => {
-        const base = projectFixture(candidate, baseStats);
-        const boosted = projectFixture(candidate, boostedStats);
+        const base = projectFixture(candidate.fixture, baseStats);
+        const boosted = projectFixture(candidate.fixture, boostedStats);
         if (!base || !boosted) return;
         const delta = boosted.projection.win - base.projection.win;
-        seasonDelta += delta;
-        usableFixtureCount += 1;
+        seasonDelta += delta * candidate.coverageChance;
+        expectedFixtureCount += candidate.coverageChance;
+        if (candidate.coverageChance >= 1) guaranteedFixtureCount += 1;
+        maxFixtureCount += 1;
         if (windowIndex === 0) {
           firstFixtureDelta = delta;
           firstBoostedWin = boosted.projection.win;
         }
       });
 
-      if (seasonDelta <= 0.05 || usableFixtureCount === 0) return null;
+      if (seasonDelta <= 0.05 || expectedFixtureCount === 0) return null;
       return {
         fixture,
         boostKey: item.boostKey,
@@ -2193,9 +2220,13 @@ export default function OinkSoccerCalc() {
         delta: firstFixtureDelta,
         seasonDelta,
         effectivenessPct,
-        windowCount: usableFixtureCount,
+        windowCount: expectedFixtureCount,
+        guaranteedWindowCount: guaranteedFixtureCount,
+        maxWindowCount: maxFixtureCount,
+        minDays: durationDays[0] || 0,
+        maxDays: maxDurationDays,
         startTime: startsAt,
-        endTime: endsAt,
+        endTime: maxEndsAt,
         opponentName: baseFirst.opponent.opponentName,
         boostedStats,
       };
@@ -3016,7 +3047,7 @@ export default function OinkSoccerCalc() {
                       </div>
                     </div>
                     <div className="mt-2 text-xs text-[#9aa5bb]">
-                      First match: {formatNumber(item.baseWin)}% to {formatNumber(item.boostedWin)}%. Covers {item.windowCount} fixture{item.windowCount === 1 ? '' : 's'} at {formatNumber(item.effectivenessPct)}% effectiveness.
+                      First match: {formatNumber(item.baseWin)}% to {formatNumber(item.boostedWin)}%. Expected coverage {formatNumber(item.windowCount)} fixture-equivalent{Number(item.windowCount) === 1 ? '' : 's'} ({item.guaranteedWindowCount}-{item.maxWindowCount} possible over {item.minDays}-{item.maxDays} days) at {formatNumber(item.effectivenessPct)}% effectiveness.
                       {item.planBasePoints !== null && item.planProjectedPoints !== null ? (
                         <> Item plan projects {formatNumber(item.planBasePoints, 0)} → {formatNumber(item.planProjectedPoints, 0)} pts.</>
                       ) : null}
