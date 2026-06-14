@@ -204,6 +204,30 @@ test('fetchTeamLineup returns placeholder lineups as default projections', async
   });
 });
 
+test('fetchTeamLineup synthesizes default players when slots are empty but formation is set', async () => {
+  await withMockedFetch(async (url) => {
+    assert.match(String(url), /\/v2\/soccer\/team\/AlgorandAsset%3A654$/);
+    return okResponse({
+      team: {
+        id: 'AlgorandAsset:654',
+        custom_name: 'Default FC',
+        formation: 'The Y',
+      },
+      team_selection: {
+        slots: {},
+      },
+    });
+  }, async () => {
+    const lineup = await fetchTeamLineup('AlgorandAsset:654');
+    assert.equal(lineup.teamLabel, 'Default FC');
+    assert.equal(lineup.formationKey, 'Y');
+    assert.equal(lineup.isDefaultLineup, true);
+    assert.deepEqual(lineup.players.map((player) => player.pos), ['GK', 'DF', 'MF', 'FW', 'FW']);
+    assert.deepEqual(lineup.players.map((player) => player.ovr), [55, 55, 55, 55, 55]);
+  });
+});
+
+
 test('fetchTeamLineup keeps a real player named Player when stats are not placeholder defaults', async () => {
   await withMockedFetch(async (url) => {
     assert.match(String(url), /\/v2\/soccer\/team\/AlgorandAsset%3A789$/);
@@ -247,7 +271,7 @@ test('fetchTeamLineup rejects teams with no lineup slots', async () => {
       team: {
         id: 'AlgorandAsset:999',
         custom_name: 'Empty FC',
-        formation: 'The Diamond (1-2-1)',
+        formation: '',
       },
       team_selection: {
         slots: {},

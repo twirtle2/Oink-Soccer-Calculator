@@ -105,6 +105,13 @@ const computeOvr = (stats, pos, providedOvr) => {
   return Math.round(((stats.ATT * 3) + stats.SPD) / 4);
 };
 
+const DEFAULT_FORMATION_POSITIONS = {
+  Diamond: ['GK', 'DF', 'MF', 'MF', 'FW'],
+  Pyramid: ['GK', 'DF', 'DF', 'MF', 'FW'],
+  Y: ['GK', 'DF', 'MF', 'FW', 'FW'],
+  Box: ['GK', 'DF', 'DF', 'FW', 'FW'],
+};
+
 const isPlaceholderPlayer = (player) => {
   const name = String(player?.name || '').trim();
   if (!/^player\s+\d+$/i.test(name)) return false;
@@ -114,8 +121,42 @@ const isPlaceholderPlayer = (player) => {
     && coreStats.every((value) => Number(value) === 55);
 };
 
+const createDefaultLineupPlayers = (teamId, formationKey) => {
+  const positions = DEFAULT_FORMATION_POSITIONS[formationKey] || DEFAULT_FORMATION_POSITIONS.Diamond;
+  return positions.map((pos, index) => {
+    const stats = {
+      SPD: 55,
+      ATT: 55,
+      CTL: 55,
+      DEF: 55,
+      GKP: pos === 'GK' ? 55 : 0,
+      WRT: 0,
+      FIN: 0,
+      HDG: 0,
+      TEC: 0,
+      CMP: 0,
+      TCK: 0,
+    };
+
+    return {
+      id: `default:${teamId}:${index + 1}`,
+      name: `PLAYER ${index + 1}`,
+      pos,
+      stats,
+      ovr: 55,
+      injury: null,
+      role: '',
+      source: 'team-url',
+      imageUrl: null,
+      positions: [pos],
+    };
+  });
+};
+
 const mapTeamPayloadToPlayers = (teamId, payload) => {
   const slots = payload?.team_selection?.slots || {};
+  const formationLabel = payload?.team?.formation || '';
+  const formationKey = deriveFormationKey(formationLabel);
   const slotEntries = Object.entries(slots)
     .filter(([, value]) => value && value.player_attributes)
     .sort((a, b) => Number(a[0]) - Number(b[0]));
@@ -164,10 +205,13 @@ const mapTeamPayloadToPlayers = (teamId, payload) => {
     };
   });
 
-  const formationLabel = payload?.team?.formation || '';
-  const formationKey = deriveFormationKey(formationLabel);
   const teamLabel = payload?.team?.custom_name || payload?.team?.id || teamId;
-  const isDefaultLineup = players.length > 0 && players.every(isPlaceholderPlayer);
+  const lineupPlayers = players.length > 0
+    ? players
+    : formationKey
+      ? createDefaultLineupPlayers(teamId, formationKey)
+      : players;
+  const isDefaultLineup = lineupPlayers.length > 0 && lineupPlayers.every(isPlaceholderPlayer);
 
   return {
     teamId,
@@ -175,7 +219,7 @@ const mapTeamPayloadToPlayers = (teamId, payload) => {
     formationLabel,
     formationKey,
     isDefaultLineup,
-    players,
+    players: lineupPlayers,
   };
 };
 

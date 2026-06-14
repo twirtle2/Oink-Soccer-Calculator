@@ -896,6 +896,55 @@ export default function OinkSoccerCalc() {
     [displayedFixtures],
   );
 
+  useEffect(() => {
+    if (activeTab !== 'upcoming' || upcomingFixtures.length === 0 || detectedMyTeamIds.length === 0) {
+      return undefined;
+    }
+
+    const myTeams = new Set(detectedMyTeamIds);
+    const opponentIds = Array.from(new Set(
+      upcomingFixtures
+        .map((fixture) => {
+          const isHome = myTeams.has(fixture.home_team_id);
+          const isAway = myTeams.has(fixture.away_team_id);
+          if (!isHome && !isAway) return null;
+          return isHome ? fixture.away_team_id : fixture.home_team_id;
+        })
+        .filter((teamId) => teamId && !seasonTeams[teamId]),
+    ));
+
+    if (opponentIds.length === 0) {
+      return undefined;
+    }
+
+    let cancelled = false;
+
+    const loadUpcomingOpponents = async () => {
+      const loadedEntries = await Promise.all(
+        opponentIds.map(async (teamId) => {
+          try {
+            const lineup = await fetchTeamLineup(teamId);
+            return [teamId, lineup];
+          } catch (error) {
+            return [teamId, { fetchError: getErrorMessage(error, 'Lineup unavailable.') }];
+          }
+        }),
+      );
+
+      if (cancelled) return;
+      setSeasonTeams((current) => ({
+        ...current,
+        ...Object.fromEntries(loadedEntries),
+      }));
+    };
+
+    void loadUpcomingOpponents();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [activeTab, detectedMyTeamIds, seasonTeams, upcomingFixtures]);
+
   const fixtureSeason = gameCounter?.season || catalogSeason;
 
   const getLeagueIdForTeamId = useCallback((teamId) => {
