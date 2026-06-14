@@ -187,6 +187,8 @@ test('fetchSeasonTournamentFixtures normalizes active cup matches', async () => 
     assert.equal(fixtures[0].game_key, 'cup:lost-cup:1:5');
     assert.equal(fixtures[0].game_round, 'C1');
     assert.equal(fixtures[0].cup_round_label, 'Round of 64');
+    assert.equal(fixtures[0].sort_round, 6.5);
+    assert.equal(fixtures[0].game_time, '2026-06-18T12:12:00Z');
     assert.equal(fixtures[0].home_team_name, 'Wrexham FC');
     assert.equal(fixtures[0].away_team_id, 'AlgorandAsset:1239258220');
     assert.equal(fixtures[0].game_result, null);

@@ -438,9 +438,17 @@ const estimateTournamentSortRound = (roundNumber, totalRounds, leagueRounds) => 
   if (round >= total) return leagueTotal + 0.5;
   if (total === 1) return leagueTotal + 0.5;
 
-  const firstCupSlot = Math.min(3.5, leagueTotal - 0.5);
+  const firstCupSlot = Math.min(6.5, leagueTotal - 0.5);
   const interval = Math.max(1, (leagueTotal - firstCupSlot) / (total - 1));
   return firstCupSlot + ((round - 1) * interval);
+};
+
+const getKnownTournamentGameTime = (tournament, roundNumber) => {
+  const season = Number(tournament?.season);
+  if (season === 16 && Number(roundNumber) === 1) {
+    return '2026-06-18T12:12:00Z';
+  }
+  return null;
 };
 
 const normalizeTournamentMatch = (tournament, match, leagueRounds) => {
@@ -457,6 +465,7 @@ const normalizeTournamentMatch = (tournament, match, leagueRounds) => {
     && awayScore !== undefined;
   const fallbackKey = `cup:${tournament.id}:${roundNumber}:${match?.game_id || 'match'}`;
   const gameKey = match?.game_key || fallbackKey;
+  const gameTime = match?.game_time || getKnownTournamentGameTime(tournament, roundNumber);
 
   return {
     ...match,
@@ -469,6 +478,7 @@ const normalizeTournamentMatch = (tournament, match, leagueRounds) => {
     tournament_name: tournament.name || 'The Lost Cup',
     cup_round_number: roundNumber,
     cup_round_label: getTournamentRoundLabel(roundNumber, tournament?.total_rounds),
+    game_time: gameTime,
     home_team_id: homeTeamId,
     away_team_id: awayTeamId,
     home_team_name: match?.home_team_name || homeTeamId,
