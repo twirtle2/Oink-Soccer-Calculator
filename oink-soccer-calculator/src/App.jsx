@@ -692,6 +692,7 @@ const WALLET_ITEM_DEFINITIONS = [
     assetId: '1246863021',
     boostKey: 'MagicTruffle',
     label: 'Magic Truffle',
+    icon: '🍄',
     maxDays: 3,
   },
   {
@@ -699,6 +700,7 @@ const WALLET_ITEM_DEFINITIONS = [
     assetId: '1246863069',
     boostKey: 'GoldenTruffle',
     label: 'Golden Truffle',
+    icon: '🟡',
     maxDays: 5,
   },
   {
@@ -706,6 +708,7 @@ const WALLET_ITEM_DEFINITIONS = [
     assetId: '2282991862',
     boostKey: 'IridiumTruffle',
     label: 'Iridium Truffle',
+    icon: '💎',
     maxDays: 5,
   },
   {
@@ -713,6 +716,7 @@ const WALLET_ITEM_DEFINITIONS = [
     assetId: '1278938088',
     boostKey: 'HalftimeOrange',
     label: 'Half-time Orange',
+    icon: '🍊',
     maxDays: 5,
   },
   {
@@ -720,6 +724,7 @@ const WALLET_ITEM_DEFINITIONS = [
     assetId: '2305115576',
     boostKey: null,
     label: 'Medical Kit',
+    icon: '🩹',
     maxDays: 0,
   },
 ];
@@ -765,7 +770,10 @@ const createPlannedItemBoostState = ({ boostKey, effectivenessPct, applications 
 };
 
 const getBoostEffectivenessForPlannedUse = (baseEffectivenessPct, plannedUseIndex) => {
-  const base = Number.isFinite(Number(baseEffectivenessPct)) ? Number(baseEffectivenessPct) : 100;
+  const parsedBase = baseEffectivenessPct === null || baseEffectivenessPct === undefined
+    ? Number.NaN
+    : Number(baseEffectivenessPct);
+  const base = Number.isFinite(parsedBase) ? parsedBase : 100;
   const decay = Math.max(DR_MIN, Math.pow(DR_DECAY, plannedUseIndex));
   return Math.max(0, Math.min(100, base * decay));
 };
@@ -837,7 +845,7 @@ export default function OinkSoccerCalc() {
   const [analyzing, setAnalyzing] = useState(false);
   const [autoSuggestions, setAutoSuggestions] = useState({});
   const [autoAnalyzing, setAutoAnalyzing] = useState(false);
-  const [copiedPlan, setCopiedPlan] = useState(false);
+  const [, setCopiedPlan] = useState(false);
   const [injuryModalState, setInjuryModalState] = useState({
     open: false,
     playerId: null,
@@ -1118,7 +1126,8 @@ export default function OinkSoccerCalc() {
   }, [fixtureSeason, gameCounter?.games_per_season, selectedLeagueId]);
 
   useEffect(() => {
-    if (activeTab !== 'season' || !selectedLeagueId || !fixtureSeason) {
+    const shouldLoadSeasonModels = activeTab === 'season' || activeTab === 'upcoming';
+    if (!shouldLoadSeasonModels || !selectedLeagueId || !fixtureSeason) {
       return undefined;
     }
 
@@ -1583,7 +1592,11 @@ export default function OinkSoccerCalc() {
     return [...withFirst, ...withoutFirst];
   }, []);
 
-  const buildSettingsSuggestions = useCallback((currentWin = parseFloat(simulation.win)) => {
+  const buildSettingsSuggestions = useCallback((currentWin = parseFloat(simulation.win), matchupOverrides = {}) => {
+    const opponentStatsForMatchup = matchupOverrides.oppStats || oppStats;
+    const opponentFormationForMatchup = matchupOverrides.oppForm || oppForm;
+    const opponentTacticsForMatchup = matchupOverrides.oppTactics || oppTactics;
+    const homeAdvantageForMatchup = matchupOverrides.homeAdvantage || homeAdvantage;
     const bestByFormation = {};
     const tacticCombos = ['low', 'medium', 'high'].flatMap((press) =>
       ['slow', 'normal', 'fast'].flatMap((tempo) =>
@@ -1669,10 +1682,10 @@ export default function OinkSoccerCalc() {
               formation: formKey,
               tactics,
               boostContext: mySimulationBoostContext,
-              oppStats,
-              oppForm,
-              oppTactics,
-              homeAdvantage,
+              oppStats: opponentStatsForMatchup,
+              oppForm: opponentFormationForMatchup,
+              oppTactics: opponentTacticsForMatchup,
+              homeAdvantage: homeAdvantageForMatchup,
             });
             evaluatedCount += 1;
             if (roleResult.projection.win > bestForThisForm.win) {
@@ -1779,6 +1792,73 @@ export default function OinkSoccerCalc() {
   ), [activeSuggestions]);
 
   const topSuggestion = activeSuggestionList[0] || null;
+
+  const fixtureWinChances = useMemo(() => {
+    if (mySquad.length < 5 || upcomingFixtures.length === 0 || detectedMyTeamIds.length === 0) {
+      return {};
+    }
+
+    const myTeams = new Set(detectedMyTeamIds);
+    const chances = {};
+    const cachedByOpponent = new Map();
+
+    upcomingFixtures.forEach((fixture) => {
+      const isHome = myTeams.has(fixture.home_team_id);
+      const isAway = myTeams.has(fixture.away_team_id);
+      if (!isHome && !isAway) return;
+
+      const opponentId = isHome ? fixture.away_team_id : fixture.home_team_id;
+      const opponentModel = seasonTeams[opponentId];
+      if (!opponentModel?.players?.length) return;
+
+      const cacheKey = `${opponentId}|${isHome ? 'home' : 'away'}`;
+      if (!cachedByOpponent.has(cacheKey)) {
+        const opponentFormation = opponentModel.formationKey && FORMATIONS[opponentModel.formationKey]
+          ? opponentModel.formationKey
+          : 'Pyramid';
+        const opponentStats = calculateTeamScores(opponentModel.players, opponentFormation, TEAM_BOOST_STATE_EMPTY, DEFAULT_TACTICS);
+        const currentStats = calculateTeamScores(myTeam, myForm, mySimulationBoostContext, myTactics);
+        const currentProjection = projectMatch({
+          myStats: currentStats,
+          myForm,
+          myTactics,
+          oppStats: opponentStats,
+          oppForm: opponentFormation,
+          oppTactics: DEFAULT_TACTICS,
+          homeAdvantage: isHome ? 'home' : 'away',
+        });
+        const fixtureSuggestions = buildSettingsSuggestions(currentProjection.win, {
+          oppStats: opponentStats,
+          oppForm: opponentFormation,
+          oppTactics: DEFAULT_TACTICS,
+          homeAdvantage: isHome ? 'home' : 'away',
+        });
+        const best = Object.values(fixtureSuggestions)
+          .filter((suggestion) => suggestion?.formation)
+          .sort((a, b) => b.win - a.win)[0];
+        cachedByOpponent.set(cacheKey, best
+          ? { win: best.win, myxG: best.myxG, oppxG: best.oppxG }
+          : null);
+      }
+
+      const chance = cachedByOpponent.get(cacheKey);
+      if (chance) {
+        chances[fixture.game_key] = chance;
+      }
+    });
+
+    return chances;
+  }, [
+    buildSettingsSuggestions,
+    detectedMyTeamIds,
+    myForm,
+    mySimulationBoostContext,
+    mySquad.length,
+    myTactics,
+    myTeam,
+    seasonTeams,
+    upcomingFixtures,
+  ]);
 
   const headlineProjection = topSuggestion
     ? {
@@ -1965,7 +2045,8 @@ export default function OinkSoccerCalc() {
     );
 
     const baseStats = calculateTeamScores(myTeam, myForm, TEAM_BOOST_STATE_EMPTY, myTactics);
-    const baseEffectivenessPct = myBoostState?.source === 'live' ? myBoostState.effectivenessPct : 100;
+    const liveEffectiveness = myBoostState?.source === 'live' ? Number(myBoostState.effectivenessPct) : Number.NaN;
+    const baseEffectivenessPct = Number.isFinite(liveEffectiveness) ? liveEffectiveness : 100;
     const boostCounts = Object.fromEntries(heldPerformanceItems.map((item) => [item.boostKey, item.count]));
     const selectedWindows = [];
 
@@ -2021,7 +2102,7 @@ export default function OinkSoccerCalc() {
       const effectivenessPct = getBoostEffectivenessForPlannedUse(baseEffectivenessPct, plannedUseIndex);
       const boostState = createPlannedItemBoostState({
         boostKey: item.boostKey,
-        effectivenessPct,
+        effectivenessPct: baseEffectivenessPct,
         applications: plannedUseIndex,
       });
       const boostedStats = calculateTeamScores(myTeam, myForm, boostState, myTactics);
@@ -2055,6 +2136,7 @@ export default function OinkSoccerCalc() {
         fixture,
         boostKey: item.boostKey,
         boostLabel: item.label,
+        boostIcon: item.icon,
         heldCount: item.count,
         baseWin: baseFirst.projection.win,
         boostedWin: firstBoostedWin,
@@ -2065,6 +2147,7 @@ export default function OinkSoccerCalc() {
         startTime: startsAt,
         endTime: endsAt,
         opponentName: baseFirst.opponent.opponentName,
+        boostedStats,
       };
     };
 
@@ -2109,14 +2192,184 @@ export default function OinkSoccerCalc() {
       });
     }
 
-    return schedule
+    const sortedSchedule = schedule
       .sort((a, b) => (
         getFixtureRound(a.fixture) - getFixtureRound(b.fixture)
         || getFixtureTimeValue(a.fixture) - getFixtureTimeValue(b.fixture)
         || b.seasonDelta - a.seasonDelta
-      ))
+      ));
+
+    const chronologicalRemainingCounts = { ...boostCounts };
+    const plannedSchedule = sortedSchedule.map((item) => {
+      const heldCount = boostCounts[item.boostKey] || item.heldCount || 0;
+      const useNumber = heldCount - (chronologicalRemainingCounts[item.boostKey] || 0) + 1;
+      chronologicalRemainingCounts[item.boostKey] = Math.max(0, (chronologicalRemainingCounts[item.boostKey] || 0) - 1);
+      return {
+        ...item,
+        heldCount,
+        useNumber,
+        remainingAfterUse: chronologicalRemainingCounts[item.boostKey],
+      };
+    });
+
+    const getProjectedPosition = (plan) => {
+      const rows = new Map();
+      const ensureRow = (teamId, teamName) => {
+        if (!teamId) return null;
+        if (!rows.has(teamId)) {
+          rows.set(teamId, {
+            teamId,
+            teamName: teamName || seasonTeams[teamId]?.teamLabel || teamId,
+            won: 0,
+            drawn: 0,
+            lost: 0,
+            gf: 0,
+            ga: 0,
+            points: 0,
+          });
+        }
+        return rows.get(teamId);
+      };
+
+      leagueTeams.forEach((team) => ensureRow(team.teamId, team.teamName));
+
+      const getTeamModel = (teamId) => {
+        if (myTeamIds.has(teamId)) {
+          return {
+            formation: myForm,
+            tactics: myTactics,
+            stats: baseStats,
+            isMine: true,
+          };
+        }
+
+        const model = seasonTeams[teamId];
+        if (!model?.players?.length) return null;
+        const formation = model.formationKey && FORMATIONS[model.formationKey] ? model.formationKey : 'Pyramid';
+        const tactics = DEFAULT_TACTICS;
+        return {
+          formation,
+          tactics,
+          stats: calculateTeamScores(model.players, formation, TEAM_BOOST_STATE_EMPTY, tactics),
+          isMine: false,
+        };
+      };
+
+      const getPlannedWindow = (fixture) => {
+        const fixtureTime = getFixtureTimeValue(fixture);
+        return plan.find((item) => (
+          fixtureTime >= item.startTime
+          && (fixtureTime <= item.endTime || fixture.game_key === item.fixture.game_key)
+          && (myTeamIds.has(fixture.home_team_id) || myTeamIds.has(fixture.away_team_id))
+        ));
+      };
+
+      seasonFixtures.forEach((fixture) => {
+        const home = ensureRow(fixture.home_team_id, fixture.home_team_name);
+        const away = ensureRow(fixture.away_team_id, fixture.away_team_name);
+        if (!home || !away) return;
+
+        let homeGoals;
+        let awayGoals;
+
+        if (fixture.game_result) {
+          homeGoals = Number(fixture.game_result.home_team_score || 0);
+          awayGoals = Number(fixture.game_result.away_team_score || 0);
+        } else {
+          const homeModel = getTeamModel(fixture.home_team_id);
+          const awayModel = getTeamModel(fixture.away_team_id);
+          if (!homeModel || !awayModel) return;
+
+          const plannedWindow = getPlannedWindow(fixture);
+          if (homeModel.isMine) {
+            const projection = projectMatch({
+              myStats: plannedWindow?.boostedStats || homeModel.stats,
+              myForm: homeModel.formation,
+              myTactics: homeModel.tactics,
+              oppStats: awayModel.stats,
+              oppForm: awayModel.formation,
+              oppTactics: awayModel.tactics,
+              homeAdvantage: 'home',
+            });
+            homeGoals = projection.myxG;
+            awayGoals = projection.oppxG;
+          } else if (awayModel.isMine) {
+            const projection = projectMatch({
+              myStats: plannedWindow?.boostedStats || awayModel.stats,
+              myForm: awayModel.formation,
+              myTactics: awayModel.tactics,
+              oppStats: homeModel.stats,
+              oppForm: homeModel.formation,
+              oppTactics: homeModel.tactics,
+              homeAdvantage: 'away',
+            });
+            homeGoals = projection.oppxG;
+            awayGoals = projection.myxG;
+          } else {
+            const projection = projectMatch({
+              myStats: homeModel.stats,
+              myForm: homeModel.formation,
+              myTactics: homeModel.tactics,
+              oppStats: awayModel.stats,
+              oppForm: awayModel.formation,
+              oppTactics: awayModel.tactics,
+              homeAdvantage: 'home',
+            });
+            homeGoals = projection.myxG;
+            awayGoals = projection.oppxG;
+          }
+        }
+
+        home.gf += homeGoals;
+        home.ga += awayGoals;
+        away.gf += awayGoals;
+        away.ga += homeGoals;
+
+        const goalGap = homeGoals - awayGoals;
+        if (Math.abs(goalGap) < 0.18) {
+          home.drawn += 1;
+          away.drawn += 1;
+          home.points += 1;
+          away.points += 1;
+        } else if (goalGap > 0) {
+          home.won += 1;
+          away.lost += 1;
+          home.points += 3;
+        } else {
+          away.won += 1;
+          home.lost += 1;
+          away.points += 3;
+        }
+      });
+
+      const sortedRows = Array.from(rows.values())
+        .map((row) => ({
+          ...row,
+          gd: row.gf - row.ga,
+        }))
+        .sort((a, b) => (
+          b.points - a.points
+          || b.gd - a.gd
+          || b.gf - a.gf
+          || a.teamName.localeCompare(b.teamName)
+        ));
+      const myIndex = sortedRows.findIndex((row) => myTeamIds.has(row.teamId));
+      return myIndex >= 0 ? myIndex + 1 : null;
+    };
+
+    const basePosition = getProjectedPosition([]);
+    const plannedPosition = getProjectedPosition(plannedSchedule);
+    const placementGain = basePosition && plannedPosition ? Math.max(0, basePosition - plannedPosition) : 0;
+
+    return plannedSchedule
+      .map((item) => ({
+        ...item,
+        planBasePosition: basePosition,
+        planProjectedPosition: plannedPosition,
+        placementGain,
+      }))
       .slice(0, 10);
-  }, [detectedMyTeamIds, heldItems, myBoostState, myForm, myTactics, myTeam, seasonFixtures, seasonTeams]);
+  }, [detectedMyTeamIds, heldItems, leagueTeams, myBoostState, myForm, myTactics, myTeam, seasonFixtures, seasonTeams]);
 
   const copySuggestion = useCallback(async (suggestion) => {
     if (!suggestion?.formation) return;
@@ -2246,7 +2499,7 @@ export default function OinkSoccerCalc() {
         </div>
       </section>
 
-      <main className="mx-auto max-w-[900px] px-4 py-5 md:px-6 md:py-6">
+      <main className={`mx-auto px-4 py-5 md:px-6 md:py-6 ${activeTab === 'matchup' ? 'max-w-[1500px]' : 'max-w-[900px]'}`}>
         {activeTab === 'squad' && (
           <section id="tab-squad" className="space-y-4">
             <div className="grid grid-cols-1 gap-3 rounded-[10px] border border-[#1e2a3a] bg-[#111620] p-4 md:grid-cols-[1fr_auto_1fr]">
@@ -2445,6 +2698,7 @@ export default function OinkSoccerCalc() {
                 fixtures={upcomingFixtures}
                 selectedFixtureKey={selectedFixtureKey}
                 detectedMyTeamIds={detectedMyTeamIds}
+                fixtureWinChances={fixtureWinChances}
                 loading={fixturesLoading}
                 emptyText={connectedAddresses.length > 0
                   ? 'No upcoming fixtures found for the connected wallet team.'
@@ -2457,6 +2711,7 @@ export default function OinkSoccerCalc() {
                 fixtures={pastFixtures}
                 selectedFixtureKey={selectedFixtureKey}
                 detectedMyTeamIds={detectedMyTeamIds}
+                fixtureWinChances={fixtureWinChances}
                 loading={false}
                 emptyText="No completed matches found for this season."
                 onSelect={(fixture) => void handleSelectFixture(fixture)}
@@ -2497,22 +2752,21 @@ export default function OinkSoccerCalc() {
 
               {selectedFixture ? (
                 <>
-                  <BestSetupCard
-                    suggestion={topSuggestion}
-                    analyzing={autoAnalyzing || importingTeamUrl}
-                    canAnalyze={mySquad.length >= 5 && opponentTeam.length >= 5}
-                    copied={copiedPlan}
-                    onApply={() => applySuggestion(topSuggestion)}
-                    onCopy={() => void copySuggestion(topSuggestion)}
-                  />
+                  <div className="grid gap-4 xl:grid-cols-2 xl:items-start">
+                    <BestSetupCard
+                      suggestion={topSuggestion}
+                      analyzing={autoAnalyzing || importingTeamUrl}
+                      canAnalyze={mySquad.length >= 5 && opponentTeam.length >= 5}
+                    />
 
-                  <TeamFormationCard
-                    title="Opponent Squad"
-                    subtitle={FORMATIONS[oppForm]?.name || 'Current formation'}
-                    suggestion={opponentPitchSuggestion}
-                    emptyText={importingTeamUrl ? 'Loading opponent lineup...' : 'Select a fixture to load the opponent squad.'}
-                    tone="opp"
-                  />
+                    <TeamFormationCard
+                      title="Opponent Squad"
+                      subtitle={FORMATIONS[oppForm]?.name || 'Current formation'}
+                      suggestion={opponentPitchSuggestion}
+                      emptyText={importingTeamUrl ? 'Loading opponent lineup...' : 'Select a fixture to load the opponent squad.'}
+                      tone="opp"
+                    />
+                  </div>
                 </>
               ) : null}
           </section>
@@ -2565,18 +2819,33 @@ export default function OinkSoccerCalc() {
                 {!seasonPredictionLoading && itemSuggestions.map((item) => (
                   <div key={`${item.fixture.game_key}-${item.boostKey}`} className="rounded-md border border-[#1e2a3a] bg-[#111620] p-3">
                     <div className="flex flex-wrap items-center justify-between gap-2">
-                      <div className="min-w-0">
-                        <div className="text-sm font-semibold text-[#e8edf5]">{item.boostLabel} vs {item.opponentName}</div>
-                        <div className="mt-1 text-xs text-[#7f8aa3]">
-                          Use round {item.fixture.game_round || '?'} • {formatFixtureTime(item.fixture.game_time)} • {formatNumber(item.remainingAfterUse, 0)} left
+                      <div className="flex min-w-0 items-start gap-2">
+                        <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-[#253040] bg-[#161c28] text-lg">
+                          {item.boostIcon || '⬢'}
+                        </div>
+                        <div className="min-w-0">
+                          <div className="text-sm font-semibold text-[#e8edf5]">{item.boostLabel} vs {item.opponentName}</div>
+                          <div className="mt-1 text-xs text-[#7f8aa3]">
+                            Use round {item.fixture.game_round || '?'} • {formatFixtureTime(item.fixture.game_time)} • use {item.useNumber || 1} of {formatNumber(item.heldCount, 0)} • {formatNumber(item.remainingAfterUse, 0)} left
+                          </div>
                         </div>
                       </div>
-                      <div className="text-right font-['Barlow_Condensed'] text-[22px] font-black text-[#00e676]">
-                        +{formatNumber(item.seasonDelta)}%
+                      <div className="text-right">
+                        <div className="font-['Barlow_Condensed'] text-[22px] font-black text-[#00e676]">
+                          +{formatNumber(item.seasonDelta)}%
+                        </div>
+                        <div className="mt-1 text-xs text-[#7f8aa3]">
+                          {item.placementGain > 0
+                            ? `+${item.placementGain} place${item.placementGain === 1 ? '' : 's'}`
+                            : 'No place change'}
+                        </div>
                       </div>
                     </div>
                     <div className="mt-2 text-xs text-[#9aa5bb]">
                       First match: {formatNumber(item.baseWin)}% to {formatNumber(item.boostedWin)}%. Covers {item.windowCount} fixture{item.windowCount === 1 ? '' : 's'} at {formatNumber(item.effectivenessPct)}% effectiveness.
+                      {item.planBasePosition && item.planProjectedPosition ? (
+                        <> Plan projects {item.planBasePosition} → {item.planProjectedPosition}.</>
+                      ) : null}
                     </div>
                   </div>
                 ))}
@@ -2745,7 +3014,7 @@ export default function OinkSoccerCalc() {
 }
 // --- Components ---
 
-function FixtureTableSection({ title, fixtures, selectedFixtureKey, detectedMyTeamIds, loading, emptyText, onSelect }) {
+function FixtureTableSection({ title, fixtures, selectedFixtureKey, detectedMyTeamIds, fixtureWinChances = {}, loading, emptyText, onSelect }) {
   const myTeams = new Set(detectedMyTeamIds);
 
   return (
@@ -2771,6 +3040,7 @@ function FixtureTableSection({ title, fixtures, selectedFixtureKey, detectedMyTe
           const result = fixture.game_result
             ? `${fixture.game_result.home_team_score}-${fixture.game_result.away_team_score}`
             : 'vs';
+          const chance = fixtureWinChances[fixture.game_key];
 
           return (
             <button
@@ -2789,6 +3059,11 @@ function FixtureTableSection({ title, fixtures, selectedFixtureKey, detectedMyTe
               <div className="flex min-w-[74px] flex-col items-center">
                 <span className="rounded bg-[#ffab00] px-2 py-1 font-bold text-black">{result}</span>
                 <span className="mt-1 text-[10px] text-[#7f8aa3]">R{fixture.game_round || '?'} • {formatFixtureTime(fixture.game_time)}</span>
+                {!fixture.game_result && chance ? (
+                  <span className="mt-1 rounded border border-[#00e676]/30 bg-[#00e676]/10 px-1.5 py-0.5 font-['Barlow_Condensed'] text-[13px] font-black leading-none text-[#00e676]">
+                    {formatNumber(chance.win)}%
+                  </span>
+                ) : null}
               </div>
               <div className={`min-w-0 ${mySide === 'away' ? 'text-[#00e676]' : ''}`}>
                 <div className="truncate">{fixture.away_team_name}</div>
@@ -2861,7 +3136,7 @@ function SeasonPredictionTable({ rows, loading, myTeamIds }) {
   );
 }
 
-function BestSetupCard({ suggestion, analyzing, canAnalyze, copied, onApply, onCopy }) {
+function BestSetupCard({ suggestion, analyzing, canAnalyze }) {
   if (!canAnalyze) {
     return (
       <section className="mb-4 rounded-[10px] border border-[#1e2a3a] bg-[#111620] p-4">
@@ -2890,8 +3165,8 @@ function BestSetupCard({ suggestion, analyzing, canAnalyze, copied, onApply, onC
   const details = getSuggestionDetails(suggestion);
 
   return (
-    <section className="mb-4 overflow-hidden rounded-[10px] border border-[rgba(0,230,118,0.28)] bg-[#111620]">
-      <div className="flex flex-col gap-3 border-b border-[#1e2a3a] p-4 sm:flex-row sm:items-start sm:justify-between">
+    <section className="overflow-hidden rounded-[10px] border border-[rgba(0,230,118,0.28)] bg-[#111620]">
+      <div className="border-b border-[#1e2a3a] p-4">
         <div className="min-w-0">
           <div className="text-[11px] font-bold uppercase tracking-[0.14em] text-[#00e676]">Best Setup</div>
           <div className="mt-1 font-['Barlow_Condensed'] text-[26px] font-black leading-none text-[#e8edf5]">
@@ -2903,28 +3178,6 @@ function BestSetupCard({ suggestion, analyzing, canAnalyze, copied, onApply, onC
             <span className="rounded border border-[#253040] bg-[#161c28] px-2 py-1">Line {TACTICS.lineHeight[suggestion.tactics.lineHeight]?.label}</span>
             <span className="rounded border border-[#253040] bg-[#161c28] px-2 py-1">Set pieces {details.setPiecePlayer?.name || 'Auto'}</span>
           </div>
-          {details.roleLabels.length > 0 && (
-            <div className="mt-2 text-xs leading-5 text-[#9aa5bb]">{details.roleLabels.join(' · ')}</div>
-          )}
-          <div className="mt-2 text-xs text-[#6b7a94]">
-            Projection: {formatNumber(suggestion.win)}% win, xG {formatNumber(suggestion.myxG)}:{formatNumber(suggestion.oppxG)}
-          </div>
-        </div>
-        <div className="grid grid-cols-2 gap-2 sm:w-[180px] sm:grid-cols-1">
-          <button
-            type="button"
-            onClick={onCopy}
-            className="rounded-md border border-[#00e676]/40 bg-[#00e676] px-3 py-2 text-xs font-bold text-[#07110c]"
-          >
-            {copied ? 'Copied' : 'Copy'}
-          </button>
-          <button
-            type="button"
-            onClick={onApply}
-            className="rounded-md border border-[#253040] bg-[#161c28] px-3 py-2 text-xs font-semibold text-[#e8edf5]"
-          >
-            Apply
-          </button>
         </div>
       </div>
       <FormationPitch suggestion={suggestion} details={details} />
