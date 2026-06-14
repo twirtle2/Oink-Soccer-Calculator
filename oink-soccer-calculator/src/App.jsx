@@ -15,6 +15,7 @@ import {
   fetchLeagueSeasonFixtures,
   fetchLeagueTableTeams,
   fetchLeagueTeamsIndex,
+  fetchSeasonTournamentFixtures,
   fetchTeamLineup,
   fetchTeamBoostState,
   importOpponentFromTeamInput,
@@ -691,8 +692,15 @@ const formatFixtureTime = (value) => {
 };
 
 const getFixtureRound = (fixture) => {
-  const parsed = Number(fixture?.game_round);
+  const parsed = Number(fixture?.sort_round ?? fixture?.game_round);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : 999;
+};
+
+const getFixtureRoundLabel = (fixture) => {
+  if (fixture?.competition === 'cup') {
+    return fixture.cup_round_label || `Cup R${fixture.cup_round_number || '?'}`;
+  }
+  return `R${fixture?.game_round || '?'}`;
 };
 
 const sortFixturesByRoundAndTime = (fixturesToSort) => [...fixturesToSort].sort((a, b) => (
@@ -1162,15 +1170,22 @@ export default function OinkSoccerCalc() {
     const rounds = Math.max(1, Math.min(60, gameCounter?.games_per_season || 44));
     setFixturesLoading(true);
 
-    void fetchLeagueSeasonFixtures({
-      leagueId: selectedLeagueId,
-      season: fixtureSeason,
-      rounds,
-    })
-      .then((payload) => {
+    void Promise.all([
+      fetchLeagueSeasonFixtures({
+        leagueId: selectedLeagueId,
+        season: fixtureSeason,
+        rounds,
+      }),
+      fetchSeasonTournamentFixtures({
+        season: fixtureSeason,
+        leagueRounds: rounds,
+      }).catch(() => []),
+    ])
+      .then(([leaguePayload, cupPayload]) => {
         if (cancelled) return;
+        const payload = sortFixturesByRoundAndTime([...leaguePayload, ...cupPayload]);
         setFixtures(payload);
-        setSeasonFixtures(payload);
+        setSeasonFixtures(leaguePayload);
         setSelectedFixtureKey((current) => (
           current && payload.some((fixture) => fixture.game_key === current)
             ? current
@@ -3237,13 +3252,19 @@ function FixtureTableSection({ title, fixtures, selectedFixtureKey, detectedMyTe
         )}
         {!loading && fixtures.map((fixture) => {
           const isSelected = selectedFixtureKey === fixture.game_key;
+          const isCup = fixture.competition === 'cup';
           const mySide = myTeams.has(fixture.home_team_id)
             ? 'home'
             : myTeams.has(fixture.away_team_id)
               ? 'away'
               : '';
+          const hasPenaltyResult = fixture.game_result?.decided_on_penalties
+            && fixture.game_result?.home_penalty_score !== null
+            && fixture.game_result?.away_penalty_score !== null;
           const result = fixture.game_result
-            ? `${fixture.game_result.home_team_score}-${fixture.game_result.away_team_score}`
+            ? hasPenaltyResult
+              ? `${fixture.game_result.home_team_score}-${fixture.game_result.away_team_score}p`
+              : `${fixture.game_result.home_team_score}-${fixture.game_result.away_team_score}`
             : 'vs';
           const chance = fixtureWinChances[fixture.game_key];
           const plannedItem = plannedItemsByFixture[fixture.game_key];
@@ -3263,8 +3284,15 @@ function FixtureTableSection({ title, fixtures, selectedFixtureKey, detectedMyTe
                 <div className="mt-0.5 text-[9px] font-bold uppercase tracking-[0.1em] text-[#6b7a94]">Home</div>
               </div>
               <div className="flex min-w-[74px] flex-col items-center">
-                <span className="rounded bg-[#ffab00] px-2 py-1 font-bold text-black">{result}</span>
-                <span className="mt-1 text-[10px] text-[#7f8aa3]">R{fixture.game_round || '?'} • {formatFixtureTime(fixture.game_time)}</span>
+                {isCup && (
+                  <span className="mb-1 rounded border border-[#b05cff]/40 bg-[#b05cff]/12 px-1.5 py-0.5 text-[9px] font-black uppercase tracking-[0.08em] text-[#d3a2ff]">
+                    Cup
+                  </span>
+                )}
+                <span className={`rounded px-2 py-1 font-bold text-black ${isCup ? 'bg-[#b05cff]' : 'bg-[#ffab00]'}`}>{result}</span>
+                <span className="mt-1 text-center text-[10px] leading-tight text-[#7f8aa3]">
+                  {getFixtureRoundLabel(fixture)} • {formatFixtureTime(fixture.game_time)}
+                </span>
                 {!fixture.game_result && chance ? (
                   <span className="mt-1 rounded border border-[#00e676]/30 bg-[#00e676]/10 px-1.5 py-0.5 font-['Barlow_Condensed'] text-[13px] font-black leading-none text-[#00e676]">
                     {formatNumber(chance.win)}%

@@ -413,8 +413,111 @@ export const fetchLeagueSeasonFixtures = async ({ leagueId, season, rounds }) =>
     payload.fixtures.map((fixture) => ({
       ...fixture,
       game_round: payload.round,
+      sort_round: payload.round,
+      competition: 'league',
     }))
   ));
+};
+
+const getTournamentRoundLabel = (roundNumber, totalRounds) => {
+  const round = Number.parseInt(String(roundNumber || 0), 10);
+  const total = Number.parseInt(String(totalRounds || 0), 10);
+  if (!round || !total) return 'Cup';
+  if (round === total) return 'Final';
+  if (round === total - 1) return 'Semi-final';
+  if (round === total - 2) return 'Quarter-final';
+  const teamsRemaining = 2 ** ((total - round) + 1);
+  return `Round of ${teamsRemaining}`;
+};
+
+const estimateTournamentSortRound = (roundNumber, totalRounds, leagueRounds) => {
+  const round = Number.parseInt(String(roundNumber || 1), 10) || 1;
+  const total = Math.max(1, Number.parseInt(String(totalRounds || round), 10) || round);
+  const leagueTotal = Math.max(1, Number.parseInt(String(leagueRounds || 44), 10) || 44);
+
+  if (round >= total) return leagueTotal + 0.5;
+  if (total === 1) return leagueTotal + 0.5;
+
+  const firstCupSlot = Math.min(3.5, leagueTotal - 0.5);
+  const interval = Math.max(1, (leagueTotal - firstCupSlot) / (total - 1));
+  return firstCupSlot + ((round - 1) * interval);
+};
+
+const normalizeTournamentMatch = (tournament, match, leagueRounds) => {
+  const homeTeamId = normalizeTeamId(match?.home_team_id);
+  const awayTeamId = normalizeTeamId(match?.away_team_id);
+  if (!homeTeamId || !awayTeamId) return null;
+
+  const roundNumber = Number.parseInt(String(match?.round_number || 1), 10) || 1;
+  const homeScore = match?.home_team_score;
+  const awayScore = match?.away_team_score;
+  const hasScore = homeScore !== null
+    && homeScore !== undefined
+    && awayScore !== null
+    && awayScore !== undefined;
+  const fallbackKey = `cup:${tournament.id}:${roundNumber}:${match?.game_id || 'match'}`;
+  const gameKey = match?.game_key || fallbackKey;
+
+  return {
+    ...match,
+    game_key: gameKey,
+    source_game_key: match?.game_key || '',
+    game_round: `C${roundNumber}`,
+    sort_round: estimateTournamentSortRound(roundNumber, tournament?.total_rounds, leagueRounds),
+    competition: 'cup',
+    tournament_id: tournament.id,
+    tournament_name: tournament.name || 'The Lost Cup',
+    cup_round_number: roundNumber,
+    cup_round_label: getTournamentRoundLabel(roundNumber, tournament?.total_rounds),
+    home_team_id: homeTeamId,
+    away_team_id: awayTeamId,
+    home_team_name: match?.home_team_name || homeTeamId,
+    away_team_name: match?.away_team_name || awayTeamId,
+    game_result: hasScore
+      ? {
+        home_team_score: Number(homeScore || 0),
+        away_team_score: Number(awayScore || 0),
+        decided_on_penalties: Boolean(match?.decided_on_penalties),
+        home_penalty_score: match?.home_penalty_score,
+        away_penalty_score: match?.away_penalty_score,
+      }
+      : null,
+  };
+};
+
+export const fetchActiveTournamentForSeason = async (season) => {
+  const normalizedSeason = normalizeSeasonValue(season);
+  const payload = await fetchJsonOrThrow('/soccer/tournaments', 'Tournaments not found.');
+  const tournaments = Array.isArray(payload) ? payload : [];
+  const seasonTournaments = tournaments.filter((tournament) => Number(tournament?.season) === normalizedSeason);
+  const candidates = seasonTournaments.length > 0 ? seasonTournaments : tournaments;
+  if (candidates.length === 0) return null;
+
+  const active = candidates.filter((tournament) => tournament?.is_active);
+  return [...(active.length > 0 ? active : candidates)]
+    .sort((a, b) => Number(b?.season || 0) - Number(a?.season || 0))[0] || null;
+};
+
+export const fetchTournamentMatches = async (tournamentId) => {
+  const normalizedTournamentId = String(tournamentId || '').trim();
+  if (!normalizedTournamentId) {
+    throw new Error('Missing tournamentId for cup fetch.');
+  }
+
+  const payload = await fetchJsonOrThrow(
+    `/soccer/tournaments/${encodeURIComponent(normalizedTournamentId)}/matches`,
+    'Tournament matches not found.',
+  );
+  return Array.isArray(payload) ? payload : [];
+};
+
+export const fetchSeasonTournamentFixtures = async ({ season, leagueRounds }) => {
+  const tournament = await fetchActiveTournamentForSeason(season);
+  if (!tournament) return [];
+  const matches = await fetchTournamentMatches(tournament.id);
+  return matches
+    .map((match) => normalizeTournamentMatch(tournament, match, leagueRounds))
+    .filter(Boolean);
 };
 
 export const fetchLeagueTableTeams = async (leagueId) => {

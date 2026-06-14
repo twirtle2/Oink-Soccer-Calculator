@@ -6,6 +6,7 @@ import {
   fetchGameCounter,
   fetchLeagueRoundFixtures,
   fetchLeagueSeasonFixtures,
+  fetchSeasonTournamentFixtures,
   fetchTeamLineup,
   fetchTeamActiveBoosts,
   fetchTeamBoostEffectiveness,
@@ -125,6 +126,70 @@ test('fetchLeagueSeasonFixtures skips failed rounds', async () => {
   }, async () => {
     const fixtures = await fetchLeagueSeasonFixtures({ leagueId: '2', season: 16, rounds: 3 });
     assert.deepEqual(fixtures.map((fixture) => fixture.game_round), [1, 3]);
+  });
+});
+
+test('fetchSeasonTournamentFixtures normalizes active cup matches', async () => {
+  const calls = [];
+  await withMockedFetch(async (url) => {
+    const text = String(url);
+    calls.push(text);
+    if (text.endsWith('/soccer/tournaments')) {
+      return okResponse([
+        {
+          id: 'old-cup',
+          name: 'The Boar Cup',
+          season: 6,
+          is_active: false,
+          total_rounds: 8,
+        },
+        {
+          id: 'lost-cup',
+          name: 'The Lost Cup',
+          season: 16,
+          is_active: true,
+          total_rounds: 6,
+        },
+      ]);
+    }
+    assert.match(text, /\/soccer\/tournaments\/lost-cup\/matches$/);
+    return okResponse([
+      {
+        game_id: '5',
+        tournament_id: 'lost-cup',
+        round_number: 1,
+        home_team_id: 'AlgorandAsset:1207576079',
+        away_team_id: 'AlgorandAsset:1239258220',
+        home_team_name: 'Wrexham FC',
+        away_team_name: 'Albino Kickers',
+        home_team_score: null,
+        away_team_score: null,
+        game_key: '',
+      },
+      {
+        game_id: '1',
+        tournament_id: 'lost-cup',
+        round_number: 2,
+        home_team_id: '',
+        away_team_id: '',
+        home_team_name: '',
+        away_team_name: '',
+        home_team_score: null,
+        away_team_score: null,
+        game_key: '',
+      },
+    ]);
+  }, async () => {
+    const fixtures = await fetchSeasonTournamentFixtures({ season: 16, leagueRounds: 44 });
+    assert.equal(calls.length, 2);
+    assert.equal(fixtures.length, 1);
+    assert.equal(fixtures[0].competition, 'cup');
+    assert.equal(fixtures[0].game_key, 'cup:lost-cup:1:5');
+    assert.equal(fixtures[0].game_round, 'C1');
+    assert.equal(fixtures[0].cup_round_label, 'Round of 64');
+    assert.equal(fixtures[0].home_team_name, 'Wrexham FC');
+    assert.equal(fixtures[0].away_team_id, 'AlgorandAsset:1239258220');
+    assert.equal(fixtures[0].game_result, null);
   });
 });
 
