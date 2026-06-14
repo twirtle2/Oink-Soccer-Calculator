@@ -2501,6 +2501,7 @@ export default function OinkSoccerCalc() {
       projectedPoints: first.planProjectedPoints,
       basePromotionBuffer: first.planBasePromotionBuffer,
       projectedPromotionBuffer: first.planProjectedPromotionBuffer,
+      promotionBufferDelta: Number(first.planProjectedPromotionBuffer) - Number(first.planBasePromotionBuffer),
       placementGain: first.placementGain,
       itemCount: itemSuggestions.length,
     };
@@ -2921,7 +2922,7 @@ export default function OinkSoccerCalc() {
                     {selectedLeagueName || 'Select a league'}
                   </div>
                   <div className="mt-1 text-xs text-[#6b7a94]">
-                    Base table uses actual results already played, then projects remaining fixtures without future item usage.
+                    Base table uses actual results already played, then projects remaining fixtures without future item usage. Reopen Season after played matches or skipped item uses to recalculate from the new state.
                   </div>
                 </div>
                 <div className="rounded-md border border-[#253040] bg-[#111620] px-3 py-2 text-xs text-[#9aa5bb]">
@@ -2943,7 +2944,7 @@ export default function OinkSoccerCalc() {
             <div className="rounded-[10px] border border-[#1e2a3a] bg-[#161c28] p-4">
               <div className="text-[11px] font-bold uppercase tracking-[0.14em] text-[#ffab00]">Item Timing</div>
               <div className="mt-1 text-xs text-[#6b7a94]">
-                Planned across the season using held items, active windows, and diminishing effectiveness. Place movement is the projected final table change for the full plan.
+                Planned using held items, active windows, and diminishing effectiveness. Uses are kept when they improve final place or protect a fragile promotion buffer.
               </div>
 
               {itemPlanSummary && (
@@ -2965,10 +2966,16 @@ export default function OinkSoccerCalc() {
                   <div>
                     <div className="text-[10px] font-bold uppercase tracking-[0.12em] text-[#6b7a94]">Plan Value</div>
                     <div className="mt-1 font-['Barlow_Condensed'] text-[22px] font-black text-[#ffab00]">
-                      {itemPlanSummary.placementGain > 0 ? `+${itemPlanSummary.placementGain}` : 'Hold'}
+                      {itemPlanSummary.placementGain > 0
+                        ? `+${itemPlanSummary.placementGain}`
+                        : Number(itemPlanSummary.promotionBufferDelta) > 0
+                          ? `+${formatNumber(itemPlanSummary.promotionBufferDelta, 0)} pts`
+                          : 'Hold'}
                     </div>
                     <div>
-                      {itemPlanSummary.itemCount} item use{itemPlanSummary.itemCount === 1 ? '' : 's'}
+                      {itemPlanSummary.placementGain > 0
+                        ? `${itemPlanSummary.itemCount} item use${itemPlanSummary.itemCount === 1 ? '' : 's'}`
+                        : 'Promotion buffer'}
                     </div>
                   </div>
                 </div>
