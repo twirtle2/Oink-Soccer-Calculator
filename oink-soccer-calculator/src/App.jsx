@@ -1393,6 +1393,9 @@ export default function OinkSoccerCalc() {
         });
       }
     } catch (err) {
+      setImportedOpponentTeamId(null);
+      setOpponentTeam([]);
+      saveToDb({ opponentTeam: [] });
       setUploadStatus({
         tone: 'error',
         message: err instanceof Error ? err.message : 'Team import failed.',
@@ -2754,12 +2757,12 @@ export default function OinkSoccerCalc() {
                     />
 
                     <TeamFormationCard
-                      title="Opponent Squad"
-                      subtitle={FORMATIONS[oppForm]?.name || 'Current formation'}
-                      suggestion={opponentPitchSuggestion}
-                      emptyText={importingTeamUrl ? 'Loading opponent lineup...' : 'Select a fixture to load the opponent squad.'}
-                      tone="opp"
-                    />
+                    title="Opponent Squad"
+                    subtitle={FORMATIONS[oppForm]?.name || 'Current formation'}
+                    suggestion={opponentPitchSuggestion}
+                    emptyText={importingTeamUrl ? 'Loading opponent lineup...' : 'No active opponent lineup found for this fixture.'}
+                    tone="opp"
+                  />
                   </div>
                 </>
               ) : null}

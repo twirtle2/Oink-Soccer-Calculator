@@ -168,6 +168,21 @@ const mapTeamPayloadToPlayers = (teamId, payload) => {
   };
 };
 
+const isPlaceholderPlayer = (player) => {
+  const name = String(player?.name || '').trim();
+  if (!/^player\s+\d+$/i.test(name)) return false;
+  const stats = player?.stats || {};
+  const coreStats = [stats.SPD, stats.ATT, stats.CTL, stats.DEF];
+  return player?.ovr === 55
+    && coreStats.every((value) => Number(value) === 55);
+};
+
+const hasActivePlayableLineup = (players) => (
+  Array.isArray(players)
+  && players.length > 0
+  && !players.every(isPlaceholderPlayer)
+);
+
 const fetchTeamPayload = async (teamId) => {
   const response = await fetch(`${LOST_PIGS_API_BASE}/v2/soccer/team/${encodeURIComponent(teamId)}`);
   if (response.ok) {
@@ -458,7 +473,7 @@ export const importOpponentFromTeamInput = async (input) => {
   const payload = await fetchTeamPayload(teamId);
   const mapped = mapTeamPayloadToPlayers(teamId, payload);
 
-  if (mapped.players.length === 0) {
+  if (!hasActivePlayableLineup(mapped.players)) {
     throw new Error('No active lineup found for this team.');
   }
 
@@ -474,7 +489,7 @@ export const fetchTeamLineup = async (teamId) => {
   const payload = await fetchTeamPayload(normalizedTeamId);
   const mapped = mapTeamPayloadToPlayers(normalizedTeamId, payload);
 
-  if (mapped.players.length === 0) {
+  if (!hasActivePlayableLineup(mapped.players)) {
     throw new Error('No active lineup found for this team.');
   }
 

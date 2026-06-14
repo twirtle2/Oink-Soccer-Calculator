@@ -166,6 +166,76 @@ test('fetchTeamLineup returns mapped team players', async () => {
   });
 });
 
+test('fetchTeamLineup rejects placeholder unset lineups', async () => {
+  await withMockedFetch(async (url) => {
+    assert.match(String(url), /\/v2\/soccer\/team\/AlgorandAsset%3A456$/);
+    return okResponse({
+      team: {
+        id: 'AlgorandAsset:456',
+        custom_name: 'Unset FC',
+        formation: 'The Diamond (1-2-1)',
+      },
+      team_selection: {
+        slots: Object.fromEntries(
+          [0, 1, 2, 3, 4].map((slot) => [slot, {
+            asset: { name: `PLAYER ${slot + 1}` },
+            player_attributes: {
+              based_on_player: `PLAYER ${slot + 1}`,
+              position: slot === 0 ? 'Goalkeeper' : slot === 1 ? 'Defense' : slot === 4 ? 'Attack' : 'Midfield',
+              overall_rating: 55,
+              speed_rating: 55,
+              attack_rating: 55,
+              control_rating: 55,
+              defense_rating: 55,
+              goalkeeper_rating: slot === 0 ? 55 : 0,
+            },
+          }]),
+        ),
+      },
+    });
+  }, async () => {
+    await assert.rejects(
+      () => fetchTeamLineup('AlgorandAsset:456'),
+      /No active lineup found/,
+    );
+  });
+});
+
+test('fetchTeamLineup keeps a real player named Player when stats are not placeholder defaults', async () => {
+  await withMockedFetch(async (url) => {
+    assert.match(String(url), /\/v2\/soccer\/team\/AlgorandAsset%3A789$/);
+    return okResponse({
+      team: {
+        id: 'AlgorandAsset:789',
+        custom_name: 'Real FC',
+        formation: 'The Diamond (1-2-1)',
+      },
+      team_selection: {
+        slots: {
+          0: {
+            asset: { name: 'PLAYER 1' },
+            player_attributes: {
+              based_on_player: 'PLAYER 1',
+              position: 'Goalkeeper',
+              overall_rating: 72,
+              speed_rating: 55,
+              attack_rating: 10,
+              control_rating: 70,
+              defense_rating: 80,
+              goalkeeper_rating: 72,
+            },
+          },
+        },
+      },
+    });
+  }, async () => {
+    const lineup = await fetchTeamLineup('AlgorandAsset:789');
+    assert.equal(lineup.players.length, 1);
+    assert.equal(lineup.players[0].name, 'PLAYER 1');
+    assert.equal(lineup.players[0].ovr, 72);
+  });
+});
+
 test('fetchTeamActiveBoosts returns boost rows', async () => {
   await withMockedFetch(async (url) => {
     assert.match(String(url), /\/soccer\/team\/AlgorandAsset%3A123\/boosts$/);
