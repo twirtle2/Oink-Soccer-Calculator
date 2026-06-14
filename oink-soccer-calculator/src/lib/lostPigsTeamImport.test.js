@@ -166,6 +166,54 @@ test('fetchTeamLineup returns mapped team players', async () => {
   });
 });
 
+test('fetchTeamLineup maps active API injuries onto imported players', async () => {
+  await withMockedFetch(async (url) => {
+    assert.match(String(url), /\/v2\/soccer\/team\/AlgorandAsset%3A321$/);
+    return okResponse({
+      team: {
+        id: 'AlgorandAsset:321',
+        custom_name: 'Injury FC',
+        formation: 'The Diamond (1-2-1)',
+      },
+      team_selection: {
+        slots: {
+          0: {
+            asset: {
+              name: 'The Lost Bots #0416',
+              image_url: 'https://example.com/bot.png',
+              injury: {
+                expires: '2026-06-14T23:59:59Z',
+                injury: {
+                  severity: 'Low Severity',
+                  name: 'Squirrel Scare',
+                  stats_reduction: 0.95,
+                  description: 'Spooked by a squirrel.',
+                },
+              },
+            },
+            player_attributes: {
+              based_on_player: 'Y. Sommer',
+              position: 'Goalkeeper',
+              overall_rating: 85,
+              speed_rating: 62,
+              attack_rating: 20,
+              control_rating: 75,
+              defense_rating: 84,
+              goalkeeper_rating: 88,
+            },
+          },
+        },
+      },
+    });
+  }, async () => {
+    const lineup = await fetchTeamLineup('AlgorandAsset:321');
+    assert.equal(lineup.players[0].injury, 'Low');
+    assert.equal(lineup.players[0].injuryDetails.name, 'Squirrel Scare');
+    assert.equal(lineup.players[0].injuryDetails.statsReduction, 0.95);
+    assert.equal(lineup.players[0].injuryDetails.expires, '2026-06-14T23:59:59Z');
+  });
+});
+
 test('fetchTeamLineup returns placeholder lineups as default projections', async () => {
   await withMockedFetch(async (url) => {
     assert.match(String(url), /\/v2\/soccer\/team\/AlgorandAsset%3A456$/);

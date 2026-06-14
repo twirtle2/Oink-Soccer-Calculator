@@ -3466,6 +3466,10 @@ function FormationPlayerCard({ player, setPieceTaker }) {
   const playablePositions = player.positions && player.positions.length > 0 ? player.positions : [player.pos];
   const playableLabel = playablePositions.join('/');
   const isSetPieceTaker = setPieceTaker && String(setPieceTaker) === String(player.id);
+  const injury = player.injury && INJURIES[player.injury] ? INJURIES[player.injury] : null;
+  const injuryTitle = injury
+    ? `${player.injuryDetails?.name || injury.label} - ${injury.label}`
+    : '';
   const positionTone = selectedPosition === 'GK'
     ? 'from-[#f4d44d] to-[#b58a13] text-[#1d1703]'
     : selectedPosition === 'DF'
@@ -3486,6 +3490,15 @@ function FormationPlayerCard({ player, setPieceTaker }) {
       </div>
       <div className="relative bg-[#f0e6a1]">
         <PlayerCardPortrait player={player} />
+        {injury && (
+          <div
+            className="absolute left-2 top-2 flex h-7 min-w-7 items-center justify-center rounded-[5px] border border-white/70 bg-[#d73535] px-1.5 font-['Barlow_Condensed'] text-[18px] font-black leading-none text-white shadow-[2px_2px_0_rgba(7,17,12,0.4)]"
+            title={injuryTitle}
+            aria-label={injuryTitle}
+          >
+            +
+          </div>
+        )}
         <div className="absolute bottom-0 left-0 right-0 flex items-center justify-between bg-[rgba(17,22,32,0.72)] px-2 py-1 font-['Barlow_Condensed'] text-[14px] font-black text-white">
           <span>{isSetPieceTaker ? 'SP' : roleLabel}</span>
           <span>{player.outOfPosition ? `OOP ${playableLabel}` : playableLabel}</span>

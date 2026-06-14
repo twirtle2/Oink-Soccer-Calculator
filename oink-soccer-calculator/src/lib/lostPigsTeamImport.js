@@ -153,6 +153,42 @@ const createDefaultLineupPlayers = (teamId, formationKey) => {
   });
 };
 
+const mapInjurySeverity = (assetInjury) => {
+  const injury = assetInjury?.injury || assetInjury;
+  if (!injury || typeof injury !== 'object') return null;
+
+  const severity = String(injury.severity || '').toLowerCase();
+  if (severity.includes('high') || severity.includes('severe')) return 'High';
+  if (severity.includes('mid') || severity.includes('medium') || severity.includes('moderate')) return 'Mid';
+  if (severity.includes('low') || severity.includes('minor')) return 'Low';
+
+  const reduction = Number(injury.stats_reduction);
+  if (Number.isFinite(reduction)) {
+    if (reduction <= 0.875) return 'High';
+    if (reduction <= 0.925) return 'Mid';
+    if (reduction < 1) return 'Low';
+  }
+
+  return null;
+};
+
+const mapInjuryDetails = (assetInjury) => {
+  const injury = assetInjury?.injury || assetInjury;
+  const mappedSeverity = mapInjurySeverity(assetInjury);
+  if (!mappedSeverity) return null;
+
+  return {
+    severity: mappedSeverity,
+    label: injury?.severity || mappedSeverity,
+    name: injury?.name || '',
+    description: injury?.description || '',
+    statsReduction: Number.isFinite(Number(injury?.stats_reduction))
+      ? Number(injury.stats_reduction)
+      : null,
+    expires: assetInjury?.expires || injury?.expires || null,
+  };
+};
+
 const mapTeamPayloadToPlayers = (teamId, payload) => {
   const slots = payload?.team_selection?.slots || {};
   const formationLabel = payload?.team?.formation || '';
@@ -188,6 +224,7 @@ const mapTeamPayloadToPlayers = (teamId, payload) => {
       || slot.asset?.name
       || `Opponent ${index + 1}`;
     const ovr = computeOvr(stats, pos, attrs.overall_rating);
+    const injuryDetails = mapInjuryDetails(slot.asset?.injury || slot.injury || attrs.injury);
 
     return {
       id: `teamurl:${teamId}:${slotKey}`,
@@ -195,7 +232,8 @@ const mapTeamPayloadToPlayers = (teamId, payload) => {
       pos,
       stats,
       ovr,
-      injury: null,
+      injury: injuryDetails?.severity || null,
+      injuryDetails,
       role: slot.role || slot.player_role || '',
       source: 'team-url',
       imageUrl: slot.asset?.image_url || slot.asset?.image || attrs.image_url || null,
