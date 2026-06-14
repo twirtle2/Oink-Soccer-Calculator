@@ -16,6 +16,7 @@ import {
   fetchLeagueTableTeams,
   fetchLeagueTeamsIndex,
   fetchSeasonTournamentFixtures,
+  fetchTeamSeasonFixtures,
   fetchTeamLineup,
   fetchTeamBoostState,
   importOpponentFromTeamInput,
@@ -1168,6 +1169,9 @@ export default function OinkSoccerCalc() {
 
     let cancelled = false;
     const rounds = Math.max(1, Math.min(60, gameCounter?.games_per_season || 44));
+    const fixtureTeamId = detectedMyTeamIds.find((teamId) => getLeagueIdForTeamId(teamId) === selectedLeagueId)
+      || detectedMyTeamIds[0]
+      || null;
     setFixturesLoading(true);
 
     void Promise.all([
@@ -1180,10 +1184,21 @@ export default function OinkSoccerCalc() {
         season: fixtureSeason,
         leagueRounds: rounds,
       }).catch(() => []),
+      fixtureTeamId
+        ? fetchTeamSeasonFixtures({
+          teamId: fixtureTeamId,
+          leagueId: selectedLeagueId,
+          season: fixtureSeason,
+        }).catch(() => [])
+        : Promise.resolve([]),
     ])
-      .then(([leaguePayload, cupPayload]) => {
+      .then(([leaguePayload, cupPayload, teamPayload]) => {
         if (cancelled) return;
-        const payload = sortFixturesByRoundAndTime([...leaguePayload, ...cupPayload]);
+        const teamCupPayload = teamPayload.filter((fixture) => fixture.competition === 'cup');
+        const payload = sortFixturesByRoundAndTime([
+          ...leaguePayload,
+          ...(teamCupPayload.length > 0 ? teamCupPayload : cupPayload),
+        ]);
         setFixtures(payload);
         setSeasonFixtures(leaguePayload);
         setSelectedFixtureKey((current) => (
@@ -1208,7 +1223,7 @@ export default function OinkSoccerCalc() {
     return () => {
       cancelled = true;
     };
-  }, [fixtureSeason, gameCounter?.games_per_season, selectedLeagueId]);
+  }, [detectedMyTeamIds, fixtureSeason, gameCounter?.games_per_season, getLeagueIdForTeamId, selectedLeagueId]);
 
   useEffect(() => {
     if (activeTab !== 'season' || !selectedLeagueId || !fixtureSeason) {

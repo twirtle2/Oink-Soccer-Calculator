@@ -430,6 +430,21 @@ const getTournamentRoundLabel = (roundNumber, totalRounds) => {
   return `Round of ${teamsRemaining}`;
 };
 
+const getTournamentRoundNumberFromLabel = (roundLabel, totalRounds = 6) => {
+  const label = String(roundLabel || '').trim().toLowerCase();
+  if (!label) return null;
+  if (label === 'final') return Number(totalRounds) || 6;
+  if (label === 'sf' || label.includes('semi')) return Math.max(1, (Number(totalRounds) || 6) - 1);
+  if (label === 'qf' || label.includes('quarter')) return Math.max(1, (Number(totalRounds) || 6) - 2);
+  const roundOfMatch = label.match(/r(?:ound\s*of\s*)?(\d+)/i);
+  const teamsRemaining = roundOfMatch ? Number.parseInt(roundOfMatch[1], 10) : Number.NaN;
+  if (Number.isFinite(teamsRemaining) && teamsRemaining > 1) {
+    const round = (Number(totalRounds) || 6) - Math.log2(teamsRemaining) + 1;
+    return Number.isFinite(round) ? Math.max(1, Math.round(round)) : null;
+  }
+  return null;
+};
+
 const estimateTournamentSortRound = (roundNumber, totalRounds, leagueRounds) => {
   const round = Number.parseInt(String(roundNumber || 1), 10) || 1;
   const total = Math.max(1, Number.parseInt(String(totalRounds || round), 10) || round);
@@ -449,6 +464,9 @@ const getKnownTournamentSchedule = (tournament, roundNumber) => {
       1: { gameTime: '2026-06-18T11:54:00Z', sortRound: 6.5 },
       2: { gameTime: '2026-06-25T11:59:00Z', sortRound: 12.5 },
       3: { gameTime: '2026-07-02T12:30:00Z', sortRound: 18.5 },
+      4: { gameTime: '2026-07-09T12:30:00Z', sortRound: 24.5 },
+      5: { gameTime: '2026-07-16T15:00:00Z', sortRound: 30.5 },
+      6: { gameTime: '2026-07-25T20:00:00Z', sortRound: 38.5 },
     };
     return knownSchedule[round] || null;
   }
@@ -533,6 +551,58 @@ export const fetchSeasonTournamentFixtures = async ({ season, leagueRounds }) =>
   return matches
     .map((match) => normalizeTournamentMatch(tournament, match, leagueRounds))
     .filter(Boolean);
+};
+
+export const fetchTeamSeasonFixtures = async ({ teamId, leagueId, season }) => {
+  const normalizedTeamId = normalizeTeamId(teamId);
+  if (!normalizedTeamId) {
+    throw new Error('Invalid teamId for team fixture fetch.');
+  }
+
+  const normalizedLeagueId = String(leagueId || '').trim();
+  if (!normalizedLeagueId) {
+    throw new Error('Missing leagueId for team fixture fetch.');
+  }
+
+  const normalizedSeason = normalizeSeasonValue(season);
+  const payload = await fetchJsonOrThrow(
+    `/soccer/team/${encodeURIComponent(normalizedTeamId)}/league/${encodeURIComponent(normalizedLeagueId)}/season/${encodeURIComponent(String(normalizedSeason))}/fixtures`,
+    'Team fixtures not found.',
+  );
+  const rawFixtures = Array.isArray(payload?.fixtures) ? payload.fixtures : [];
+
+  let lastLeagueRound = 0;
+  return rawFixtures
+    .map((fixture, index) => {
+      if (String(fixture?.competition || '').toLowerCase() !== 'cup') {
+        const round = Number.parseInt(String(fixture?.round || fixture?.game_round || index + 1), 10) || index + 1;
+        lastLeagueRound = round;
+        return {
+          ...fixture,
+          game_round: round,
+          sort_round: round,
+          competition: 'league',
+        };
+      }
+
+      const roundNumber = getTournamentRoundNumberFromLabel(fixture?.round, 6);
+      const fallbackKey = `cup-schedule:${normalizedTeamId}:${fixture?.round || roundNumber || index}`;
+      return {
+        ...fixture,
+        game_key: fixture?.game_key || fallbackKey,
+        source_game_key: fixture?.game_key || '',
+        game_round: `C${roundNumber || '?'}`,
+        sort_round: lastLeagueRound > 0 ? lastLeagueRound + 0.5 : index + 0.5,
+        competition: 'cup',
+        tournament_name: 'The Lost Cup',
+        cup_round_number: roundNumber,
+        cup_round_label: roundNumber ? getTournamentRoundLabel(roundNumber, 6) : fixture?.round || 'Cup',
+        home_team_id: normalizeTeamId(fixture?.home_team_id) || normalizedTeamId,
+        away_team_id: normalizeTeamId(fixture?.away_team_id) || '',
+        home_team_name: fixture?.home_team_name || 'TBD',
+        away_team_name: fixture?.away_team_name || 'TBD',
+      };
+    });
 };
 
 export const fetchLeagueTableTeams = async (leagueId) => {

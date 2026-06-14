@@ -7,6 +7,7 @@ import {
   fetchLeagueRoundFixtures,
   fetchLeagueSeasonFixtures,
   fetchSeasonTournamentFixtures,
+  fetchTeamSeasonFixtures,
   fetchTeamLineup,
   fetchTeamActiveBoosts,
   fetchTeamBoostEffectiveness,
@@ -222,6 +223,84 @@ test('fetchSeasonTournamentFixtures normalizes active cup matches', async () => 
     assert.equal(fixtures[2].cup_round_label, 'Round of 16');
     assert.equal(fixtures[2].sort_round, 18.5);
     assert.equal(fixtures[2].game_time, '2026-07-02T12:30:00Z');
+  });
+});
+
+test('fetchTeamSeasonFixtures keeps API cup times and endpoint ordering', async () => {
+  await withMockedFetch(async (url) => {
+    assert.match(String(url), /\/soccer\/team\/AlgorandAsset%3A1207576079\/league\/2\/season\/16\/fixtures$/);
+    return okResponse({
+      fixtures: [
+        {
+          game_key: 'league-6',
+          home_team_id: 'AlgorandAsset:1207576079',
+          home_team_name: 'Wrexham FC',
+          away_team_id: 'AlgorandAsset:1197834745',
+          away_team_name: 'Pigcago Phire',
+          game_time: '2026-06-17T23:30:00Z',
+          competition: 'League',
+          round: '6',
+        },
+        {
+          game_key: '',
+          home_team_id: 'AlgorandAsset:1207576079',
+          home_team_name: 'Wrexham FC',
+          away_team_id: 'AlgorandAsset:1239258220',
+          away_team_name: 'Albino Kickers',
+          game_time: '2026-06-18T11:54:00Z',
+          competition: 'Cup',
+          round: 'R64',
+        },
+        {
+          game_key: 'league-7',
+          home_team_id: 'AlgorandAsset:2835382355',
+          home_team_name: 'TERABRO FC',
+          away_team_id: 'AlgorandAsset:1207576079',
+          away_team_name: 'Wrexham FC',
+          game_time: '2026-06-18T11:30:00Z',
+          competition: 'League',
+          round: '7',
+        },
+        {
+          game_key: 'league-38',
+          home_team_id: 'AlgorandAsset:1207576079',
+          home_team_name: 'Wrexham FC',
+          away_team_id: 'AlgorandAsset:1',
+          away_team_name: 'Treadswater Athletic',
+          game_time: '2026-07-24T17:30:00Z',
+          competition: 'League',
+          round: '38',
+        },
+        {
+          game_key: '',
+          home_team_id: '',
+          home_team_name: '',
+          away_team_id: '',
+          away_team_name: '',
+          game_time: '2026-07-25T20:00:00Z',
+          competition: 'Cup',
+          round: 'Final',
+        },
+      ],
+    });
+  }, async () => {
+    const fixtures = await fetchTeamSeasonFixtures({
+      teamId: 'AlgorandAsset:1207576079',
+      leagueId: '2',
+      season: 16,
+    });
+
+    assert.equal(fixtures.length, 5);
+    assert.equal(fixtures[1].competition, 'cup');
+    assert.equal(fixtures[1].game_key, 'cup-schedule:AlgorandAsset:1207576079:R64');
+    assert.equal(fixtures[1].cup_round_label, 'Round of 64');
+    assert.equal(fixtures[1].game_time, '2026-06-18T11:54:00Z');
+    assert.equal(fixtures[1].sort_round, 6.5);
+    assert.equal(fixtures[4].cup_round_label, 'Final');
+    assert.equal(fixtures[4].game_time, '2026-07-25T20:00:00Z');
+    assert.equal(fixtures[4].sort_round, 38.5);
+    assert.equal(fixtures[4].home_team_id, 'AlgorandAsset:1207576079');
+    assert.equal(fixtures[4].away_team_name, 'TBD');
   });
 });
 
