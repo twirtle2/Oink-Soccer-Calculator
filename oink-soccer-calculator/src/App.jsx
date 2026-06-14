@@ -1126,8 +1126,7 @@ export default function OinkSoccerCalc() {
   }, [fixtureSeason, gameCounter?.games_per_season, selectedLeagueId]);
 
   useEffect(() => {
-    const shouldLoadSeasonModels = activeTab === 'season' || activeTab === 'upcoming';
-    if (!shouldLoadSeasonModels || !selectedLeagueId || !fixtureSeason) {
+    if (activeTab !== 'season' || !selectedLeagueId || !fixtureSeason) {
       return undefined;
     }
 
@@ -1800,7 +1799,7 @@ export default function OinkSoccerCalc() {
 
     const myTeams = new Set(detectedMyTeamIds);
     const chances = {};
-    const cachedByOpponent = new Map();
+    const currentStats = calculateTeamScores(myTeam, myForm, mySimulationBoostContext, myTactics);
 
     upcomingFixtures.forEach((fixture) => {
       const isHome = myTeams.has(fixture.home_team_id);
@@ -1811,45 +1810,24 @@ export default function OinkSoccerCalc() {
       const opponentModel = seasonTeams[opponentId];
       if (!opponentModel?.players?.length) return;
 
-      const cacheKey = `${opponentId}|${isHome ? 'home' : 'away'}`;
-      if (!cachedByOpponent.has(cacheKey)) {
-        const opponentFormation = opponentModel.formationKey && FORMATIONS[opponentModel.formationKey]
-          ? opponentModel.formationKey
-          : 'Pyramid';
-        const opponentStats = calculateTeamScores(opponentModel.players, opponentFormation, TEAM_BOOST_STATE_EMPTY, DEFAULT_TACTICS);
-        const currentStats = calculateTeamScores(myTeam, myForm, mySimulationBoostContext, myTactics);
-        const currentProjection = projectMatch({
-          myStats: currentStats,
-          myForm,
-          myTactics,
-          oppStats: opponentStats,
-          oppForm: opponentFormation,
-          oppTactics: DEFAULT_TACTICS,
-          homeAdvantage: isHome ? 'home' : 'away',
-        });
-        const fixtureSuggestions = buildSettingsSuggestions(currentProjection.win, {
-          oppStats: opponentStats,
-          oppForm: opponentFormation,
-          oppTactics: DEFAULT_TACTICS,
-          homeAdvantage: isHome ? 'home' : 'away',
-        });
-        const best = Object.values(fixtureSuggestions)
-          .filter((suggestion) => suggestion?.formation)
-          .sort((a, b) => b.win - a.win)[0];
-        cachedByOpponent.set(cacheKey, best
-          ? { win: best.win, myxG: best.myxG, oppxG: best.oppxG }
-          : null);
-      }
-
-      const chance = cachedByOpponent.get(cacheKey);
-      if (chance) {
-        chances[fixture.game_key] = chance;
-      }
+      const opponentFormation = opponentModel.formationKey && FORMATIONS[opponentModel.formationKey]
+        ? opponentModel.formationKey
+        : 'Pyramid';
+      const opponentStats = calculateTeamScores(opponentModel.players, opponentFormation, TEAM_BOOST_STATE_EMPTY, DEFAULT_TACTICS);
+      const projection = projectMatch({
+        myStats: currentStats,
+        myForm,
+        myTactics,
+        oppStats: opponentStats,
+        oppForm: opponentFormation,
+        oppTactics: DEFAULT_TACTICS,
+        homeAdvantage: isHome ? 'home' : 'away',
+      });
+      chances[fixture.game_key] = { win: projection.win, myxG: projection.myxG, oppxG: projection.oppxG };
     });
 
     return chances;
   }, [
-    buildSettingsSuggestions,
     detectedMyTeamIds,
     myForm,
     mySimulationBoostContext,
