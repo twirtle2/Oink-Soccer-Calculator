@@ -105,6 +105,15 @@ const computeOvr = (stats, pos, providedOvr) => {
   return Math.round(((stats.ATT * 3) + stats.SPD) / 4);
 };
 
+const isPlaceholderPlayer = (player) => {
+  const name = String(player?.name || '').trim();
+  if (!/^player\s+\d+$/i.test(name)) return false;
+  const stats = player?.stats || {};
+  const coreStats = [stats.SPD, stats.ATT, stats.CTL, stats.DEF];
+  return player?.ovr === 55
+    && coreStats.every((value) => Number(value) === 55);
+};
+
 const mapTeamPayloadToPlayers = (teamId, payload) => {
   const slots = payload?.team_selection?.slots || {};
   const slotEntries = Object.entries(slots)
@@ -158,29 +167,21 @@ const mapTeamPayloadToPlayers = (teamId, payload) => {
   const formationLabel = payload?.team?.formation || '';
   const formationKey = deriveFormationKey(formationLabel);
   const teamLabel = payload?.team?.custom_name || payload?.team?.id || teamId;
+  const isDefaultLineup = players.length > 0 && players.every(isPlaceholderPlayer);
 
   return {
     teamId,
     teamLabel,
     formationLabel,
     formationKey,
+    isDefaultLineup,
     players,
   };
-};
-
-const isPlaceholderPlayer = (player) => {
-  const name = String(player?.name || '').trim();
-  if (!/^player\s+\d+$/i.test(name)) return false;
-  const stats = player?.stats || {};
-  const coreStats = [stats.SPD, stats.ATT, stats.CTL, stats.DEF];
-  return player?.ovr === 55
-    && coreStats.every((value) => Number(value) === 55);
 };
 
 const hasActivePlayableLineup = (players) => (
   Array.isArray(players)
   && players.length > 0
-  && !players.every(isPlaceholderPlayer)
 );
 
 const fetchTeamPayload = async (teamId) => {

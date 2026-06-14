@@ -166,7 +166,7 @@ test('fetchTeamLineup returns mapped team players', async () => {
   });
 });
 
-test('fetchTeamLineup rejects placeholder unset lineups', async () => {
+test('fetchTeamLineup returns placeholder lineups as default projections', async () => {
   await withMockedFetch(async (url) => {
     assert.match(String(url), /\/v2\/soccer\/team\/AlgorandAsset%3A456$/);
     return okResponse({
@@ -194,10 +194,13 @@ test('fetchTeamLineup rejects placeholder unset lineups', async () => {
       },
     });
   }, async () => {
-    await assert.rejects(
-      () => fetchTeamLineup('AlgorandAsset:456'),
-      /No active lineup found/,
-    );
+    const lineup = await fetchTeamLineup('AlgorandAsset:456');
+    assert.equal(lineup.teamLabel, 'Unset FC');
+    assert.equal(lineup.formationKey, 'Diamond');
+    assert.equal(lineup.isDefaultLineup, true);
+    assert.equal(lineup.players.length, 5);
+    assert.equal(lineup.players[0].name, 'PLAYER 1');
+    assert.equal(lineup.players[0].ovr, 55);
   });
 });
 
@@ -230,9 +233,31 @@ test('fetchTeamLineup keeps a real player named Player when stats are not placeh
     });
   }, async () => {
     const lineup = await fetchTeamLineup('AlgorandAsset:789');
+    assert.equal(lineup.isDefaultLineup, false);
     assert.equal(lineup.players.length, 1);
     assert.equal(lineup.players[0].name, 'PLAYER 1');
     assert.equal(lineup.players[0].ovr, 72);
+  });
+});
+
+test('fetchTeamLineup rejects teams with no lineup slots', async () => {
+  await withMockedFetch(async (url) => {
+    assert.match(String(url), /\/v2\/soccer\/team\/AlgorandAsset%3A999$/);
+    return okResponse({
+      team: {
+        id: 'AlgorandAsset:999',
+        custom_name: 'Empty FC',
+        formation: 'The Diamond (1-2-1)',
+      },
+      team_selection: {
+        slots: {},
+      },
+    });
+  }, async () => {
+    await assert.rejects(
+      () => fetchTeamLineup('AlgorandAsset:999'),
+      /No active lineup found/,
+    );
   });
 });
 

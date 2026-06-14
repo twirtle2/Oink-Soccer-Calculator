@@ -807,6 +807,7 @@ export default function OinkSoccerCalc() {
   const [mySquad, setMySquad] = useState(persistedState.mySquad || initialMyTeam); // Full roster
   const [myTeam, setMyTeam] = useState(persistedState.myTeam || initialMyTeam.slice(0, 5)); // Active 5
   const [opponentTeam, setOpponentTeam] = useState(persistedState.opponentTeam || initialOpponent);
+  const [opponentLineupMeta, setOpponentLineupMeta] = useState({ isDefaultLineup: false });
   const [myForm, setMyForm] = useState(persistedState.myForm || 'Pyramid');
   const [oppForm, setOppForm] = useState(persistedState.oppForm || 'Pyramid');
   const [myTactics, setMyTactics] = useState(normalizeTactics(persistedState.myTactics));
@@ -1378,6 +1379,7 @@ export default function OinkSoccerCalc() {
         : oppForm;
 
       setImportedOpponentTeamId(imported.teamId || null);
+      setOpponentLineupMeta({ isDefaultLineup: Boolean(imported.isDefaultLineup) });
       setOppForm(nextFormation);
       setOpponentTeam(imported.players);
       saveToDb({ opponentTeam: imported.players, oppForm: nextFormation });
@@ -1386,14 +1388,16 @@ export default function OinkSoccerCalc() {
         const formationText = imported.formationKey
           ? ` Formation: ${FORMATIONS[imported.formationKey].name}.`
           : '';
+        const defaultText = imported.isDefaultLineup ? ' Using default player lineup.' : '';
 
         setUploadStatus({
           tone: 'success',
-          message: `Imported ${imported.players.length} opponent lineup players from ${imported.teamLabel}.${formationText}`,
+          message: `Imported ${imported.players.length} opponent lineup players from ${imported.teamLabel}.${formationText}${defaultText}`,
         });
       }
     } catch (err) {
       setImportedOpponentTeamId(null);
+      setOpponentLineupMeta({ isDefaultLineup: false });
       setOpponentTeam([]);
       saveToDb({ opponentTeam: [] });
       setUploadStatus({
@@ -1870,8 +1874,9 @@ export default function OinkSoccerCalc() {
       formation: oppForm,
       lineup: assignLineupPositions(opponentTeam, FORMATIONS[oppForm].structure),
       tactics: normalizeTactics(oppTactics),
+      isDefaultLineup: opponentLineupMeta.isDefaultLineup,
     };
-  }, [oppForm, oppTactics, opponentTeam]);
+  }, [oppForm, oppTactics, opponentLineupMeta.isDefaultLineup, opponentTeam]);
 
   const seasonForecast = useMemo(() => {
     const rows = new Map();
@@ -2758,7 +2763,9 @@ export default function OinkSoccerCalc() {
 
                     <TeamFormationCard
                     title="Opponent Squad"
-                    subtitle={FORMATIONS[oppForm]?.name || 'Current formation'}
+                    subtitle={opponentLineupMeta.isDefaultLineup
+                      ? `${FORMATIONS[oppForm]?.name || 'Current formation'} · Default lineup`
+                      : FORMATIONS[oppForm]?.name || 'Current formation'}
                     suggestion={opponentPitchSuggestion}
                     emptyText={importingTeamUrl ? 'Loading opponent lineup...' : 'No active opponent lineup found for this fixture.'}
                     tone="opp"
@@ -3108,6 +3115,9 @@ function TeamFormationCard({ title, subtitle, suggestion, emptyText, tone = 'my'
         <div className="mt-1 font-['Barlow_Condensed'] text-[24px] font-black leading-none text-[#e8edf5]">
           {subtitle || details.formation}
         </div>
+        {suggestion.isDefaultLineup ? (
+          <div className="mt-2 text-xs text-[#9aa5bb]">Default 55 OVR players used for projection.</div>
+        ) : null}
       </div>
       <FormationPitch suggestion={suggestion} details={details} />
     </section>
