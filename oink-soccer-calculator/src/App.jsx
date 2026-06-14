@@ -2349,6 +2349,20 @@ export default function OinkSoccerCalc() {
       .slice(0, 10);
   }, [detectedMyTeamIds, heldItems, leagueTeams, myBoostState, myForm, myTactics, myTeam, seasonFixtures, seasonTeams]);
 
+  const plannedItemsByFixture = useMemo(() => {
+    const planned = {};
+    itemSuggestions.forEach((item) => {
+      if (!item.fixture?.game_key) return;
+      planned[item.fixture.game_key] = {
+        icon: item.boostIcon,
+        label: item.boostLabel,
+        useNumber: item.useNumber,
+        heldCount: item.heldCount,
+      };
+    });
+    return planned;
+  }, [itemSuggestions]);
+
   const copySuggestion = useCallback(async (suggestion) => {
     if (!suggestion?.formation) return;
     const text = getSuggestionCopyText(suggestion);
@@ -2677,6 +2691,7 @@ export default function OinkSoccerCalc() {
                 selectedFixtureKey={selectedFixtureKey}
                 detectedMyTeamIds={detectedMyTeamIds}
                 fixtureWinChances={fixtureWinChances}
+                plannedItemsByFixture={plannedItemsByFixture}
                 loading={fixturesLoading}
                 emptyText={connectedAddresses.length > 0
                   ? 'No upcoming fixtures found for the connected wallet team.'
@@ -2690,6 +2705,7 @@ export default function OinkSoccerCalc() {
                 selectedFixtureKey={selectedFixtureKey}
                 detectedMyTeamIds={detectedMyTeamIds}
                 fixtureWinChances={fixtureWinChances}
+                plannedItemsByFixture={plannedItemsByFixture}
                 loading={false}
                 emptyText="No completed matches found for this season."
                 onSelect={(fixture) => void handleSelectFixture(fixture)}
@@ -2782,7 +2798,7 @@ export default function OinkSoccerCalc() {
             <div className="rounded-[10px] border border-[#1e2a3a] bg-[#161c28] p-4">
               <div className="text-[11px] font-bold uppercase tracking-[0.14em] text-[#ffab00]">Item Timing</div>
               <div className="mt-1 text-xs text-[#6b7a94]">
-                Planned across the season using held items, active windows, and diminishing effectiveness.
+                Planned across the season using held items, active windows, and diminishing effectiveness. Place movement is the projected final table change for the full plan.
               </div>
 
               <div className="mt-3 space-y-2">
@@ -2814,15 +2830,15 @@ export default function OinkSoccerCalc() {
                         </div>
                         <div className="mt-1 text-xs text-[#7f8aa3]">
                           {item.placementGain > 0
-                            ? `+${item.placementGain} place${item.placementGain === 1 ? '' : 's'}`
-                            : 'No place change'}
+                            ? `End season +${item.placementGain} place${item.placementGain === 1 ? '' : 's'}`
+                            : 'No end-season place change'}
                         </div>
                       </div>
                     </div>
                     <div className="mt-2 text-xs text-[#9aa5bb]">
                       First match: {formatNumber(item.baseWin)}% to {formatNumber(item.boostedWin)}%. Covers {item.windowCount} fixture{item.windowCount === 1 ? '' : 's'} at {formatNumber(item.effectivenessPct)}% effectiveness.
                       {item.planBasePosition && item.planProjectedPosition ? (
-                        <> Plan projects {item.planBasePosition} → {item.planProjectedPosition}.</>
+                        <> Final table projects {item.planBasePosition} → {item.planProjectedPosition}.</>
                       ) : null}
                     </div>
                   </div>
@@ -2992,7 +3008,7 @@ export default function OinkSoccerCalc() {
 }
 // --- Components ---
 
-function FixtureTableSection({ title, fixtures, selectedFixtureKey, detectedMyTeamIds, fixtureWinChances = {}, loading, emptyText, onSelect }) {
+function FixtureTableSection({ title, fixtures, selectedFixtureKey, detectedMyTeamIds, fixtureWinChances = {}, plannedItemsByFixture = {}, loading, emptyText, onSelect }) {
   const myTeams = new Set(detectedMyTeamIds);
 
   return (
@@ -3019,6 +3035,7 @@ function FixtureTableSection({ title, fixtures, selectedFixtureKey, detectedMyTe
             ? `${fixture.game_result.home_team_score}-${fixture.game_result.away_team_score}`
             : 'vs';
           const chance = fixtureWinChances[fixture.game_key];
+          const plannedItem = plannedItemsByFixture[fixture.game_key];
 
           return (
             <button
@@ -3040,6 +3057,20 @@ function FixtureTableSection({ title, fixtures, selectedFixtureKey, detectedMyTe
                 {!fixture.game_result && chance ? (
                   <span className="mt-1 rounded border border-[#00e676]/30 bg-[#00e676]/10 px-1.5 py-0.5 font-['Barlow_Condensed'] text-[13px] font-black leading-none text-[#00e676]">
                     {formatNumber(chance.win)}%
+                  </span>
+                ) : !fixture.game_result && mySide ? (
+                  <span className="mt-1 rounded border border-[#253040] bg-[#161c28] px-1.5 py-0.5 text-[10px] font-semibold leading-none text-[#6b7a94]">
+                    Lineup pending
+                  </span>
+                ) : null}
+                {!fixture.game_result && plannedItem ? (
+                  <span
+                    className="mt-1 inline-flex items-center gap-1 rounded border border-[#ffab00]/35 bg-[#ffab00]/10 px-1.5 py-0.5 text-[10px] font-bold text-[#ffcf66]"
+                    title={`${plannedItem.label} use ${plannedItem.useNumber || 1} of ${formatNumber(plannedItem.heldCount, 0)}`}
+                    aria-label={`${plannedItem.label} suggested for this fixture`}
+                  >
+                    <span className="text-[13px] leading-none">{plannedItem.icon || '⬢'}</span>
+                    <span>Use</span>
                   </span>
                 ) : null}
               </div>
