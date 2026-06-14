@@ -571,6 +571,21 @@ const formatNumber = (value, decimals = 1) => {
   return parsed.toFixed(decimals);
 };
 
+const formatOrdinal = (value) => {
+  const parsed = Number.parseInt(String(value), 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) return 'N/A';
+  const suffix = parsed % 100 >= 11 && parsed % 100 <= 13
+    ? 'th'
+    : parsed % 10 === 1
+      ? 'st'
+      : parsed % 10 === 2
+        ? 'nd'
+        : parsed % 10 === 3
+          ? 'rd'
+          : 'th';
+  return `${parsed}${suffix}`;
+};
+
 const formatStatValue = (value) => {
   const parsed = Number(value);
   if (!Number.isFinite(parsed)) return '0';
@@ -2247,7 +2262,7 @@ export default function OinkSoccerCalc() {
       };
     });
 
-    const getProjectedPosition = (plan) => {
+    const getProjectedSummary = (plan) => {
       const rows = new Map();
       const ensureRow = (teamId, teamName) => {
         if (!teamId) return null;
@@ -2389,18 +2404,74 @@ export default function OinkSoccerCalc() {
           || a.teamName.localeCompare(b.teamName)
         ));
       const myIndex = sortedRows.findIndex((row) => myTeamIds.has(row.teamId));
-      return myIndex >= 0 ? myIndex + 1 : null;
+      const myRow = myIndex >= 0 ? sortedRows[myIndex] : null;
+      const promotionCutoff = Math.min(3, sortedRows.length);
+      const promotionEdge = promotionCutoff > 0 ? sortedRows[promotionCutoff - 1] : null;
+      const firstOutsidePromotion = sortedRows[promotionCutoff] || null;
+      const promotionBuffer = myRow && promotionCutoff > 0
+        ? myIndex < promotionCutoff
+          ? myRow.points - (firstOutsidePromotion?.points ?? myRow.points)
+          : myRow.points - (promotionEdge?.points ?? myRow.points)
+        : null;
+
+      return {
+        rows: sortedRows,
+        position: myIndex >= 0 ? myIndex + 1 : null,
+        points: myRow?.points ?? null,
+        gd: myRow?.gd ?? null,
+        promotionBuffer,
+      };
     };
 
-    const basePosition = getProjectedPosition([]);
-    const plannedPosition = getProjectedPosition(plannedSchedule);
-    const placementGain = basePosition && plannedPosition ? Math.max(0, basePosition - plannedPosition) : 0;
+    const isUsefulPlanStep = (before, after) => {
+      if (!before?.position || !after?.position) return true;
+      if (after.position < before.position) return true;
+      const beforeBuffer = Number(before.promotionBuffer);
+      const afterBuffer = Number(after.promotionBuffer);
+      if (Number.isFinite(beforeBuffer) && Number.isFinite(afterBuffer)) {
+        if (before.position <= 3 && beforeBuffer < 3 && afterBuffer > beforeBuffer) return true;
+        if (before.position > 3 && afterBuffer > beforeBuffer) return true;
+      }
+      return false;
+    };
 
-    return plannedSchedule
+    const baseSummary = getProjectedSummary([]);
+    let currentSummary = baseSummary;
+    const usefulSchedule = [];
+
+    plannedSchedule.forEach((item) => {
+      const nextPlan = [...usefulSchedule, item];
+      const nextSummary = getProjectedSummary(nextPlan);
+      if (!isUsefulPlanStep(currentSummary, nextSummary)) return;
+      usefulSchedule.push(item);
+      currentSummary = nextSummary;
+    });
+
+    const finalRemainingCounts = { ...boostCounts };
+    const finalSchedule = usefulSchedule.map((item) => {
+      const heldCount = boostCounts[item.boostKey] || item.heldCount || 0;
+      const useNumber = heldCount - (finalRemainingCounts[item.boostKey] || 0) + 1;
+      finalRemainingCounts[item.boostKey] = Math.max(0, (finalRemainingCounts[item.boostKey] || 0) - 1);
+      return {
+        ...item,
+        heldCount,
+        useNumber,
+        remainingAfterUse: finalRemainingCounts[item.boostKey],
+      };
+    });
+
+    const plannedSummary = getProjectedSummary(finalSchedule);
+    const placementGain = baseSummary.position && plannedSummary.position ? Math.max(0, baseSummary.position - plannedSummary.position) : 0;
+
+    return finalSchedule
       .map((item) => ({
         ...item,
-        planBasePosition: basePosition,
-        planProjectedPosition: plannedPosition,
+        planBasePosition: baseSummary.position,
+        planProjectedPosition: plannedSummary.position,
+        planBasePoints: baseSummary.points,
+        planProjectedPoints: plannedSummary.points,
+        planBasePromotionBuffer: baseSummary.promotionBuffer,
+        planProjectedPromotionBuffer: plannedSummary.promotionBuffer,
         placementGain,
       }))
       .slice(0, 10);
@@ -2418,6 +2489,21 @@ export default function OinkSoccerCalc() {
       };
     });
     return planned;
+  }, [itemSuggestions]);
+
+  const itemPlanSummary = useMemo(() => {
+    const first = itemSuggestions[0];
+    if (!first?.planBasePosition || !first?.planProjectedPosition) return null;
+    return {
+      basePosition: first.planBasePosition,
+      projectedPosition: first.planProjectedPosition,
+      basePoints: first.planBasePoints,
+      projectedPoints: first.planProjectedPoints,
+      basePromotionBuffer: first.planBasePromotionBuffer,
+      projectedPromotionBuffer: first.planProjectedPromotionBuffer,
+      placementGain: first.placementGain,
+      itemCount: itemSuggestions.length,
+    };
   }, [itemSuggestions]);
 
   const copySuggestion = useCallback(async (suggestion) => {
@@ -2835,7 +2921,7 @@ export default function OinkSoccerCalc() {
                     {selectedLeagueName || 'Select a league'}
                   </div>
                   <div className="mt-1 text-xs text-[#6b7a94]">
-                    Uses actual results already played, then projects remaining fixtures from current team lineups.
+                    Base table uses actual results already played, then projects remaining fixtures without future item usage.
                   </div>
                 </div>
                 <div className="rounded-md border border-[#253040] bg-[#111620] px-3 py-2 text-xs text-[#9aa5bb]">
@@ -2859,6 +2945,34 @@ export default function OinkSoccerCalc() {
               <div className="mt-1 text-xs text-[#6b7a94]">
                 Planned across the season using held items, active windows, and diminishing effectiveness. Place movement is the projected final table change for the full plan.
               </div>
+
+              {itemPlanSummary && (
+                <div className="mt-3 grid gap-2 rounded-md border border-[#253040] bg-[#111620] p-3 text-xs text-[#9aa5bb] sm:grid-cols-3">
+                  <div>
+                    <div className="text-[10px] font-bold uppercase tracking-[0.12em] text-[#6b7a94]">Base</div>
+                    <div className="mt-1 font-['Barlow_Condensed'] text-[22px] font-black text-[#e8edf5]">
+                      {formatOrdinal(itemPlanSummary.basePosition)}
+                    </div>
+                    <div>{formatNumber(itemPlanSummary.basePoints, 0)} pts</div>
+                  </div>
+                  <div>
+                    <div className="text-[10px] font-bold uppercase tracking-[0.12em] text-[#6b7a94]">With Items</div>
+                    <div className="mt-1 font-['Barlow_Condensed'] text-[22px] font-black text-[#00e676]">
+                      {formatOrdinal(itemPlanSummary.projectedPosition)}
+                    </div>
+                    <div>{formatNumber(itemPlanSummary.projectedPoints, 0)} pts</div>
+                  </div>
+                  <div>
+                    <div className="text-[10px] font-bold uppercase tracking-[0.12em] text-[#6b7a94]">Plan Value</div>
+                    <div className="mt-1 font-['Barlow_Condensed'] text-[22px] font-black text-[#ffab00]">
+                      {itemPlanSummary.placementGain > 0 ? `+${itemPlanSummary.placementGain}` : 'Hold'}
+                    </div>
+                    <div>
+                      {itemPlanSummary.itemCount} item use{itemPlanSummary.itemCount === 1 ? '' : 's'}
+                    </div>
+                  </div>
+                </div>
+              )}
 
               <div className="mt-3 space-y-2">
                 {seasonPredictionLoading && (
@@ -2888,16 +3002,16 @@ export default function OinkSoccerCalc() {
                           +{formatNumber(item.seasonDelta)}%
                         </div>
                         <div className="mt-1 text-xs text-[#7f8aa3]">
-                          {item.placementGain > 0
-                            ? `End season +${item.placementGain} place${item.placementGain === 1 ? '' : 's'}`
-                            : 'No end-season place change'}
+                          {item.planBasePosition && item.planProjectedPosition
+                            ? `Plan ${formatOrdinal(item.planBasePosition)} → ${formatOrdinal(item.planProjectedPosition)}`
+                            : 'Plan impact pending'}
                         </div>
                       </div>
                     </div>
                     <div className="mt-2 text-xs text-[#9aa5bb]">
                       First match: {formatNumber(item.baseWin)}% to {formatNumber(item.boostedWin)}%. Covers {item.windowCount} fixture{item.windowCount === 1 ? '' : 's'} at {formatNumber(item.effectivenessPct)}% effectiveness.
-                      {item.planBasePosition && item.planProjectedPosition ? (
-                        <> Final table projects {item.planBasePosition} → {item.planProjectedPosition}.</>
+                      {item.planBasePoints !== null && item.planProjectedPoints !== null ? (
+                        <> Item plan projects {formatNumber(item.planBasePoints, 0)} → {formatNumber(item.planProjectedPoints, 0)} pts.</>
                       ) : null}
                     </div>
                   </div>
