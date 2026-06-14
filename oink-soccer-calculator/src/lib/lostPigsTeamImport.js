@@ -438,15 +438,19 @@ const estimateTournamentSortRound = (roundNumber, totalRounds, leagueRounds) => 
   if (round >= total) return leagueTotal + 0.5;
   if (total === 1) return leagueTotal + 0.5;
 
-  const firstCupSlot = Math.min(6.5, leagueTotal - 0.5);
-  const interval = Math.max(1, (leagueTotal - firstCupSlot) / (total - 1));
-  return firstCupSlot + ((round - 1) * interval);
+  return Math.min((round * 6) + 0.5, leagueTotal - 0.5);
 };
 
-const getKnownTournamentGameTime = (tournament, roundNumber) => {
+const getKnownTournamentSchedule = (tournament, roundNumber) => {
   const season = Number(tournament?.season);
-  if (season === 16 && Number(roundNumber) === 1) {
-    return '2026-06-18T12:12:00Z';
+  const round = Number(roundNumber);
+  if (season === 16) {
+    const knownSchedule = {
+      1: { gameTime: '2026-06-18T11:54:00Z', sortRound: 6.5 },
+      2: { gameTime: '2026-06-25T11:59:00Z', sortRound: 12.5 },
+      3: { gameTime: '2026-07-02T12:30:00Z', sortRound: 18.5 },
+    };
+    return knownSchedule[round] || null;
   }
   return null;
 };
@@ -465,14 +469,15 @@ const normalizeTournamentMatch = (tournament, match, leagueRounds) => {
     && awayScore !== undefined;
   const fallbackKey = `cup:${tournament.id}:${roundNumber}:${match?.game_id || 'match'}`;
   const gameKey = match?.game_key || fallbackKey;
-  const gameTime = match?.game_time || getKnownTournamentGameTime(tournament, roundNumber);
+  const knownSchedule = getKnownTournamentSchedule(tournament, roundNumber);
+  const gameTime = match?.game_time || knownSchedule?.gameTime || null;
 
   return {
     ...match,
     game_key: gameKey,
     source_game_key: match?.game_key || '',
     game_round: `C${roundNumber}`,
-    sort_round: estimateTournamentSortRound(roundNumber, tournament?.total_rounds, leagueRounds),
+    sort_round: knownSchedule?.sortRound || estimateTournamentSortRound(roundNumber, tournament?.total_rounds, leagueRounds),
     competition: 'cup',
     tournament_id: tournament.id,
     tournament_name: tournament.name || 'The Lost Cup',

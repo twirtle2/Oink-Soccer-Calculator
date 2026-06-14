@@ -170,6 +170,30 @@ test('fetchSeasonTournamentFixtures normalizes active cup matches', async () => 
         game_id: '1',
         tournament_id: 'lost-cup',
         round_number: 2,
+        home_team_id: 'AlgorandAsset:1',
+        away_team_id: 'AlgorandAsset:2',
+        home_team_name: 'R32 Home',
+        away_team_name: 'R32 Away',
+        home_team_score: null,
+        away_team_score: null,
+        game_key: '',
+      },
+      {
+        game_id: '1',
+        tournament_id: 'lost-cup',
+        round_number: 3,
+        home_team_id: 'AlgorandAsset:3',
+        away_team_id: 'AlgorandAsset:4',
+        home_team_name: 'R16 Home',
+        away_team_name: 'R16 Away',
+        home_team_score: null,
+        away_team_score: null,
+        game_key: '',
+      },
+      {
+        game_id: '1',
+        tournament_id: 'lost-cup',
+        round_number: 4,
         home_team_id: '',
         away_team_id: '',
         home_team_name: '',
@@ -182,16 +206,22 @@ test('fetchSeasonTournamentFixtures normalizes active cup matches', async () => 
   }, async () => {
     const fixtures = await fetchSeasonTournamentFixtures({ season: 16, leagueRounds: 44 });
     assert.equal(calls.length, 2);
-    assert.equal(fixtures.length, 1);
+    assert.equal(fixtures.length, 3);
     assert.equal(fixtures[0].competition, 'cup');
     assert.equal(fixtures[0].game_key, 'cup:lost-cup:1:5');
     assert.equal(fixtures[0].game_round, 'C1');
     assert.equal(fixtures[0].cup_round_label, 'Round of 64');
     assert.equal(fixtures[0].sort_round, 6.5);
-    assert.equal(fixtures[0].game_time, '2026-06-18T12:12:00Z');
+    assert.equal(fixtures[0].game_time, '2026-06-18T11:54:00Z');
     assert.equal(fixtures[0].home_team_name, 'Wrexham FC');
     assert.equal(fixtures[0].away_team_id, 'AlgorandAsset:1239258220');
     assert.equal(fixtures[0].game_result, null);
+    assert.equal(fixtures[1].cup_round_label, 'Round of 32');
+    assert.equal(fixtures[1].sort_round, 12.5);
+    assert.equal(fixtures[1].game_time, '2026-06-25T11:59:00Z');
+    assert.equal(fixtures[2].cup_round_label, 'Round of 16');
+    assert.equal(fixtures[2].sort_round, 18.5);
+    assert.equal(fixtures[2].game_time, '2026-07-02T12:30:00Z');
   });
 });
 
