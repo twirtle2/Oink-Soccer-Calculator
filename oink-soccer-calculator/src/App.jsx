@@ -682,6 +682,17 @@ const getFixtureTimeValue = (fixture) => {
   return Number.isFinite(value) ? value : Number.MAX_SAFE_INTEGER;
 };
 
+const MS_PER_DAY = 24 * 60 * 60 * 1000;
+
+const getUtcDayExpiryTime = (startTime, durationDays) => {
+  if (!Number.isFinite(startTime)) return startTime;
+  const days = Math.max(0, Math.floor(Number(durationDays || 0)));
+  if (days <= 0) return startTime;
+  const date = new Date(startTime);
+  const startUtcDay = Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate());
+  return startUtcDay + (days * MS_PER_DAY) - 1;
+};
+
 const formatFixtureTime = (value) => {
   if (!value) return 'Time TBC';
   return new Date(value).toLocaleString([], {
@@ -824,6 +835,7 @@ export default function OinkSoccerCalc() {
   const [fixturesLoading, setFixturesLoading] = useState(false);
   const [selectedFixtureKey, setSelectedFixtureKey] = useState('');
   const [seasonFixtures, setSeasonFixtures] = useState([]);
+  const [teamSeasonFixtures, setTeamSeasonFixtures] = useState([]);
   const [seasonTeams, setSeasonTeams] = useState({});
   const [seasonPredictionLoading, setSeasonPredictionLoading] = useState(false);
   const [seasonPredictionError, setSeasonPredictionError] = useState('');
@@ -1163,6 +1175,7 @@ export default function OinkSoccerCalc() {
   useEffect(() => {
     if (!selectedLeagueId || !fixtureSeason) {
       setFixtures([]);
+      setTeamSeasonFixtures([]);
       setSelectedFixtureKey('');
       return;
     }
@@ -1194,13 +1207,14 @@ export default function OinkSoccerCalc() {
     ])
       .then(([leaguePayload, cupPayload, teamPayload]) => {
         if (cancelled) return;
-        const teamCupPayload = teamPayload.filter((fixture) => fixture.competition === 'cup');
-        const payload = sortFixturesByRoundAndTime([
-          ...leaguePayload,
-          ...(teamCupPayload.length > 0 ? teamCupPayload : cupPayload),
-        ]);
+        const payload = sortFixturesByRoundAndTime(
+          teamPayload.length > 0
+            ? teamPayload
+            : [...leaguePayload, ...cupPayload],
+        );
         setFixtures(payload);
         setSeasonFixtures(leaguePayload);
+        setTeamSeasonFixtures(sortFixturesByRoundAndTime(teamPayload));
         setSelectedFixtureKey((current) => (
           current && payload.some((fixture) => fixture.game_key === current)
             ? current
@@ -1212,6 +1226,7 @@ export default function OinkSoccerCalc() {
         const message = error instanceof Error ? error.message : 'Failed to load fixtures.';
         setUploadStatus({ tone: 'error', message });
         setFixtures([]);
+        setTeamSeasonFixtures([]);
         setSelectedFixtureKey('');
       })
       .finally(() => {
@@ -2117,13 +2132,14 @@ export default function OinkSoccerCalc() {
   }, [leagueTeams, seasonFixtures, seasonTeams]);
 
   const itemSuggestions = useMemo(() => {
-    if (myTeam.length < 5 || detectedMyTeamIds.length === 0 || seasonFixtures.length === 0) return [];
+    const planningFixtures = teamSeasonFixtures.length > 0 ? teamSeasonFixtures : seasonFixtures;
+    if (myTeam.length < 5 || detectedMyTeamIds.length === 0 || planningFixtures.length === 0) return [];
     const heldPerformanceItems = getHeldPerformanceItems(heldItems);
     if (heldPerformanceItems.length === 0) return [];
 
     const myTeamIds = new Set(detectedMyTeamIds);
     const remainingMyFixtures = sortFixturesByRoundAndTime(
-      seasonFixtures.filter((fixture) => (
+      planningFixtures.filter((fixture) => (
         !fixture.game_result
         && (myTeamIds.has(fixture.home_team_id) || myTeamIds.has(fixture.away_team_id))
       )),
@@ -2187,14 +2203,14 @@ export default function OinkSoccerCalc() {
       const durationDays = getDurationDays(item);
       const maxDurationDays = durationDays[durationDays.length - 1] || 0;
       const maxEndsAt = Number.isFinite(startsAt)
-        ? startsAt + (maxDurationDays * 24 * 60 * 60 * 1000)
+        ? getUtcDayExpiryTime(startsAt, maxDurationDays)
         : startsAt;
       if (hasWindowConflict(startsAt, maxEndsAt)) return null;
 
       const effectivenessPct = getBoostEffectivenessForPlannedUse(baseEffectivenessPct, plannedUseIndex);
       const boostState = createPlannedItemBoostState({
         boostKey: item.boostKey,
-        effectivenessPct: baseEffectivenessPct,
+        effectivenessPct,
         applications: plannedUseIndex,
       });
       const boostedStats = calculateTeamScores(myTeam, myForm, boostState, myTactics);
@@ -2204,7 +2220,7 @@ export default function OinkSoccerCalc() {
           const candidateTime = getFixtureTimeValue(candidate);
           const coverageCount = durationDays.filter((days) => {
             const endsAt = Number.isFinite(startsAt)
-              ? startsAt + (days * 24 * 60 * 60 * 1000)
+              ? getUtcDayExpiryTime(startsAt, days)
               : startsAt;
             return candidateTime >= startsAt
               && (candidateTime <= endsAt || candidate.game_key === fixture.game_key);
@@ -2536,7 +2552,7 @@ export default function OinkSoccerCalc() {
         placementGain,
       }))
       .slice(0, 10);
-  }, [detectedMyTeamIds, heldItems, leagueTeams, myBoostState, myForm, myTactics, myTeam, seasonFixtures, seasonTeams]);
+  }, [detectedMyTeamIds, heldItems, leagueTeams, myBoostState, myForm, myTactics, myTeam, seasonFixtures, seasonTeams, teamSeasonFixtures]);
 
   const plannedItemsByFixture = useMemo(() => {
     const planned = {};
