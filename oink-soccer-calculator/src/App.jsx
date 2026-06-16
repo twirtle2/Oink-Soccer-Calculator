@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
-import { Plus, Trash2, Users, Zap, Activity, Pencil, Save, RotateCcw, Loader2, Bandage, X, TrendingUp, ChevronDown, ChevronUp, RefreshCw, ArrowDownWideNarrow, ArrowUpNarrowWide, Link2 } from 'lucide-react';
+import { Plus, Trash2, Users, Zap, Activity, Pencil, Save, RotateCcw, Loader2, Bandage, X, TrendingUp, ChevronDown, ChevronUp, RefreshCw } from 'lucide-react';
 import { useWallet } from '@txnlab/use-wallet-react';
 import WalletConnector from './components/WalletConnector';
 import { loadCalculatorState, saveCalculatorState } from './lib/storage';
@@ -683,6 +683,7 @@ const getFixtureTimeValue = (fixture) => {
 };
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
+const ITEM_USE_COOLDOWN_DAYS = 2;
 
 const getUtcDayExpiryTime = (startTime, durationDays) => {
   if (!Number.isFinite(startTime)) return startTime;
@@ -872,10 +873,6 @@ export default function OinkSoccerCalc() {
   const [editingId, setEditingId] = useState(null);
   const [formTarget, setFormTarget] = useState('mySquad');
   const [showManualForm, setShowManualForm] = useState(false);
-
-  // --- Sorting & Filtering State ---
-  const [benchFilter, setBenchFilter] = useState('All');
-  const [benchSort, setBenchSort] = useState('ovr_desc'); // 'ovr_desc' or 'ovr_asc'
 
   const [newPlayer, setNewPlayer] = useState({
     name: '', pos: 'FW',
@@ -1642,67 +1639,6 @@ export default function OinkSoccerCalc() {
     }
   }, [mySquad, myTeam, opponentTeam, saveToDb]);
 
-  const handleSwap = (benchPlayer) => {
-    if (myTeam.find(p => p.id === benchPlayer.id)) {
-      const newActive = myTeam.filter(p => p.id !== benchPlayer.id);
-      setMyTeam(newActive);
-      saveToDb({ myTeam: newActive });
-      return;
-    }
-
-    if (myTeam.length < 5) {
-      const newActive = [...myTeam, benchPlayer];
-      setMyTeam(newActive);
-      saveToDb({ myTeam: newActive });
-      return;
-    }
-
-    const playerValidPos = benchPlayer.positions || [benchPlayer.pos];
-    const samePosIndex = myTeam.findIndex(p => {
-      const activeValidPos = p.positions || [p.pos];
-      return activeValidPos.some(pos => playerValidPos.includes(pos));
-    });
-    if (samePosIndex !== -1) {
-      const newActive = [...myTeam];
-      newActive[samePosIndex] = benchPlayer;
-      setMyTeam(newActive);
-      saveToDb({ myTeam: newActive });
-    } else {
-      const newActive = [...myTeam];
-      newActive[4] = benchPlayer;
-      setMyTeam(newActive);
-      saveToDb({ myTeam: newActive });
-    }
-  };
-
-  // --- Bench Sort & Filter ---
-  const toggleSort = () => {
-    setBenchSort(prev => prev === 'ovr_desc' ? 'ovr_asc' : 'ovr_desc');
-  };
-
-  const benchPool = useMemo(() => {
-    const activeIds = new Set(myTeam.map(p => p.id));
-    return mySquad.filter(p => !activeIds.has(p.id));
-  }, [mySquad, myTeam]);
-
-  const benchPlayers = useMemo(() => {
-    let players = [...benchPool];
-
-    // Filter
-    if (benchFilter !== 'All') {
-      players = players.filter(p => p.pos === benchFilter);
-    }
-
-    // Sort
-    players.sort((a, b) => {
-      if (benchSort === 'ovr_desc') return b.ovr - a.ovr;
-      if (benchSort === 'ovr_asc') return a.ovr - b.ovr;
-      return 0;
-    });
-
-    return players;
-  }, [benchPool, benchFilter, benchSort]);
-
   const getCombinations = useCallback((arr, k) => {
     if (k === 0) return [[]];
     if (arr.length === 0) return [];
@@ -1894,7 +1830,6 @@ export default function OinkSoccerCalc() {
     { key: 'upcoming', icon: '📅', label: 'Upcoming' },
     { key: 'matchup', icon: '⚽', label: 'Setup' },
     { key: 'season', icon: '📈', label: 'Season' },
-    { key: 'bench', icon: '🪑', label: 'Bench' },
   ]), []);
 
   const suggestionList = useMemo(() => (
@@ -1944,11 +1879,28 @@ export default function OinkSoccerCalc() {
         oppTactics: DEFAULT_TACTICS,
         homeAdvantage: isHome ? 'home' : 'away',
       });
-      chances[fixture.game_key] = { win: projection.win, myxG: projection.myxG, oppxG: projection.oppxG };
+      const matchupSuggestions = buildSettingsSuggestions(projection.win, {
+        oppStats: opponentStats,
+        oppForm: opponentFormation,
+        oppTactics: DEFAULT_TACTICS,
+        homeAdvantage: isHome ? 'home' : 'away',
+      });
+      const bestSuggestion = Object.values(matchupSuggestions)
+        .filter((suggestion) => suggestion?.formation)
+        .sort((a, b) => b.win - a.win)[0];
+      chances[fixture.game_key] = bestSuggestion
+        ? {
+          win: bestSuggestion.win,
+          myxG: bestSuggestion.myxG,
+          oppxG: bestSuggestion.oppxG,
+          source: 'best',
+        }
+        : { win: projection.win, myxG: projection.myxG, oppxG: projection.oppxG, source: 'current' };
     });
 
     return chances;
   }, [
+    buildSettingsSuggestions,
     detectedMyTeamIds,
     myForm,
     mySimulationBoostContext,
@@ -1993,6 +1945,10 @@ export default function OinkSoccerCalc() {
   }, [oppForm, oppTactics, opponentLineupMeta.isDefaultLineup, opponentTeam]);
 
   const seasonForecast = useMemo(() => {
+    const myTeamIds = new Set(detectedMyTeamIds);
+    const mySeasonStats = myTeam.length >= 5
+      ? calculateTeamScores(myTeam, myForm, TEAM_BOOST_STATE_EMPTY, myTactics)
+      : null;
     const rows = new Map();
     const ensureRow = (teamId, teamName) => {
       if (!teamId) return null;
@@ -2017,6 +1973,14 @@ export default function OinkSoccerCalc() {
     leagueTeams.forEach((team) => ensureRow(team.teamId, team.teamName));
 
     const getModel = (teamId) => {
+      if (myTeamIds.has(teamId) && mySeasonStats) {
+        return {
+          formation: myForm,
+          tactics: myTactics,
+          stats: mySeasonStats,
+        };
+      }
+
       const model = seasonTeams[teamId];
       if (!model?.players?.length) return null;
       const formation = model.formationKey && FORMATIONS[model.formationKey] ? model.formationKey : 'Pyramid';
@@ -2129,7 +2093,7 @@ export default function OinkSoccerCalc() {
         )),
       projectedFixtures,
     };
-  }, [leagueTeams, seasonFixtures, seasonTeams]);
+  }, [detectedMyTeamIds, leagueTeams, myForm, myTactics, myTeam, seasonFixtures, seasonTeams]);
 
   const itemSuggestions = useMemo(() => {
     const planningFixtures = teamSeasonFixtures.length > 0 ? teamSeasonFixtures : seasonFixtures;
@@ -2188,7 +2152,7 @@ export default function OinkSoccerCalc() {
 
     const intervalsOverlap = (startA, endA, startB, endB) => startA <= endB && startB <= endA;
     const hasWindowConflict = (startTime, endTime) => selectedWindows.some((window) => (
-      intervalsOverlap(startTime, endTime, window.startTime, window.endTime)
+      intervalsOverlap(startTime, endTime, window.startTime, window.blockedEndTime)
     ));
     const getDurationDays = (item) => {
       const minDays = Math.max(0, Math.floor(Number(item.minDays ?? item.maxDays ?? 0)));
@@ -2312,6 +2276,9 @@ export default function OinkSoccerCalc() {
       selectedWindows.push({
         startTime: bestCandidate.startTime,
         endTime: bestCandidate.endTime,
+        blockedEndTime: Number.isFinite(bestCandidate.endTime)
+          ? bestCandidate.endTime + (ITEM_USE_COOLDOWN_DAYS * MS_PER_DAY)
+          : bestCandidate.endTime,
       });
       schedule.push({
         ...bestCandidate,
@@ -2327,12 +2294,65 @@ export default function OinkSoccerCalc() {
       ));
 
     const chronologicalRemainingCounts = { ...boostCounts };
+    const recalculateChronologicalItem = (item, plannedUseIndex) => {
+      const effectivenessPct = getBoostEffectivenessForPlannedUse(baseEffectivenessPct, plannedUseIndex);
+      const boostState = createPlannedItemBoostState({
+        boostKey: item.boostKey,
+        effectivenessPct,
+        applications: plannedUseIndex,
+      });
+      const boostedStats = calculateTeamScores(myTeam, myForm, boostState, myTactics);
+      const durationDays = Array.from(
+        { length: Math.max(0, (item.maxDays || 0) - (item.minDays || 0)) + 1 },
+        (_, index) => (item.minDays || 0) + index,
+      );
+      const baseFirst = projectFixture(item.fixture, baseStats);
+      const boostedFirst = projectFixture(item.fixture, boostedStats);
+      let seasonDelta = 0;
+      let expectedFixtureCount = 0;
+      let guaranteedFixtureCount = 0;
+      let maxFixtureCount = 0;
+
+      remainingMyFixtures.forEach((candidate) => {
+        const candidateTime = getFixtureTimeValue(candidate);
+        const coverageCount = durationDays.filter((days) => {
+          const endsAt = Number.isFinite(item.startTime)
+            ? getUtcDayExpiryTime(item.startTime, days)
+            : item.startTime;
+          return candidateTime >= item.startTime
+            && (candidateTime <= endsAt || candidate.game_key === item.fixture.game_key);
+        }).length;
+        const coverageChance = durationDays.length > 0 ? coverageCount / durationDays.length : 0;
+        if (coverageChance <= 0) return;
+        const base = projectFixture(candidate, baseStats);
+        const boosted = projectFixture(candidate, boostedStats);
+        if (!base || !boosted) return;
+        seasonDelta += (boosted.projection.win - base.projection.win) * coverageChance;
+        expectedFixtureCount += coverageChance;
+        if (coverageChance >= 1) guaranteedFixtureCount += 1;
+        maxFixtureCount += 1;
+      });
+
+      return {
+        ...item,
+        baseWin: baseFirst?.projection.win ?? item.baseWin,
+        boostedWin: boostedFirst?.projection.win ?? item.boostedWin,
+        delta: boostedFirst && baseFirst ? boostedFirst.projection.win - baseFirst.projection.win : item.delta,
+        seasonDelta,
+        effectivenessPct,
+        windowCount: expectedFixtureCount,
+        guaranteedWindowCount: guaranteedFixtureCount,
+        maxWindowCount: maxFixtureCount,
+        boostedStats,
+      };
+    };
+
     const plannedSchedule = sortedSchedule.map((item) => {
       const heldCount = boostCounts[item.boostKey] || item.heldCount || 0;
       const useNumber = heldCount - (chronologicalRemainingCounts[item.boostKey] || 0) + 1;
       chronologicalRemainingCounts[item.boostKey] = Math.max(0, (chronologicalRemainingCounts[item.boostKey] || 0) - 1);
       return {
-        ...item,
+        ...recalculateChronologicalItem(item, useNumber - 1),
         heldCount,
         useNumber,
         remainingAfterUse: chronologicalRemainingCounts[item.boostKey],
@@ -2524,13 +2544,57 @@ export default function OinkSoccerCalc() {
       currentSummary = nextSummary;
     });
 
+    const initialFinalRemainingCounts = { ...boostCounts };
+    const initialFinalSchedule = usefulSchedule.map((item) => {
+      const heldCount = boostCounts[item.boostKey] || item.heldCount || 0;
+      const useNumber = heldCount - (initialFinalRemainingCounts[item.boostKey] || 0) + 1;
+      initialFinalRemainingCounts[item.boostKey] = Math.max(0, (initialFinalRemainingCounts[item.boostKey] || 0) - 1);
+      return {
+        ...item,
+        heldCount,
+        useNumber,
+        remainingAfterUse: initialFinalRemainingCounts[item.boostKey],
+      };
+    });
+
+    const fullSummary = getProjectedSummary(initialFinalSchedule);
+    const fullPlacementGain = baseSummary.position && fullSummary.position ? Math.max(0, baseSummary.position - fullSummary.position) : 0;
+    let efficientSchedule = initialFinalSchedule;
+
+    if (initialFinalSchedule.length > 1) {
+      for (let count = 1; count <= initialFinalSchedule.length; count += 1) {
+        const prefix = initialFinalSchedule.slice(0, count);
+        const prefixSummary = getProjectedSummary(prefix);
+        const prefixPlacementGain = baseSummary.position && prefixSummary.position
+          ? Math.max(0, baseSummary.position - prefixSummary.position)
+          : 0;
+        const matchesPlacementTarget = fullPlacementGain > 0
+          && prefixPlacementGain >= fullPlacementGain
+          && prefixSummary.position <= fullSummary.position;
+        const baseBuffer = Number(baseSummary.promotionBuffer);
+        const fullBuffer = Number(fullSummary.promotionBuffer);
+        const prefixBuffer = Number(prefixSummary.promotionBuffer);
+        const matchesBufferTarget = fullPlacementGain === 0
+          && Number.isFinite(baseBuffer)
+          && Number.isFinite(fullBuffer)
+          && Number.isFinite(prefixBuffer)
+          && fullBuffer > baseBuffer
+          && prefixBuffer >= fullBuffer;
+
+        if (matchesPlacementTarget || matchesBufferTarget) {
+          efficientSchedule = prefix;
+          break;
+        }
+      }
+    }
+
     const finalRemainingCounts = { ...boostCounts };
-    const finalSchedule = usefulSchedule.map((item) => {
+    const finalSchedule = efficientSchedule.map((item) => {
       const heldCount = boostCounts[item.boostKey] || item.heldCount || 0;
       const useNumber = heldCount - (finalRemainingCounts[item.boostKey] || 0) + 1;
       finalRemainingCounts[item.boostKey] = Math.max(0, (finalRemainingCounts[item.boostKey] || 0) - 1);
       return {
-        ...item,
+        ...recalculateChronologicalItem(item, useNumber - 1),
         heldCount,
         useNumber,
         remainingAfterUse: finalRemainingCounts[item.boostKey],
@@ -2662,11 +2726,6 @@ export default function OinkSoccerCalc() {
                 >
                   <span>{tab.icon}</span>
                   <span>{tab.label}</span>
-                  {tab.key === 'bench' && (
-                    <span className="rounded-full border border-[#253040] bg-[#1a2233] px-1.5 py-0.5 text-[10px] leading-none text-[#9aa5bb]">
-                      {benchPool.length}
-                    </span>
-                  )}
                   {isActive && <span className="absolute bottom-0 left-2 right-2 h-0.5 rounded-t bg-[#00e676]" />}
                 </button>
               );
@@ -3192,42 +3251,6 @@ export default function OinkSoccerCalc() {
           </section>
         )}
 
-        {activeTab === 'bench' && (
-          <section id="tab-bench" className="space-y-4">
-            <div className="flex flex-wrap gap-2">
-              {['All', 'GK', 'DF', 'MF', 'FW'].map((pos) => {
-                const count = pos === 'All' ? benchPool.length : benchPool.filter((p) => p.pos === pos).length;
-                return (
-                  <button
-                    key={pos}
-                    onClick={() => setBenchFilter(pos)}
-                    className={`rounded-full border px-3 py-1 text-xs font-semibold ${benchFilter === pos ? 'border-[#253040] bg-[#161c28] text-[#e8edf5]' : 'border-[#1e2a3a] bg-[#111620] text-[#9aa5bb]'}`}
-                  >
-                    {pos} ({count})
-                  </button>
-                );
-              })}
-              <button onClick={toggleSort} className="rounded-md border border-[#1e2a3a] bg-[#161c28] p-1.5 text-[#9aa5bb]">
-                {benchSort === 'ovr_desc' ? <ArrowDownWideNarrow size={14} /> : <ArrowUpNarrowWide size={14} />}
-              </button>
-            </div>
-
-            {benchPlayers.map((p) => (
-              <PlayerRow
-                key={p.id}
-                player={p}
-                teamType="mySquad"
-                onInjuryOpen={() => openInjuryModal(p, 'mySquad')}
-                onRoleChange={(role) => handleRoleChange(p, role, 'mySquad')}
-                onSwap={() => handleSwap(p)}
-                isBench
-              />
-            ))}
-            {benchPlayers.length === 0 && (
-              <div className="rounded-md border border-dashed border-[#1e2a3a] p-4 text-sm text-[#6b7a94]">No bench players in this filter.</div>
-            )}
-          </section>
-        )}
       </main>
 
       {injuryModalState.open && (
