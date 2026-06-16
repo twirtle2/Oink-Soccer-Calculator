@@ -1849,7 +1849,7 @@ export default function OinkSoccerCalc() {
   const topSuggestion = activeSuggestionList[0] || null;
 
   const fixtureWinChances = useMemo(() => {
-    if (mySquad.length < 5 || upcomingFixtures.length === 0 || detectedMyTeamIds.length === 0) {
+    if (myTeam.length < 5 || upcomingFixtures.length === 0 || detectedMyTeamIds.length === 0) {
       return {};
     }
 
@@ -1879,35 +1879,28 @@ export default function OinkSoccerCalc() {
         oppTactics: DEFAULT_TACTICS,
         homeAdvantage: isHome ? 'home' : 'away',
       });
-      const matchupSuggestions = buildSettingsSuggestions(projection.win, {
-        oppStats: opponentStats,
-        oppForm: opponentFormation,
-        oppTactics: DEFAULT_TACTICS,
-        homeAdvantage: isHome ? 'home' : 'away',
-      });
-      const bestSuggestion = Object.values(matchupSuggestions)
-        .filter((suggestion) => suggestion?.formation)
-        .sort((a, b) => b.win - a.win)[0];
-      chances[fixture.game_key] = bestSuggestion
-        ? {
-          win: bestSuggestion.win,
-          myxG: bestSuggestion.myxG,
-          oppxG: bestSuggestion.oppxG,
-          source: 'best',
-        }
-        : { win: projection.win, myxG: projection.myxG, oppxG: projection.oppxG, source: 'current' };
+      chances[fixture.game_key] = { win: projection.win, myxG: projection.myxG, oppxG: projection.oppxG, source: 'current' };
     });
+
+    if (selectedFixtureKey && topSuggestion) {
+      chances[selectedFixtureKey] = {
+        win: topSuggestion.win,
+        myxG: topSuggestion.myxG,
+        oppxG: topSuggestion.oppxG,
+        source: 'best',
+      };
+    }
 
     return chances;
   }, [
-    buildSettingsSuggestions,
     detectedMyTeamIds,
     myForm,
     mySimulationBoostContext,
-    mySquad.length,
     myTactics,
     myTeam,
+    selectedFixtureKey,
     seasonTeams,
+    topSuggestion,
     upcomingFixtures,
   ]);
 
