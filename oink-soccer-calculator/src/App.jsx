@@ -2568,20 +2568,27 @@ export default function OinkSoccerCalc() {
         const prefixPlacementGain = baseSummary.position && prefixSummary.position
           ? Math.max(0, baseSummary.position - prefixSummary.position)
           : 0;
-        const matchesPlacementTarget = fullPlacementGain > 0
-          && prefixPlacementGain >= fullPlacementGain
-          && prefixSummary.position <= fullSummary.position;
         const baseBuffer = Number(baseSummary.promotionBuffer);
         const fullBuffer = Number(fullSummary.promotionBuffer);
         const prefixBuffer = Number(prefixSummary.promotionBuffer);
-        const matchesBufferTarget = fullPlacementGain === 0
+        const isStillBelowPromotion = Number(fullSummary.position) > 3;
+        const matchesPromotionGapTarget = isStillBelowPromotion
+          && Number.isFinite(fullBuffer)
+          && Number.isFinite(prefixBuffer)
+          && prefixBuffer >= fullBuffer;
+        const matchesPlacementTarget = !isStillBelowPromotion
+          && fullPlacementGain > 0
+          && prefixPlacementGain >= fullPlacementGain
+          && prefixSummary.position <= fullSummary.position;
+        const matchesBufferTarget = !isStillBelowPromotion
+          && fullPlacementGain === 0
           && Number.isFinite(baseBuffer)
           && Number.isFinite(fullBuffer)
           && Number.isFinite(prefixBuffer)
           && fullBuffer > baseBuffer
           && prefixBuffer >= fullBuffer;
 
-        if (matchesPlacementTarget || matchesBufferTarget) {
+        if (matchesPromotionGapTarget || matchesPlacementTarget || matchesBufferTarget) {
           efficientSchedule = prefix;
           break;
         }
