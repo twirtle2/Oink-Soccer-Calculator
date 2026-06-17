@@ -2107,6 +2107,38 @@ export default function OinkSoccerCalc() {
     const baseEffectivenessPct = Number.isFinite(liveEffectiveness) ? liveEffectiveness : 100;
     const boostCounts = Object.fromEntries(heldPerformanceItems.map((item) => [item.boostKey, item.count]));
     const selectedWindows = [];
+    const currentTeamMetaById = new Map(leagueTeams.map((team) => [team.teamId, team]));
+    const myCurrentPoints = detectedMyTeamIds.reduce((best, teamId) => {
+      const points = Number(currentTeamMetaById.get(teamId)?.currentPoints);
+      return Number.isFinite(points) ? Math.max(best, points) : best;
+    }, 0);
+    const getProjectedPoints = (projection) => {
+      const goalGap = projection.myxG - projection.oppxG;
+      if (Math.abs(goalGap) < 0.18) return { my: 1, opponent: 1 };
+      return goalGap > 0 ? { my: 3, opponent: 0 } : { my: 0, opponent: 3 };
+    };
+    const getOpponentLeverage = (opponentId) => {
+      const meta = currentTeamMetaById.get(opponentId);
+      const currentRank = Number(meta?.currentRank);
+      const currentPoints = Number(meta?.currentPoints);
+      let leverage = 1;
+
+      if (Number.isFinite(currentRank)) {
+        if (currentRank <= 3) leverage += 2.6;
+        else if (currentRank <= 6) leverage += 1.8;
+        else if (currentRank <= 8) leverage += 1.1;
+        else if (currentRank <= 12) leverage += 0.4;
+      }
+
+      if (Number.isFinite(currentPoints) && Number.isFinite(myCurrentPoints)) {
+        const pointsGap = currentPoints - myCurrentPoints;
+        if (pointsGap >= 0) leverage += 1.8;
+        else if (pointsGap >= -3) leverage += 1.2;
+        else if (pointsGap >= -6) leverage += 0.7;
+      }
+
+      return leverage;
+    };
 
     const getOpponentModel = (fixture) => {
       const isHome = myTeamIds.has(fixture.home_team_id);
@@ -2119,6 +2151,7 @@ export default function OinkSoccerCalc() {
         : 'Pyramid';
       const opponentStats = calculateTeamScores(opponentModel.players, opponentFormation, TEAM_BOOST_STATE_EMPTY, DEFAULT_TACTICS);
       return {
+        opponentId,
         isHome,
         opponentName: isHome ? fixture.away_team_name : fixture.home_team_name,
         opponentFormation,
@@ -2199,13 +2232,26 @@ export default function OinkSoccerCalc() {
       let expectedFixtureCount = 0;
       let guaranteedFixtureCount = 0;
       let maxFixtureCount = 0;
+      let standingsLeverage = 0;
+      let rivalCoverage = 0;
 
       windowFixtures.forEach((candidate, windowIndex) => {
         const base = projectFixture(candidate.fixture, baseStats);
         const boosted = projectFixture(candidate.fixture, boostedStats);
         if (!base || !boosted) return;
         const delta = boosted.projection.win - base.projection.win;
+        const basePoints = getProjectedPoints(base.projection);
+        const boostedPoints = getProjectedPoints(boosted.projection);
+        const myPointsGain = boostedPoints.my - basePoints.my;
+        const opponentPointsDenied = basePoints.opponent - boostedPoints.opponent;
+        const opponentLeverage = getOpponentLeverage(base.opponent.opponentId);
         seasonDelta += delta * candidate.coverageChance;
+        standingsLeverage += (
+          (myPointsGain * 8)
+          + (opponentPointsDenied * opponentLeverage * 6)
+          + (delta * 0.04)
+        ) * candidate.coverageChance;
+        rivalCoverage += opponentLeverage * candidate.coverageChance;
         expectedFixtureCount += candidate.coverageChance;
         if (candidate.coverageChance >= 1) guaranteedFixtureCount += 1;
         maxFixtureCount += 1;
@@ -2215,7 +2261,7 @@ export default function OinkSoccerCalc() {
         }
       });
 
-      if (seasonDelta <= 0.05 || expectedFixtureCount === 0) return null;
+      if (expectedFixtureCount === 0 || (seasonDelta <= 0.05 && standingsLeverage <= 0)) return null;
       return {
         fixture,
         boostKey: item.boostKey,
@@ -2226,6 +2272,8 @@ export default function OinkSoccerCalc() {
         boostedWin: firstBoostedWin,
         delta: firstFixtureDelta,
         seasonDelta,
+        standingsLeverage,
+        rivalCoverage,
         effectivenessPct,
         windowCount: expectedFixtureCount,
         guaranteedWindowCount: guaranteedFixtureCount,
@@ -2256,11 +2304,18 @@ export default function OinkSoccerCalc() {
             plannedUseIndex: plannedBoostedDaysForSelection,
           });
           if (!candidate) return;
+          const leverageDelta = candidate.standingsLeverage - (bestCandidate?.standingsLeverage ?? 0);
+          const seasonDeltaGap = candidate.seasonDelta - (bestCandidate?.seasonDelta ?? 0);
           if (
             !bestCandidate
-            || candidate.seasonDelta > bestCandidate.seasonDelta
+            || leverageDelta > 0.001
             || (
-              candidate.seasonDelta === bestCandidate.seasonDelta
+              Math.abs(leverageDelta) <= 0.001
+              && seasonDeltaGap > 0.001
+            )
+            || (
+              Math.abs(leverageDelta) <= 0.001
+              && Math.abs(seasonDeltaGap) <= 0.001
               && getFixtureTimeValue(candidate.fixture) < getFixtureTimeValue(bestCandidate.fixture)
             )
           ) {
@@ -2307,6 +2362,8 @@ export default function OinkSoccerCalc() {
       const baseFirst = projectFixture(item.fixture, baseStats);
       const boostedFirst = projectFixture(item.fixture, boostedStats);
       let seasonDelta = 0;
+      let standingsLeverage = 0;
+      let rivalCoverage = 0;
       let expectedFixtureCount = 0;
       let guaranteedFixtureCount = 0;
       let maxFixtureCount = 0;
@@ -2325,7 +2382,19 @@ export default function OinkSoccerCalc() {
         const base = projectFixture(candidate, baseStats);
         const boosted = projectFixture(candidate, boostedStats);
         if (!base || !boosted) return;
-        seasonDelta += (boosted.projection.win - base.projection.win) * coverageChance;
+        const delta = boosted.projection.win - base.projection.win;
+        const basePoints = getProjectedPoints(base.projection);
+        const boostedPoints = getProjectedPoints(boosted.projection);
+        const myPointsGain = boostedPoints.my - basePoints.my;
+        const opponentPointsDenied = basePoints.opponent - boostedPoints.opponent;
+        const opponentLeverage = getOpponentLeverage(base.opponent.opponentId);
+        seasonDelta += delta * coverageChance;
+        standingsLeverage += (
+          (myPointsGain * 8)
+          + (opponentPointsDenied * opponentLeverage * 6)
+          + (delta * 0.04)
+        ) * coverageChance;
+        rivalCoverage += opponentLeverage * coverageChance;
         expectedFixtureCount += coverageChance;
         if (coverageChance >= 1) guaranteedFixtureCount += 1;
         maxFixtureCount += 1;
@@ -2337,6 +2406,8 @@ export default function OinkSoccerCalc() {
         boostedWin: boostedFirst?.projection.win ?? item.boostedWin,
         delta: boostedFirst && baseFirst ? boostedFirst.projection.win - baseFirst.projection.win : item.delta,
         seasonDelta,
+        standingsLeverage,
+        rivalCoverage,
         effectivenessPct,
         windowCount: expectedFixtureCount,
         guaranteedWindowCount: guaranteedFixtureCount,
@@ -3091,7 +3162,7 @@ export default function OinkSoccerCalc() {
             <div className="rounded-[10px] border border-[#1e2a3a] bg-[#161c28] p-4">
               <div className="text-[11px] font-bold uppercase tracking-[0.14em] text-[#ffab00]">Item Timing</div>
               <div className="mt-1 text-xs text-[#6b7a94]">
-                Planned using held items, active windows, and diminishing effectiveness. Uses are kept when they improve final place or protect a fragile promotion buffer.
+                Planned using held items, active windows, cooldowns, direct-rival leverage, and diminishing effectiveness. Uses are kept when they improve final place or protect a fragile promotion buffer.
               </div>
 
               {itemPlanSummary && (
@@ -3164,6 +3235,9 @@ export default function OinkSoccerCalc() {
                     </div>
                     <div className="mt-2 text-xs text-[#9aa5bb]">
                       First match: {formatNumber(item.baseWin)}% to {formatNumber(item.boostedWin)}%. Expected coverage {formatNumber(item.windowCount)} fixture-equivalent{Number(item.windowCount) === 1 ? '' : 's'} ({item.guaranteedWindowCount}-{item.maxWindowCount} possible over {item.minDays}-{item.maxDays} days) at {formatNumber(item.effectivenessPct)}% effectiveness.
+                      {Number(item.rivalCoverage) > 0 ? (
+                        <> Rival leverage {formatNumber(item.rivalCoverage)}.</>
+                      ) : null}
                       {item.planBasePoints !== null && item.planProjectedPoints !== null ? (
                         <> Item plan projects {formatNumber(item.planBasePoints, 0)} → {formatNumber(item.planProjectedPoints, 0)} pts.</>
                       ) : null}

@@ -613,13 +613,15 @@ export const fetchLeagueTableTeams = async (leagueId) => {
 
   const rows = payload?.rows || [];
   const teams = rows
-    .map((row) => {
+    .map((row, index) => {
       const teamId = normalizeTeamId(row?.team_id);
       if (!teamId) return null;
       return {
         leagueId: String(leagueId),
         teamId,
         teamName: row?.team_name || teamId,
+        currentRank: index + 1,
+        currentPoints: Number(row?.points ?? 0),
       };
     })
     .filter(Boolean)
