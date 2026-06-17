@@ -800,8 +800,8 @@ const getHeldPerformanceItems = (heldItems) => (
     .filter((item) => item.boostKey && item.count > 0 && BOOSTS[item.boostKey])
 );
 
-const createPlannedItemBoostState = ({ boostKey, effectivenessPct, applications }) => {
-  const state = createManualFallbackBoostState(boostKey, applications + 1);
+const createPlannedItemBoostState = ({ boostKey, effectivenessPct }) => {
+  const state = createManualFallbackBoostState(boostKey, 1);
   return {
     ...state,
     source: 'live',
@@ -810,12 +810,12 @@ const createPlannedItemBoostState = ({ boostKey, effectivenessPct, applications 
   };
 };
 
-const getBoostEffectivenessForPlannedUse = (baseEffectivenessPct, plannedUseIndex) => {
+const getBoostEffectivenessForPlannedUse = (baseEffectivenessPct, plannedBoostedDays) => {
   const parsedBase = baseEffectivenessPct === null || baseEffectivenessPct === undefined
     ? Number.NaN
     : Number(baseEffectivenessPct);
   const base = Number.isFinite(parsedBase) ? parsedBase : 100;
-  const decay = Math.max(DR_MIN, Math.pow(DR_DECAY, plannedUseIndex));
+  const decay = Math.max(DR_MIN, Math.pow(DR_DECAY, Math.max(0, Number(plannedBoostedDays) || 0)));
   return Math.max(0, Math.min(100, base * decay));
 };
 
@@ -2152,6 +2152,11 @@ export default function OinkSoccerCalc() {
       const maxDays = Math.max(minDays, Math.floor(Number(item.maxDays ?? minDays)));
       return Array.from({ length: (maxDays - minDays) + 1 }, (_, index) => minDays + index);
     };
+    const getExpectedBoostedDays = (item) => {
+      const durationDays = getDurationDays(item);
+      if (durationDays.length === 0) return 0;
+      return (durationDays[0] + durationDays[durationDays.length - 1]) / 2;
+    };
 
     const evaluateCandidate = ({ fixture, startIndex, item, plannedUseIndex }) => {
       const baseFirst = projectFixture(fixture, baseStats);
@@ -2168,7 +2173,6 @@ export default function OinkSoccerCalc() {
       const boostState = createPlannedItemBoostState({
         boostKey: item.boostKey,
         effectivenessPct,
-        applications: plannedUseIndex,
       });
       const boostedStats = calculateTeamScores(myTeam, myForm, boostState, myTactics);
       const windowFixtures = remainingMyFixtures
@@ -2238,6 +2242,7 @@ export default function OinkSoccerCalc() {
     const maxPlannedUses = heldPerformanceItems.reduce((sum, item) => sum + item.count, 0);
     const remainingCounts = { ...boostCounts };
     const schedule = [];
+    let plannedBoostedDaysForSelection = 0;
 
     for (let plannedUseIndex = 0; plannedUseIndex < maxPlannedUses; plannedUseIndex += 1) {
       let bestCandidate = null;
@@ -2248,7 +2253,7 @@ export default function OinkSoccerCalc() {
             fixture,
             startIndex,
             item,
-            plannedUseIndex,
+            plannedUseIndex: plannedBoostedDaysForSelection,
           });
           if (!candidate) return;
           if (
@@ -2265,6 +2270,7 @@ export default function OinkSoccerCalc() {
       });
 
       if (!bestCandidate) break;
+      plannedBoostedDaysForSelection += getExpectedBoostedDays(bestCandidate);
       remainingCounts[bestCandidate.boostKey] = Math.max(0, remainingCounts[bestCandidate.boostKey] - 1);
       selectedWindows.push({
         startTime: bestCandidate.startTime,
@@ -2292,7 +2298,6 @@ export default function OinkSoccerCalc() {
       const boostState = createPlannedItemBoostState({
         boostKey: item.boostKey,
         effectivenessPct,
-        applications: plannedUseIndex,
       });
       const boostedStats = calculateTeamScores(myTeam, myForm, boostState, myTactics);
       const durationDays = Array.from(
@@ -2340,12 +2345,15 @@ export default function OinkSoccerCalc() {
       };
     };
 
+    let chronologicalBoostedDays = 0;
     const plannedSchedule = sortedSchedule.map((item) => {
       const heldCount = boostCounts[item.boostKey] || item.heldCount || 0;
       const useNumber = heldCount - (chronologicalRemainingCounts[item.boostKey] || 0) + 1;
+      const plannedBoostedDays = chronologicalBoostedDays;
+      chronologicalBoostedDays += getExpectedBoostedDays(item);
       chronologicalRemainingCounts[item.boostKey] = Math.max(0, (chronologicalRemainingCounts[item.boostKey] || 0) - 1);
       return {
-        ...recalculateChronologicalItem(item, useNumber - 1),
+        ...recalculateChronologicalItem(item, plannedBoostedDays),
         heldCount,
         useNumber,
         remainingAfterUse: chronologicalRemainingCounts[item.boostKey],
@@ -2589,12 +2597,15 @@ export default function OinkSoccerCalc() {
     }
 
     const finalRemainingCounts = { ...boostCounts };
+    let finalBoostedDays = 0;
     const finalSchedule = efficientSchedule.map((item) => {
       const heldCount = boostCounts[item.boostKey] || item.heldCount || 0;
       const useNumber = heldCount - (finalRemainingCounts[item.boostKey] || 0) + 1;
+      const plannedBoostedDays = finalBoostedDays;
+      finalBoostedDays += getExpectedBoostedDays(item);
       finalRemainingCounts[item.boostKey] = Math.max(0, (finalRemainingCounts[item.boostKey] || 0) - 1);
       return {
-        ...recalculateChronologicalItem(item, useNumber - 1),
+        ...recalculateChronologicalItem(item, plannedBoostedDays),
         heldCount,
         useNumber,
         remainingAfterUse: finalRemainingCounts[item.boostKey],
