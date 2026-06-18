@@ -819,6 +819,111 @@ const getBoostEffectivenessForPlannedUse = (baseEffectivenessPct, plannedBoosted
   return Math.max(0, Math.min(100, base * decay));
 };
 
+const getBoostEntry = (entry) => entry?.boost || entry || {};
+
+const nearlyEqual = (a, b, epsilon = 0.0001) => Math.abs(Number(a) - Number(b)) <= epsilon;
+
+const getLiveBoostItemDefinition = (entry) => {
+  const boost = getBoostEntry(entry);
+  const boostType = String(boost.boost_type || '').toLowerCase();
+  const boostPosition = String(boost.boost_position || '').toLowerCase();
+  const minBoost = Number(boost.min_boost);
+  const maxBoost = Number(boost.max_boost);
+
+  return WALLET_ITEM_DEFINITIONS.find((item) => {
+    if (!item.boostKey) return false;
+    const rule = BOOSTS[item.boostKey];
+    if (!rule) return false;
+
+    const expectedType = rule.type === 'CTL' ? 'Position Boost' : 'Team Boost';
+    const expectedPosition = rule.type === 'CTL' ? 'midfield' : '';
+    const typeMatches = expectedType === 'Team Boost'
+      ? boostType.includes('team')
+      : boostType.includes('position');
+
+    return typeMatches
+      && (expectedType !== 'Position Boost' || boostPosition === expectedPosition)
+      && nearlyEqual(minBoost, rule.min)
+      && nearlyEqual(maxBoost, rule.max);
+  }) || null;
+};
+
+const readTimeField = (entry, fieldNames) => {
+  const boost = getBoostEntry(entry);
+  for (const source of [entry, boost]) {
+    if (!source || typeof source !== 'object') continue;
+    for (const fieldName of fieldNames) {
+      const raw = source[fieldName];
+      if (!raw) continue;
+      const value = new Date(raw).getTime();
+      if (Number.isFinite(value)) return value;
+    }
+  }
+  return null;
+};
+
+const getActiveBoostWindows = (teamBoostState, now = Date.now()) => {
+  if (teamBoostState?.source !== 'live' || !Array.isArray(teamBoostState.boosts)) {
+    return [];
+  }
+
+  return teamBoostState.boosts
+    .map((entry, index) => {
+      const item = getLiveBoostItemDefinition(entry);
+      if (!item) return null;
+
+      const startTime = readTimeField(entry, [
+        'starts_at',
+        'started_at',
+        'start_time',
+        'startedAt',
+        'startTime',
+        'activated_at',
+        'activatedAt',
+        'used_at',
+        'usedAt',
+        'created_at',
+        'createdAt',
+      ]) || now;
+      const explicitEndTime = readTimeField(entry, [
+        'expires',
+        'expires_at',
+        'expiresAt',
+        'ends_at',
+        'endsAt',
+        'end_time',
+        'endTime',
+        'active_until',
+        'activeUntil',
+      ]);
+      const maxDays = Math.max(0, Number(item.maxDays || 0));
+      const endTime = explicitEndTime || getUtcDayExpiryTime(startTime, maxDays);
+
+      return {
+        key: `${item.key}-${index}`,
+        ...item,
+        startTime,
+        endTime,
+        explicitEndTime: Boolean(explicitEndTime),
+        effectivenessPct: teamBoostState.effectivenessPct,
+      };
+    })
+    .filter(Boolean);
+};
+
+const getFixtureActiveBoost = (fixture, activeBoostWindows) => {
+  if (!fixture || activeBoostWindows.length === 0) return null;
+  const fixtureTime = getFixtureTimeValue(fixture);
+  return activeBoostWindows.find((window) => (
+    fixtureTime >= window.startTime
+    && fixtureTime <= window.endTime
+  )) || null;
+};
+
+const getFixtureKeySet = (fixture) => new Set(
+  [fixture?.game_key, fixture?.source_game_key].filter(Boolean).map(String),
+);
+
 export default function OinkSoccerCalc() {
   const { wallets } = useWallet();
   const persistedState = useMemo(() => loadCalculatorState(), []);
@@ -1026,6 +1131,11 @@ export default function OinkSoccerCalc() {
       ? myBoostState
       : createManualFallbackBoostState(myBoost, myBoostApps, myBoostState.fetchError)
   ), [hasLiveMyTeamBoosts, myBoost, myBoostApps, myBoostState]);
+
+  const activeBoostWindows = useMemo(
+    () => getActiveBoostWindows(myBoostState),
+    [myBoostState],
+  );
 
   const oppBoostContext = useMemo(() => (
     oppBoostState.source === 'live'
@@ -1848,6 +1958,34 @@ export default function OinkSoccerCalc() {
 
   const topSuggestion = activeSuggestionList[0] || null;
 
+  const activeBoostsByFixture = useMemo(() => {
+    if (activeBoostWindows.length === 0 || upcomingFixtures.length === 0 || detectedMyTeamIds.length === 0) {
+      return {};
+    }
+
+    const myTeams = new Set(detectedMyTeamIds);
+    const byFixture = {};
+    upcomingFixtures.forEach((fixture) => {
+      if (!myTeams.has(fixture.home_team_id) && !myTeams.has(fixture.away_team_id)) return;
+      const activeBoost = getFixtureActiveBoost(fixture, activeBoostWindows);
+      if (!activeBoost || !fixture.game_key) return;
+      byFixture[fixture.game_key] = activeBoost;
+    });
+    return byFixture;
+  }, [activeBoostWindows, detectedMyTeamIds, upcomingFixtures]);
+
+  const activeBoostSummaryRows = useMemo(() => (
+    activeBoostWindows.map((window) => {
+      const fixtureCount = Object.values(activeBoostsByFixture)
+        .filter((activeBoost) => activeBoost.key === window.key)
+        .length;
+      return {
+        ...window,
+        fixtureCount,
+      };
+    })
+  ), [activeBoostWindows, activeBoostsByFixture]);
+
   const fixtureWinChances = useMemo(() => {
     if (myTeam.length < 5 || upcomingFixtures.length === 0 || detectedMyTeamIds.length === 0) {
       return {};
@@ -1882,22 +2020,51 @@ export default function OinkSoccerCalc() {
       chances[fixture.game_key] = { win: projection.win, myxG: projection.myxG, oppxG: projection.oppxG, source: 'current' };
     });
 
-    if (selectedFixtureKey && topSuggestion) {
-      chances[selectedFixtureKey] = {
-        win: topSuggestion.win,
-        myxG: topSuggestion.myxG,
-        oppxG: topSuggestion.oppxG,
-        source: 'best',
-      };
+    if (topSuggestion) {
+      const selectedKeys = new Set(selectedFixtureKey ? [String(selectedFixtureKey)] : []);
+      const selectedFixtureKeys = getFixtureKeySet(selectedFixture);
+      selectedFixtureKeys.forEach((key) => selectedKeys.add(key));
+
+      const selectedOpponentId = selectedFixture
+        ? myTeams.has(selectedFixture.home_team_id)
+          ? selectedFixture.away_team_id
+          : selectedFixture.home_team_id
+        : importedOpponentTeamId;
+      const selectedHomeAdvantage = selectedFixture
+        ? myTeams.has(selectedFixture.away_team_id) ? 'away' : 'home'
+        : homeAdvantage;
+
+      upcomingFixtures.forEach((fixture) => {
+        const fixtureKeys = getFixtureKeySet(fixture);
+        const keyMatches = Array.from(fixtureKeys).some((key) => selectedKeys.has(key));
+        const isHome = myTeams.has(fixture.home_team_id);
+        const isAway = myTeams.has(fixture.away_team_id);
+        const opponentId = isHome ? fixture.away_team_id : fixture.home_team_id;
+        const fixtureHomeAdvantage = isAway ? 'away' : 'home';
+        const matchupMatches = selectedOpponentId
+          && opponentId === selectedOpponentId
+          && fixtureHomeAdvantage === selectedHomeAdvantage;
+
+        if (!fixture.game_key || (!keyMatches && !matchupMatches)) return;
+        chances[fixture.game_key] = {
+          win: topSuggestion.win,
+          myxG: topSuggestion.myxG,
+          oppxG: topSuggestion.oppxG,
+          source: 'best',
+        };
+      });
     }
 
     return chances;
   }, [
     detectedMyTeamIds,
+    homeAdvantage,
+    importedOpponentTeamId,
     myForm,
     mySimulationBoostContext,
     myTactics,
     myTeam,
+    selectedFixture,
     selectedFixtureKey,
     seasonTeams,
     topSuggestion,
@@ -3047,6 +3214,35 @@ export default function OinkSoccerCalc() {
                 </div>
               </div>
 
+              {activeBoostSummaryRows.length > 0 && (
+                <div className="mt-4 space-y-2 rounded-md border border-[#00e676]/25 bg-[#0f2a1b]/70 p-3">
+                  <div className="text-[10px] font-bold uppercase tracking-[0.14em] text-[#00e676]">Active Item Boosts</div>
+                  {activeBoostSummaryRows.map((item) => (
+                    <div key={item.key} className="flex flex-wrap items-center justify-between gap-2 text-xs">
+                      <div className="flex min-w-0 items-center gap-2">
+                        <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded border border-[#00e676]/25 bg-[#111620] text-base">
+                          {item.icon || '⬢'}
+                        </span>
+                        <div className="min-w-0">
+                          <div className="font-semibold text-[#e8edf5]">{item.label}</div>
+                          <div className="text-[#9aa5bb]">
+                            {formatNumber(item.effectivenessPct ?? 100)}% effectiveness
+                          </div>
+                        </div>
+                      </div>
+                      <div className="text-right text-[#9af7cb]">
+                        <div className="font-semibold">
+                          Eligible for {item.fixtureCount} upcoming fixture{item.fixtureCount === 1 ? '' : 's'}
+                        </div>
+                        <div className="text-[#7f8aa3]">
+                          Until {formatFixtureTime(item.endTime)}
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+
               <FixtureTableSection
                 title="Upcoming Fixtures"
                 fixtures={upcomingFixtures}
@@ -3054,6 +3250,7 @@ export default function OinkSoccerCalc() {
                 detectedMyTeamIds={detectedMyTeamIds}
                 fixtureWinChances={fixtureWinChances}
                 plannedItemsByFixture={plannedItemsByFixture}
+                activeBoostsByFixture={activeBoostsByFixture}
                 loading={fixturesLoading}
                 emptyText={connectedAddresses.length > 0
                   ? 'No upcoming fixtures found for the connected wallet team.'
@@ -3068,6 +3265,7 @@ export default function OinkSoccerCalc() {
                 detectedMyTeamIds={detectedMyTeamIds}
                 fixtureWinChances={fixtureWinChances}
                 plannedItemsByFixture={plannedItemsByFixture}
+                activeBoostsByFixture={{}}
                 loading={false}
                 emptyText="No completed matches found for this season."
                 onSelect={(fixture) => void handleSelectFixture(fixture)}
@@ -3373,7 +3571,18 @@ export default function OinkSoccerCalc() {
 }
 // --- Components ---
 
-function FixtureTableSection({ title, fixtures, selectedFixtureKey, detectedMyTeamIds, fixtureWinChances = {}, plannedItemsByFixture = {}, loading, emptyText, onSelect }) {
+function FixtureTableSection({
+  title,
+  fixtures,
+  selectedFixtureKey,
+  detectedMyTeamIds,
+  fixtureWinChances = {},
+  plannedItemsByFixture = {},
+  activeBoostsByFixture = {},
+  loading,
+  emptyText,
+  onSelect,
+}) {
   const myTeams = new Set(detectedMyTeamIds);
 
   return (
@@ -3407,6 +3616,7 @@ function FixtureTableSection({ title, fixtures, selectedFixtureKey, detectedMyTe
             : 'vs';
           const chance = fixtureWinChances[fixture.game_key];
           const plannedItem = plannedItemsByFixture[fixture.game_key];
+          const activeBoost = activeBoostsByFixture[fixture.game_key];
 
           return (
             <button
@@ -3441,7 +3651,16 @@ function FixtureTableSection({ title, fixtures, selectedFixtureKey, detectedMyTe
                     Lineup pending
                   </span>
                 ) : null}
-                {!fixture.game_result && plannedItem ? (
+                {!fixture.game_result && activeBoost ? (
+                  <span
+                    className="mt-1 inline-flex items-center gap-1 rounded border border-[#00e676]/35 bg-[#00e676]/10 px-1.5 py-0.5 text-[10px] font-bold text-[#9af7cb]"
+                    title={`${activeBoost.label} active until ${formatFixtureTime(activeBoost.endTime)}`}
+                    aria-label={`${activeBoost.label} active for this fixture`}
+                  >
+                    <span className="text-[13px] leading-none">{activeBoost.icon || '⬢'}</span>
+                    <span>Active</span>
+                  </span>
+                ) : !fixture.game_result && plannedItem ? (
                   <span
                     className="mt-1 inline-flex items-center gap-1 rounded border border-[#ffab00]/35 bg-[#ffab00]/10 px-1.5 py-0.5 text-[10px] font-bold text-[#ffcf66]"
                     title={`${plannedItem.label} use ${plannedItem.useNumber || 1} of ${formatNumber(plannedItem.heldCount, 0)}`}
@@ -3486,9 +3705,27 @@ function TeamFormationCard({ title, subtitle, suggestion, emptyText, tone = 'my'
         {suggestion.isDefaultLineup ? (
           <div className="mt-2 text-xs text-[#9aa5bb]">Default 55 OVR players used for projection.</div>
         ) : null}
+        <TacticsSummaryChips
+          tactics={suggestion.tactics}
+          setPiecePlayer={details.setPiecePlayer}
+          className="mt-3"
+        />
       </div>
       <FormationPitch suggestion={suggestion} details={details} />
     </section>
+  );
+}
+
+function TacticsSummaryChips({ tactics, setPiecePlayer, className = '' }) {
+  const normalizedTactics = normalizeTactics(tactics);
+
+  return (
+    <div className={`flex flex-wrap gap-2 text-xs text-[#d0d7e5] ${className}`}>
+      <span className="rounded border border-[#253040] bg-[#161c28] px-2 py-1">Press {TACTICS.press[normalizedTactics.press]?.label}</span>
+      <span className="rounded border border-[#253040] bg-[#161c28] px-2 py-1">Tempo {TACTICS.tempo[normalizedTactics.tempo]?.label}</span>
+      <span className="rounded border border-[#253040] bg-[#161c28] px-2 py-1">Line {TACTICS.lineHeight[normalizedTactics.lineHeight]?.label}</span>
+      <span className="rounded border border-[#253040] bg-[#161c28] px-2 py-1">Set pieces {setPiecePlayer?.name || 'Auto'}</span>
+    </div>
   );
 }
 
@@ -3562,12 +3799,11 @@ function BestSetupCard({ suggestion, analyzing, canAnalyze }) {
           <div className="mt-1 font-['Barlow_Condensed'] text-[26px] font-black leading-none text-[#e8edf5]">
             {details.formation}
           </div>
-          <div className="mt-2 flex flex-wrap gap-2 text-xs text-[#d0d7e5]">
-            <span className="rounded border border-[#253040] bg-[#161c28] px-2 py-1">Press {TACTICS.press[suggestion.tactics.press]?.label}</span>
-            <span className="rounded border border-[#253040] bg-[#161c28] px-2 py-1">Tempo {TACTICS.tempo[suggestion.tactics.tempo]?.label}</span>
-            <span className="rounded border border-[#253040] bg-[#161c28] px-2 py-1">Line {TACTICS.lineHeight[suggestion.tactics.lineHeight]?.label}</span>
-            <span className="rounded border border-[#253040] bg-[#161c28] px-2 py-1">Set pieces {details.setPiecePlayer?.name || 'Auto'}</span>
-          </div>
+          <TacticsSummaryChips
+            tactics={suggestion.tactics}
+            setPiecePlayer={details.setPiecePlayer}
+            className="mt-2"
+          />
         </div>
       </div>
       <FormationPitch suggestion={suggestion} details={details} />
