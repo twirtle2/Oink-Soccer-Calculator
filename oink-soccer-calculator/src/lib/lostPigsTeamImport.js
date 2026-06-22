@@ -648,6 +648,20 @@ export const fetchTeamActiveBoosts = async (teamId) => {
   return Array.isArray(payload?.boosts) ? payload.boosts : [];
 };
 
+export const fetchTeamBoostCooldown = async (teamId) => {
+  const normalizedTeamId = normalizeTeamId(teamId);
+  if (!normalizedTeamId) {
+    throw new Error('Invalid teamId for boost cooldown fetch.');
+  }
+
+  const payload = await fetchJsonOrThrow(
+    `/soccer/team/${encodeURIComponent(normalizedTeamId)}/boosts/cooldown`,
+    'Team boost cooldown not found.',
+  );
+  const cooldown = typeof payload?.cooldown === 'string' ? payload.cooldown : null;
+  return Number.isFinite(new Date(cooldown || '').getTime()) ? cooldown : null;
+};
+
 export const fetchTeamBoostEffectiveness = async (teamId, leagueId, season) => {
   const normalizedTeamId = normalizeTeamId(teamId);
   if (!normalizedTeamId) {
@@ -683,15 +697,17 @@ export const fetchTeamBoostState = async ({ teamId, leagueId, season }) => {
   }
 
   const normalizedSeason = normalizeSeasonValue(season);
-  const [boosts, effectiveness] = await Promise.all([
+  const [boosts, effectiveness, cooldownUntil] = await Promise.all([
     fetchTeamActiveBoosts(normalizedTeamId),
     fetchTeamBoostEffectiveness(normalizedTeamId, normalizedLeagueId, normalizedSeason),
+    fetchTeamBoostCooldown(normalizedTeamId).catch(() => null),
   ]);
 
   return {
     source: 'live',
     daysBoosted: Number(effectiveness?.days_boosted ?? 0),
     effectivenessPct: Number(effectiveness?.boost_effectiveness ?? 100),
+    cooldownUntil,
     boosts: Array.isArray(boosts) ? boosts : [],
     fetchError: null,
   };

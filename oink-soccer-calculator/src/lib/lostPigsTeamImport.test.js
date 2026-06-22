@@ -11,6 +11,7 @@ import {
   fetchTeamLineup,
   fetchTeamActiveBoosts,
   fetchTeamBoostEffectiveness,
+  fetchTeamBoostCooldown,
   fetchTeamBoostState,
 } from './lostPigsTeamImport.js';
 
@@ -530,6 +531,16 @@ test('fetchTeamBoostEffectiveness returns normalized fields', async () => {
   });
 });
 
+test('fetchTeamBoostCooldown returns the live cooldown timestamp', async () => {
+  await withMockedFetch(async (url) => {
+    assert.match(String(url), /\/soccer\/team\/AlgorandAsset%3A123\/boosts\/cooldown$/);
+    return okResponse({ cooldown: '2026-06-23T23:59:59Z' });
+  }, async () => {
+    const cooldown = await fetchTeamBoostCooldown('AlgorandAsset:123');
+    assert.equal(cooldown, '2026-06-23T23:59:59Z');
+  });
+});
+
 test('fetchTeamBoostState combines active boosts with effectiveness', async () => {
   const calls = [];
   await withMockedFetch(async (url) => {
@@ -553,6 +564,9 @@ test('fetchTeamBoostState combines active boosts with effectiveness', async () =
     if (text.includes('/days-boosted')) {
       return okResponse({ days_boosted: 16, boost_effectiveness: 61 });
     }
+    if (text.endsWith('/boosts/cooldown')) {
+      return okResponse({ cooldown: '2026-06-23T23:59:59Z' });
+    }
     return {
       ok: false,
       status: 404,
@@ -568,8 +582,9 @@ test('fetchTeamBoostState combines active boosts with effectiveness', async () =
     assert.equal(state.source, 'live');
     assert.equal(state.daysBoosted, 16);
     assert.equal(state.effectivenessPct, 61);
+    assert.equal(state.cooldownUntil, '2026-06-23T23:59:59Z');
     assert.equal(state.boosts.length, 1);
     assert.equal(state.fetchError, null);
-    assert.equal(calls.length, 2);
+    assert.equal(calls.length, 3);
   });
 });

@@ -20,8 +20,7 @@ const DEFAULT_STATE = {
   },
   myBoost: 'None',
   myBoostApps: 1,
-  // Seed the current item's known cooldown. It can be changed or cleared in Item Timing.
-  itemCooldownUntil: '2026-06-23T23:59:59.000Z',
+  itemCooldownUntil: null,
   homeAdvantage: 'home',
   walletSyncMeta: {
     lastSyncedAt: null,

@@ -1157,14 +1157,17 @@ export default function OinkSoccerCalc() {
 
   const itemCooldownEndTime = useMemo(() => {
     const savedCooldownEndTime = getTimestamp(itemCooldownUntil);
+    const liveCooldownEndTime = myBoostState?.source === 'live'
+      ? getTimestamp(myBoostState.cooldownUntil)
+      : null;
     const activeBoostCooldownEndTime = activeBoostWindows.reduce((latest, window) => (
       Number.isFinite(Number(window.endTime))
         ? Math.max(latest, Number(window.endTime) + (ITEM_USE_COOLDOWN_DAYS * MS_PER_DAY))
         : latest
     ), 0);
-    const endTime = Math.max(savedCooldownEndTime || 0, activeBoostCooldownEndTime);
+    const endTime = Math.max(savedCooldownEndTime || 0, liveCooldownEndTime || 0, activeBoostCooldownEndTime);
     return endTime > Date.now() ? endTime : null;
-  }, [activeBoostWindows, itemCooldownUntil]);
+  }, [activeBoostWindows, itemCooldownUntil, myBoostState]);
 
   const oppBoostContext = useMemo(() => (
     oppBoostState.source === 'live'
@@ -3412,7 +3415,7 @@ export default function OinkSoccerCalc() {
                     step="1"
                     aria-label="Item cooldown ends"
                     className="min-h-9 rounded-md border border-[#5b4820] bg-[#111620] px-2 text-xs text-[#e8edf5] outline-none focus:border-[#ffab00]"
-                    value={formatDateTimeLocalValue(itemCooldownUntil)}
+                    value={formatDateTimeLocalValue(itemCooldownUntil || myBoostState.cooldownUntil)}
                     onChange={(event) => {
                       const timestamp = getTimestamp(event.target.value);
                       setItemCooldownUntil(timestamp ? new Date(timestamp).toISOString() : null);

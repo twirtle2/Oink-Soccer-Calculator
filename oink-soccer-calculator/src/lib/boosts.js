@@ -39,6 +39,7 @@ export const createEmptyTeamBoostState = (fetchError = null) => ({
   source: 'manual-fallback',
   daysBoosted: null,
   effectivenessPct: null,
+  cooldownUntil: null,
   boosts: [],
   fetchError: fetchError || null,
 });
@@ -57,6 +58,7 @@ export const createManualFallbackBoostState = (boostKey, boostApps = 1, fetchErr
     source: 'manual-fallback',
     daysBoosted: null,
     effectivenessPct: null,
+    cooldownUntil: null,
     boosts: [
       createBoostEntry({
         boostType,
