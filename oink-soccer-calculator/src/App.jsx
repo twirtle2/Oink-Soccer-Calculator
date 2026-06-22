@@ -704,6 +704,23 @@ const formatFixtureTime = (value) => {
   });
 };
 
+const getTimestamp = (value) => {
+  const timestamp = new Date(value || '').getTime();
+  return Number.isFinite(timestamp) ? timestamp : null;
+};
+
+const formatDateTimeLocalValue = (value) => {
+  const timestamp = getTimestamp(value);
+  if (!timestamp) return '';
+  const date = new Date(timestamp);
+  const pad = (part) => String(part).padStart(2, '0');
+  return [
+    date.getFullYear(),
+    pad(date.getMonth() + 1),
+    pad(date.getDate()),
+  ].join('-') + `T${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
+};
+
 const getFixtureRound = (fixture) => {
   const parsed = Number(fixture?.sort_round ?? fixture?.game_round);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : 999;
@@ -962,6 +979,7 @@ export default function OinkSoccerCalc() {
 
   const [myBoost] = useState(persistedState.myBoost || 'None');
   const [myBoostApps] = useState(persistedState.myBoostApps || 1);
+  const [itemCooldownUntil, setItemCooldownUntil] = useState(persistedState.itemCooldownUntil || null);
   const [myBoostState, setMyBoostState] = useState(createManualFallbackBoostState(persistedState.myBoost || 'None', persistedState.myBoostApps || 1));
   const [oppBoostState, setOppBoostState] = useState(TEAM_BOOST_STATE_EMPTY);
   const [homeAdvantage, setHomeAdvantage] = useState(persistedState.homeAdvantage || 'home'); // 'home' or 'away'
@@ -1136,6 +1154,17 @@ export default function OinkSoccerCalc() {
     () => getActiveBoostWindows(myBoostState),
     [myBoostState],
   );
+
+  const itemCooldownEndTime = useMemo(() => {
+    const savedCooldownEndTime = getTimestamp(itemCooldownUntil);
+    const activeBoostCooldownEndTime = activeBoostWindows.reduce((latest, window) => (
+      Number.isFinite(Number(window.endTime))
+        ? Math.max(latest, Number(window.endTime) + (ITEM_USE_COOLDOWN_DAYS * MS_PER_DAY))
+        : latest
+    ), 0);
+    const endTime = Math.max(savedCooldownEndTime || 0, activeBoostCooldownEndTime);
+    return endTime > Date.now() ? endTime : null;
+  }, [activeBoostWindows, itemCooldownUntil]);
 
   const oppBoostContext = useMemo(() => (
     oppBoostState.source === 'live'
@@ -1478,10 +1507,11 @@ export default function OinkSoccerCalc() {
       oppTactics: overrides.oppTactics !== undefined ? overrides.oppTactics : oppTactics,
       myBoost: overrides.myBoost !== undefined ? overrides.myBoost : myBoost,
       myBoostApps: overrides.myBoostApps !== undefined ? overrides.myBoostApps : myBoostApps,
+      itemCooldownUntil: overrides.itemCooldownUntil !== undefined ? overrides.itemCooldownUntil : itemCooldownUntil,
       homeAdvantage: overrides.homeAdvantage !== undefined ? overrides.homeAdvantage : homeAdvantage,
       walletSyncMeta: overrides.walletSyncMeta !== undefined ? overrides.walletSyncMeta : walletSyncMeta,
     });
-  }, [mySquad, myTeam, opponentTeam, myForm, oppForm, myTactics, oppTactics, myBoost, myBoostApps, homeAdvantage, walletSyncMeta]);
+  }, [mySquad, myTeam, opponentTeam, myForm, oppForm, myTactics, oppTactics, myBoost, myBoostApps, itemCooldownUntil, homeAdvantage, walletSyncMeta]);
 
   useEffect(() => {
     saveCalculatorState({
@@ -1494,10 +1524,11 @@ export default function OinkSoccerCalc() {
       oppTactics,
       myBoost,
       myBoostApps,
+      itemCooldownUntil,
       homeAdvantage,
       walletSyncMeta,
     });
-  }, [mySquad, myTeam, opponentTeam, myForm, oppForm, myTactics, oppTactics, myBoost, myBoostApps, homeAdvantage, walletSyncMeta]);
+  }, [mySquad, myTeam, opponentTeam, myForm, oppForm, myTactics, oppTactics, myBoost, myBoostApps, itemCooldownUntil, homeAdvantage, walletSyncMeta]);
 
   const myStats = useMemo(() => calculateTeamScores(myTeam, myForm, mySimulationBoostContext, myTactics), [myTeam, myForm, mySimulationBoostContext, myTactics]);
   const oppStats = useMemo(() => calculateTeamScores(opponentTeam, oppForm, oppBoostContext, oppTactics), [opponentTeam, oppForm, oppBoostContext, oppTactics]);
@@ -2344,9 +2375,12 @@ export default function OinkSoccerCalc() {
     };
 
     const intervalsOverlap = (startA, endA, startB, endB) => startA <= endB && startB <= endA;
-    const hasWindowConflict = (startTime, endTime) => selectedWindows.some((window) => (
-      intervalsOverlap(startTime, endTime, window.startTime, window.blockedEndTime)
-    ));
+    const hasWindowConflict = (startTime, endTime) => (
+      (Number.isFinite(itemCooldownEndTime) && startTime < itemCooldownEndTime)
+      || selectedWindows.some((window) => (
+        intervalsOverlap(startTime, endTime, window.startTime, window.blockedEndTime)
+      ))
+    );
     const getDurationDays = (item) => {
       const minDays = Math.max(0, Math.floor(Number(item.minDays ?? item.maxDays ?? 0)));
       const maxDays = Math.max(minDays, Math.floor(Number(item.maxDays ?? minDays)));
@@ -2865,7 +2899,7 @@ export default function OinkSoccerCalc() {
         placementGain,
       }))
       .slice(0, 10);
-  }, [detectedMyTeamIds, heldItems, leagueTeams, myBoostState, myForm, myTactics, myTeam, seasonFixtures, seasonTeams, teamSeasonFixtures]);
+  }, [detectedMyTeamIds, heldItems, itemCooldownEndTime, leagueTeams, myBoostState, myForm, myTactics, myTeam, seasonFixtures, seasonTeams, teamSeasonFixtures]);
 
   const plannedItemsByFixture = useMemo(() => {
     const planned = {};
@@ -3361,6 +3395,37 @@ export default function OinkSoccerCalc() {
               <div className="text-[11px] font-bold uppercase tracking-[0.14em] text-[#ffab00]">Item Timing</div>
               <div className="mt-1 text-xs text-[#6b7a94]">
                 Planned using held items, active windows, cooldowns, direct-rival leverage, and diminishing effectiveness. Uses are kept when they improve final place or protect a fragile promotion buffer.
+              </div>
+
+              <div className="mt-3 flex flex-col gap-3 rounded-md border border-[#ffab00]/30 bg-[#2d230d]/45 p-3 sm:flex-row sm:items-end sm:justify-between">
+                <div>
+                  <div className="text-[10px] font-bold uppercase tracking-[0.12em] text-[#ffab00]">Item Cooldown</div>
+                  <div className="mt-1 text-xs text-[#d7bd80]">
+                    {itemCooldownEndTime
+                      ? `No new item will be suggested before ${formatFixtureTime(itemCooldownEndTime)}.`
+                      : 'No current item cooldown is blocking suggestions.'}
+                  </div>
+                </div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <input
+                    type="datetime-local"
+                    step="1"
+                    aria-label="Item cooldown ends"
+                    className="min-h-9 rounded-md border border-[#5b4820] bg-[#111620] px-2 text-xs text-[#e8edf5] outline-none focus:border-[#ffab00]"
+                    value={formatDateTimeLocalValue(itemCooldownUntil)}
+                    onChange={(event) => {
+                      const timestamp = getTimestamp(event.target.value);
+                      setItemCooldownUntil(timestamp ? new Date(timestamp).toISOString() : null);
+                    }}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setItemCooldownUntil(null)}
+                    className="min-h-9 rounded-md border border-[#5b4820] px-2.5 text-xs font-semibold text-[#d7bd80] transition hover:border-[#ffab00] hover:text-[#ffca63]"
+                  >
+                    Clear
+                  </button>
+                </div>
               </div>
 
               {itemPlanSummary && (
