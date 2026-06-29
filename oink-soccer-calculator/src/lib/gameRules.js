@@ -55,7 +55,7 @@ export const FORMATION_PROFILES = {
 };
 
 export const SKILL_CURVE = {
-  exponent: 4.0,
+  exponent: 6.0,
   floor: 1.0,
 };
 
