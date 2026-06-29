@@ -682,6 +682,11 @@ const getFixtureTimeValue = (fixture) => {
   return Number.isFinite(value) ? value : Number.MAX_SAFE_INTEGER;
 };
 
+const hasFixtureStarted = (fixture, now = Date.now()) => {
+  const fixtureTime = getFixtureTimeValue(fixture);
+  return fixtureTime !== Number.MAX_SAFE_INTEGER && fixtureTime <= now;
+};
+
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 const ITEM_USE_COOLDOWN_DAYS = 2;
 
@@ -956,6 +961,7 @@ export default function OinkSoccerCalc() {
   const [gameCounter, setGameCounter] = useState(null);
   const [fixtures, setFixtures] = useState([]);
   const [fixturesLoading, setFixturesLoading] = useState(false);
+  const [currentTime, setCurrentTime] = useState(() => Date.now());
   const [selectedFixtureKey, setSelectedFixtureKey] = useState('');
   const [seasonFixtures, setSeasonFixtures] = useState([]);
   const [teamSeasonFixtures, setTeamSeasonFixtures] = useState([]);
@@ -1036,6 +1042,16 @@ export default function OinkSoccerCalc() {
     [fixtures, selectedFixtureKey],
   );
 
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      setCurrentTime(Date.now());
+    }, 60 * 1000);
+
+    return () => {
+      window.clearInterval(timer);
+    };
+  }, []);
+
   const displayedFixtures = useMemo(() => {
     if (connectedAddresses.length === 0) {
       return fixtures;
@@ -1048,13 +1064,17 @@ export default function OinkSoccerCalc() {
   }, [connectedAddresses.length, detectedMyTeamIds, fixtures]);
 
   const pastFixtures = useMemo(
-    () => sortFixturesByRoundAndTime(displayedFixtures.filter((fixture) => fixture.game_result)),
-    [displayedFixtures],
+    () => sortFixturesByRoundAndTime(displayedFixtures.filter((fixture) => (
+      fixture.game_result || hasFixtureStarted(fixture, currentTime)
+    ))),
+    [currentTime, displayedFixtures],
   );
 
   const upcomingFixtures = useMemo(
-    () => sortFixturesByRoundAndTime(displayedFixtures.filter((fixture) => !fixture.game_result)),
-    [displayedFixtures],
+    () => sortFixturesByRoundAndTime(displayedFixtures.filter((fixture) => (
+      !fixture.game_result && !hasFixtureStarted(fixture, currentTime)
+    ))),
+    [currentTime, displayedFixtures],
   );
 
   useEffect(() => {
@@ -2304,6 +2324,7 @@ export default function OinkSoccerCalc() {
       planningFixtures.filter((fixture) => (
         !fixture.game_result
         && !fixture.cup_bye
+        && !hasFixtureStarted(fixture, currentTime)
         && (myTeamIds.has(fixture.home_team_id) || myTeamIds.has(fixture.away_team_id))
       )),
     );
@@ -2907,7 +2928,7 @@ export default function OinkSoccerCalc() {
         placementGain,
       }))
       .slice(0, 10);
-  }, [detectedMyTeamIds, heldItems, itemCooldownEndTime, leagueTeams, myBoostState, myForm, myTactics, myTeam, seasonFixtures, seasonTeams, teamSeasonFixtures]);
+  }, [currentTime, detectedMyTeamIds, heldItems, itemCooldownEndTime, leagueTeams, myBoostState, myForm, myTactics, myTeam, seasonFixtures, seasonTeams, teamSeasonFixtures]);
 
   const plannedItemsByFixture = useMemo(() => {
     const planned = {};
@@ -3675,6 +3696,8 @@ function FixtureTableSection({
           const isSelected = selectedFixtureKey === fixture.game_key;
           const isCup = fixture.competition === 'cup';
           const isBye = Boolean(fixture.cup_bye);
+          const isResultPending = !fixture.game_result && !isBye && hasFixtureStarted(fixture);
+          const isInactive = isBye || isResultPending;
           const mySide = myTeams.has(fixture.home_team_id)
             ? 'home'
             : myTeams.has(fixture.away_team_id)
@@ -3689,6 +3712,8 @@ function FixtureTableSection({
               : `${fixture.game_result.home_team_score}-${fixture.game_result.away_team_score}`
             : isBye
               ? 'bye'
+              : isResultPending
+                ? 'pending'
               : 'vs';
           const chance = fixtureWinChances[fixture.game_key];
           const plannedItem = plannedItemsByFixture[fixture.game_key];
@@ -3699,12 +3724,12 @@ function FixtureTableSection({
               key={fixture.game_key}
               type="button"
               onClick={() => {
-                if (!isBye) onSelect(fixture);
+                if (!isInactive) onSelect(fixture);
               }}
-              disabled={isBye}
+              disabled={isInactive}
               className={`grid w-full grid-cols-[1fr_auto_1fr] items-center gap-2 border-b border-[#1e2a3a] px-2 py-2 text-left text-xs transition last:border-b-0 sm:text-sm ${isSelected
                 ? 'bg-[#0f2a1b] text-[#d7ffe9]'
-                : isBye
+                : isInactive
                   ? 'cursor-default text-[#7f8aa3]'
                   : 'text-[#e8edf5] hover:bg-[#161c28]'
                 }`}
@@ -3727,6 +3752,10 @@ function FixtureTableSection({
                   <span className="mt-1 rounded border border-[#253040] bg-[#161c28] px-1.5 py-0.5 text-[10px] font-semibold leading-none text-[#9aa5bb]">
                     Eliminated
                   </span>
+                ) : isResultPending ? (
+                  <span className="mt-1 rounded border border-[#253040] bg-[#161c28] px-1.5 py-0.5 text-[10px] font-semibold leading-none text-[#9aa5bb]">
+                    Result pending
+                  </span>
                 ) : !fixture.game_result && chance ? (
                   <span className="mt-1 rounded border border-[#00e676]/30 bg-[#00e676]/10 px-1.5 py-0.5 font-['Barlow_Condensed'] text-[13px] font-black leading-none text-[#00e676]">
                     {formatNumber(chance.win)}%
@@ -3736,7 +3765,7 @@ function FixtureTableSection({
                     Lineup pending
                   </span>
                 ) : null}
-                {!isBye && !fixture.game_result && activeBoost ? (
+                {!isInactive && !fixture.game_result && activeBoost ? (
                   <span
                     className="mt-1 inline-flex items-center gap-1 rounded border border-[#00e676]/35 bg-[#00e676]/10 px-1.5 py-0.5 text-[10px] font-bold text-[#9af7cb]"
                     title={`${activeBoost.label} active until ${formatFixtureTime(activeBoost.endTime)}`}
