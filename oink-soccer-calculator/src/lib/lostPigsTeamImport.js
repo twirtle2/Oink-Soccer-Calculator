@@ -518,6 +518,79 @@ const normalizeTournamentMatch = (tournament, match, leagueRounds) => {
   };
 };
 
+const getFixtureResult = (fixture) => {
+  if (fixture?.game_result) return fixture.game_result;
+  const homeScore = fixture?.home_team_score;
+  const awayScore = fixture?.away_team_score;
+  const hasScore = homeScore !== null
+    && homeScore !== undefined
+    && awayScore !== null
+    && awayScore !== undefined;
+  if (!hasScore) return null;
+  return {
+    home_team_score: Number(homeScore || 0),
+    away_team_score: Number(awayScore || 0),
+    decided_on_penalties: Boolean(fixture?.decided_on_penalties),
+    home_penalty_score: fixture?.home_penalty_score,
+    away_penalty_score: fixture?.away_penalty_score,
+  };
+};
+
+const getCupWinnerTeamId = (fixture) => {
+  const result = getFixtureResult(fixture);
+  if (!result) return null;
+
+  const homeGoals = Number(result.home_team_score || 0);
+  const awayGoals = Number(result.away_team_score || 0);
+  if (homeGoals > awayGoals) return fixture.home_team_id;
+  if (awayGoals > homeGoals) return fixture.away_team_id;
+
+  if (result.decided_on_penalties) {
+    const homePenalties = Number(result.home_penalty_score);
+    const awayPenalties = Number(result.away_penalty_score);
+    if (Number.isFinite(homePenalties) && Number.isFinite(awayPenalties)) {
+      if (homePenalties > awayPenalties) return fixture.home_team_id;
+      if (awayPenalties > homePenalties) return fixture.away_team_id;
+    }
+  }
+
+  return null;
+};
+
+const annotateCupByesAfterElimination = (fixtures, teamId) => {
+  let eliminatedAfterRound = null;
+
+  fixtures
+    .filter((fixture) => fixture.competition === 'cup')
+    .forEach((fixture) => {
+      if (eliminatedAfterRound !== null) return;
+      const winnerTeamId = getCupWinnerTeamId(fixture);
+      if (winnerTeamId && winnerTeamId !== teamId) {
+        eliminatedAfterRound = Number(fixture.cup_round_number) || 0;
+      }
+    });
+
+  if (eliminatedAfterRound === null) return fixtures;
+
+  return fixtures.map((fixture) => {
+    if (fixture.competition !== 'cup') return fixture;
+    const roundNumber = Number(fixture.cup_round_number) || 0;
+    if (roundNumber <= eliminatedAfterRound || fixture.game_result) return fixture;
+
+    const sourceKey = String(fixture.source_game_key || '').trim();
+    const hasResolvedOpponent = fixture.home_team_id === teamId
+      ? Boolean(fixture.away_team_id)
+      : Boolean(fixture.home_team_id);
+
+    if (sourceKey || hasResolvedOpponent) return fixture;
+
+    return {
+      ...fixture,
+      cup_bye: true,
+    };
+  });
+};
+
 export const fetchActiveTournamentForSeason = async (season) => {
   const normalizedSeason = normalizeSeasonValue(season);
   const payload = await fetchJsonOrThrow('/soccer/tournaments', 'Tournaments not found.');
@@ -572,7 +645,7 @@ export const fetchTeamSeasonFixtures = async ({ teamId, leagueId, season }) => {
   const rawFixtures = Array.isArray(payload?.fixtures) ? payload.fixtures : [];
 
   let lastLeagueRound = 0;
-  return rawFixtures
+  const fixtures = rawFixtures
     .map((fixture, index) => {
       if (String(fixture?.competition || '').toLowerCase() !== 'cup') {
         const round = Number.parseInt(String(fixture?.round || fixture?.game_round || index + 1), 10) || index + 1;
@@ -601,8 +674,11 @@ export const fetchTeamSeasonFixtures = async ({ teamId, leagueId, season }) => {
         away_team_id: normalizeTeamId(fixture?.away_team_id) || '',
         home_team_name: fixture?.home_team_name || 'TBD',
         away_team_name: fixture?.away_team_name || 'TBD',
+        game_result: getFixtureResult(fixture),
       };
     });
+
+  return annotateCupByesAfterElimination(fixtures, normalizedTeamId);
 };
 
 export const fetchLeagueTableTeams = async (leagueId) => {

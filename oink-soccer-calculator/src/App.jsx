@@ -1065,6 +1065,7 @@ export default function OinkSoccerCalc() {
     const myTeams = new Set(detectedMyTeamIds);
     const opponentIds = Array.from(new Set(
       upcomingFixtures
+        .filter((fixture) => !fixture.cup_bye)
         .map((fixture) => {
           const isHome = myTeams.has(fixture.home_team_id);
           const isAway = myTeams.has(fixture.away_team_id);
@@ -2000,6 +2001,7 @@ export default function OinkSoccerCalc() {
     const myTeams = new Set(detectedMyTeamIds);
     const byFixture = {};
     upcomingFixtures.forEach((fixture) => {
+      if (fixture.cup_bye) return;
       if (!myTeams.has(fixture.home_team_id) && !myTeams.has(fixture.away_team_id)) return;
       const activeBoost = getFixtureActiveBoost(fixture, activeBoostWindows);
       if (!activeBoost || !fixture.game_key) return;
@@ -2030,6 +2032,7 @@ export default function OinkSoccerCalc() {
     const currentStats = calculateTeamScores(myTeam, myForm, mySimulationBoostContext, myTactics);
 
     upcomingFixtures.forEach((fixture) => {
+      if (fixture.cup_bye) return;
       const isHome = myTeams.has(fixture.home_team_id);
       const isAway = myTeams.has(fixture.away_team_id);
       if (!isHome && !isAway) return;
@@ -2069,6 +2072,7 @@ export default function OinkSoccerCalc() {
         : homeAdvantage;
 
       upcomingFixtures.forEach((fixture) => {
+        if (fixture.cup_bye) return;
         const fixtureKeys = getFixtureKeySet(fixture);
         const keyMatches = Array.from(fixtureKeys).some((key) => selectedKeys.has(key));
         const isHome = myTeams.has(fixture.home_team_id);
@@ -2299,6 +2303,7 @@ export default function OinkSoccerCalc() {
     const remainingMyFixtures = sortFixturesByRoundAndTime(
       planningFixtures.filter((fixture) => (
         !fixture.game_result
+        && !fixture.cup_bye
         && (myTeamIds.has(fixture.home_team_id) || myTeamIds.has(fixture.away_team_id))
       )),
     );
@@ -3669,6 +3674,7 @@ function FixtureTableSection({
         {!loading && fixtures.map((fixture) => {
           const isSelected = selectedFixtureKey === fixture.game_key;
           const isCup = fixture.competition === 'cup';
+          const isBye = Boolean(fixture.cup_bye);
           const mySide = myTeams.has(fixture.home_team_id)
             ? 'home'
             : myTeams.has(fixture.away_team_id)
@@ -3681,7 +3687,9 @@ function FixtureTableSection({
             ? hasPenaltyResult
               ? `${fixture.game_result.home_team_score}-${fixture.game_result.away_team_score}p`
               : `${fixture.game_result.home_team_score}-${fixture.game_result.away_team_score}`
-            : 'vs';
+            : isBye
+              ? 'bye'
+              : 'vs';
           const chance = fixtureWinChances[fixture.game_key];
           const plannedItem = plannedItemsByFixture[fixture.game_key];
           const activeBoost = activeBoostsByFixture[fixture.game_key];
@@ -3690,10 +3698,15 @@ function FixtureTableSection({
             <button
               key={fixture.game_key}
               type="button"
-              onClick={() => onSelect(fixture)}
+              onClick={() => {
+                if (!isBye) onSelect(fixture);
+              }}
+              disabled={isBye}
               className={`grid w-full grid-cols-[1fr_auto_1fr] items-center gap-2 border-b border-[#1e2a3a] px-2 py-2 text-left text-xs transition last:border-b-0 sm:text-sm ${isSelected
                 ? 'bg-[#0f2a1b] text-[#d7ffe9]'
-                : 'text-[#e8edf5] hover:bg-[#161c28]'
+                : isBye
+                  ? 'cursor-default text-[#7f8aa3]'
+                  : 'text-[#e8edf5] hover:bg-[#161c28]'
                 }`}
             >
               <div className={`min-w-0 text-right ${mySide === 'home' ? 'text-[#00e676]' : ''}`}>
@@ -3710,7 +3723,11 @@ function FixtureTableSection({
                 <span className="mt-1 text-center text-[10px] leading-tight text-[#7f8aa3]">
                   {getFixtureRoundLabel(fixture)} • {formatFixtureTime(fixture.game_time)}
                 </span>
-                {!fixture.game_result && chance ? (
+                {isBye ? (
+                  <span className="mt-1 rounded border border-[#253040] bg-[#161c28] px-1.5 py-0.5 text-[10px] font-semibold leading-none text-[#9aa5bb]">
+                    Eliminated
+                  </span>
+                ) : !fixture.game_result && chance ? (
                   <span className="mt-1 rounded border border-[#00e676]/30 bg-[#00e676]/10 px-1.5 py-0.5 font-['Barlow_Condensed'] text-[13px] font-black leading-none text-[#00e676]">
                     {formatNumber(chance.win)}%
                   </span>
@@ -3719,7 +3736,7 @@ function FixtureTableSection({
                     Lineup pending
                   </span>
                 ) : null}
-                {!fixture.game_result && activeBoost ? (
+                {!isBye && !fixture.game_result && activeBoost ? (
                   <span
                     className="mt-1 inline-flex items-center gap-1 rounded border border-[#00e676]/35 bg-[#00e676]/10 px-1.5 py-0.5 text-[10px] font-bold text-[#9af7cb]"
                     title={`${activeBoost.label} active until ${formatFixtureTime(activeBoost.endTime)}`}

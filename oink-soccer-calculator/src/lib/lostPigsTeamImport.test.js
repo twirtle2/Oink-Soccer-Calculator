@@ -305,6 +305,59 @@ test('fetchTeamSeasonFixtures keeps API cup times and endpoint ordering', async 
   });
 });
 
+test('fetchTeamSeasonFixtures marks unresolved cup rounds as byes after elimination', async () => {
+  await withMockedFetch(async (url) => {
+    assert.match(String(url), /\/soccer\/team\/AlgorandAsset%3A1207576079\/league\/2\/season\/16\/fixtures$/);
+    return okResponse({
+      fixtures: [
+        {
+          game_key: 'league-6',
+          home_team_id: 'AlgorandAsset:1207576079',
+          home_team_name: 'Wrexham FC',
+          away_team_id: 'AlgorandAsset:1197834745',
+          away_team_name: 'Pigcago Phire',
+          competition: 'League',
+          round: '6',
+        },
+        {
+          game_key: '',
+          home_team_id: 'AlgorandAsset:1207576079',
+          home_team_name: 'Wrexham FC',
+          away_team_id: 'AlgorandAsset:1239258220',
+          away_team_name: 'Albino Kickers',
+          competition: 'Cup',
+          round: 'R64',
+          home_team_score: 1,
+          away_team_score: 2,
+        },
+        {
+          game_key: '',
+          home_team_id: '',
+          home_team_name: '',
+          away_team_id: '',
+          away_team_name: '',
+          game_time: '2026-06-25T11:59:00Z',
+          competition: 'Cup',
+          round: 'R32',
+        },
+      ],
+    });
+  }, async () => {
+    const fixtures = await fetchTeamSeasonFixtures({
+      teamId: 'AlgorandAsset:1207576079',
+      leagueId: '2',
+      season: 16,
+    });
+
+    assert.equal(fixtures[1].game_result.home_team_score, 1);
+    assert.equal(fixtures[1].cup_bye, undefined);
+    assert.equal(fixtures[2].cup_round_label, 'Round of 32');
+    assert.equal(fixtures[2].home_team_id, 'AlgorandAsset:1207576079');
+    assert.equal(fixtures[2].away_team_name, 'TBD');
+    assert.equal(fixtures[2].cup_bye, true);
+  });
+});
+
 test('fetchTeamLineup returns mapped team players', async () => {
   await withMockedFetch(async (url) => {
     assert.match(String(url), /\/v2\/soccer\/team\/AlgorandAsset%3A123$/);
