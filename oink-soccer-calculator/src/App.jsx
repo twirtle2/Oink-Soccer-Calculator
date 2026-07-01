@@ -3072,6 +3072,14 @@ export default function OinkSoccerCalc() {
     closeInjuryModal();
   }, [closeInjuryModal, handleInjuryChange, injuryModalState, mySquad, opponentTeam]);
 
+  const injuryModalPlayer = injuryModalState.teamType === 'opponent'
+    ? opponentTeam.find((p) => p.id === injuryModalState.playerId)
+    : mySquad.find((p) => p.id === injuryModalState.playerId);
+  const injuryModalDefinition = injuryModalPlayer?.injury && INJURIES[injuryModalPlayer.injury]
+    ? INJURIES[injuryModalPlayer.injury]
+    : null;
+  const injuryModalDetails = injuryModalPlayer?.injuryDetails || null;
+
   return (
     <div className="min-h-screen bg-[#0a0d12] text-[#e8edf5] font-sans pb-8">
       <header className="sticky top-0 z-[100] border-b border-[#1e2a3a] bg-[#111620]/95 backdrop-blur">
@@ -3442,6 +3450,7 @@ export default function OinkSoccerCalc() {
                       suggestion={topSuggestion}
                       analyzing={autoAnalyzing || importingTeamUrl}
                       canAnalyze={mySquad.length >= 5 && opponentTeam.length >= 5}
+                      onInjuryOpen={(player) => openInjuryModal(player, 'myTeam')}
                     />
 
                     <TeamFormationCard
@@ -3452,6 +3461,7 @@ export default function OinkSoccerCalc() {
                     suggestion={opponentPitchSuggestion}
                     emptyText={importingTeamUrl ? 'Loading opponent lineup...' : 'No active opponent lineup found for this fixture.'}
                     tone="opp"
+                    onInjuryOpen={(player) => openInjuryModal(player, 'opponent')}
                   />
                   </div>
                 </>
@@ -3702,7 +3712,28 @@ export default function OinkSoccerCalc() {
         <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/70 p-4">
           <div className="w-full max-w-[320px] rounded-xl border border-[#253040] bg-[#161c28] p-6">
             <div className="text-[15px] font-bold">🩹 Injury Severity</div>
-            <p className="mt-1 text-xs text-[#6b7a94]">Select how severely this player is injured if they play.</p>
+            <p className="mt-1 text-xs text-[#6b7a94]">{injuryModalPlayer?.name || 'Player injury status'}</p>
+
+            {injuryModalDefinition ? (
+              <div className="mt-4 rounded-[8px] border border-[rgba(255,68,68,0.25)] bg-[rgba(255,68,68,0.08)] p-3 text-xs text-[#d0d7e5]">
+                <div className="font-bold text-[#ff9e9e]">
+                  {injuryModalDetails?.name || injuryModalDefinition.label}
+                </div>
+                <div className="mt-1 text-[#9aa5bb]">
+                  {injuryModalDetails?.label || injuryModalDefinition.label} · {formatNumber((injuryModalDetails?.statsReduction ?? injuryModalDefinition.reduction) * 100, 0)}% effectiveness
+                </div>
+                {injuryModalDetails?.expires ? (
+                  <div className="mt-1 text-[#9aa5bb]">Expires {formatFixtureTime(injuryModalDetails.expires)}</div>
+                ) : null}
+                {injuryModalDetails?.description ? (
+                  <div className="mt-2 leading-snug text-[#c5cedd]">{injuryModalDetails.description}</div>
+                ) : null}
+              </div>
+            ) : (
+              <p className="mt-4 rounded-[8px] border border-[#253040] bg-[#111620] p-3 text-xs text-[#9aa5bb]">
+                No live injury details are currently attached to this player.
+              </p>
+            )}
 
             <div className="mt-4 space-y-2">
               {[
@@ -3865,7 +3896,7 @@ function FixtureTableSection({
   );
 }
 
-function TeamFormationCard({ title, subtitle, suggestion, emptyText, tone = 'my' }) {
+function TeamFormationCard({ title, subtitle, suggestion, emptyText, tone = 'my', onInjuryOpen }) {
   if (!suggestion) {
     return (
       <section className="rounded-[10px] border border-[#1e2a3a] bg-[#111620] p-4">
@@ -3893,7 +3924,7 @@ function TeamFormationCard({ title, subtitle, suggestion, emptyText, tone = 'my'
           className="mt-3"
         />
       </div>
-      <FormationPitch suggestion={suggestion} details={details} />
+      <FormationPitch suggestion={suggestion} details={details} onInjuryOpen={onInjuryOpen} />
     </section>
   );
 }
@@ -3945,7 +3976,7 @@ function SeasonPredictionTable({ rows, loading, myTeamIds }) {
   );
 }
 
-function BestSetupCard({ suggestion, analyzing, canAnalyze }) {
+function BestSetupCard({ suggestion, analyzing, canAnalyze, onInjuryOpen }) {
   if (!canAnalyze) {
     return (
       <section className="mb-4 rounded-[10px] border border-[#1e2a3a] bg-[#111620] p-4">
@@ -3988,12 +4019,12 @@ function BestSetupCard({ suggestion, analyzing, canAnalyze }) {
           />
         </div>
       </div>
-      <FormationPitch suggestion={suggestion} details={details} />
+      <FormationPitch suggestion={suggestion} details={details} onInjuryOpen={onInjuryOpen} />
     </section>
   );
 }
 
-function FormationPitch({ suggestion, details }) {
+function FormationPitch({ suggestion, details, onInjuryOpen }) {
   const rows = details.rows;
   const pitchStyle = {
     backgroundColor: '#49b83f',
@@ -4029,6 +4060,7 @@ function FormationPitch({ suggestion, details }) {
                     key={`${row.pos}-${player.id}`}
                     player={player}
                     setPieceTaker={suggestion.tactics?.setPieceTaker}
+                    onInjuryOpen={onInjuryOpen}
                   />
                 ))}
               </div>
@@ -4040,7 +4072,7 @@ function FormationPitch({ suggestion, details }) {
   );
 }
 
-function FormationPlayerCard({ player, setPieceTaker }) {
+function FormationPlayerCard({ player, setPieceTaker, onInjuryOpen }) {
   const role = player.role
     ? Object.values(PLAYER_ROLES).find((entry) => entry.value === player.role)
     : null;
@@ -4076,13 +4108,18 @@ function FormationPlayerCard({ player, setPieceTaker }) {
       <div className="relative bg-[#f0e6a1]">
         <PlayerCardPortrait player={player} />
         {injury && (
-          <div
-            className="absolute left-2 top-2 flex h-7 min-w-7 items-center justify-center rounded-[5px] border border-white/70 bg-[#d73535] px-1.5 font-['Barlow_Condensed'] text-[18px] font-black leading-none text-white shadow-[2px_2px_0_rgba(7,17,12,0.4)]"
+          <button
+            type="button"
+            onClick={(event) => {
+              event.stopPropagation();
+              if (onInjuryOpen) onInjuryOpen(player);
+            }}
+            className="absolute left-2 top-2 flex h-7 min-w-7 items-center justify-center rounded-[5px] border border-white/70 bg-[#d73535] px-1.5 font-['Barlow_Condensed'] text-[18px] font-black leading-none text-white shadow-[2px_2px_0_rgba(7,17,12,0.4)] transition hover:bg-[#ff4444] focus:outline-none focus:ring-2 focus:ring-white/80"
             title={injuryTitle}
             aria-label={injuryTitle}
           >
             +
-          </div>
+          </button>
         )}
         <div className="absolute bottom-0 left-0 right-0 flex items-center justify-between bg-[rgba(17,22,32,0.72)] px-2 py-1 font-['Barlow_Condensed'] text-[14px] font-black text-white">
           <span>{isSetPieceTaker ? 'SP' : roleLabel}</span>
@@ -4325,7 +4362,10 @@ function PlayerRow({ player, onInjuryOpen, onRoleChange, onSwap, isBench }) {
           </select>
         )}
         <button
-          onClick={onInjuryOpen}
+          onClick={(event) => {
+            event.stopPropagation();
+            if (onInjuryOpen) onInjuryOpen();
+          }}
           className={`inline-flex items-center gap-1 rounded-[5px] border px-3 py-1.5 text-[11px] font-semibold transition-colors ${player.injury
             ? 'border-[rgba(255,171,0,0.4)] bg-[rgba(255,171,0,0.08)] text-[#ffab00]'
             : 'border-[#1e2a3a] text-[#6b7a94] hover:border-[#ffab00] hover:text-[#ffab00]'
