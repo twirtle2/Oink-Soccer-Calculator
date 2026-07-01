@@ -1019,6 +1019,7 @@ export default function OinkSoccerCalc() {
     playerId: null,
     teamType: null,
     selected: 'None',
+    readOnly: false,
   });
 
   const connectedAddresses = useMemo(() => {
@@ -3040,12 +3041,13 @@ export default function OinkSoccerCalc() {
     }
   }, []);
 
-  const openInjuryModal = useCallback((player, teamType) => {
+  const openInjuryModal = useCallback((player, teamType, { readOnly = false } = {}) => {
     setInjuryModalState({
       open: true,
       playerId: player.id,
       teamType,
       selected: player.injury || 'None',
+      readOnly,
     });
   }, []);
 
@@ -3055,6 +3057,7 @@ export default function OinkSoccerCalc() {
       playerId: null,
       teamType: null,
       selected: 'None',
+      readOnly: false,
     });
   }, []);
 
@@ -3450,7 +3453,7 @@ export default function OinkSoccerCalc() {
                       suggestion={topSuggestion}
                       analyzing={autoAnalyzing || importingTeamUrl}
                       canAnalyze={mySquad.length >= 5 && opponentTeam.length >= 5}
-                      onInjuryOpen={(player) => openInjuryModal(player, 'myTeam')}
+                      onInjuryOpen={(player) => openInjuryModal(player, 'myTeam', { readOnly: true })}
                     />
 
                     <TeamFormationCard
@@ -3461,7 +3464,7 @@ export default function OinkSoccerCalc() {
                     suggestion={opponentPitchSuggestion}
                     emptyText={importingTeamUrl ? 'Loading opponent lineup...' : 'No active opponent lineup found for this fixture.'}
                     tone="opp"
-                    onInjuryOpen={(player) => openInjuryModal(player, 'opponent')}
+                    onInjuryOpen={(player) => openInjuryModal(player, 'opponent', { readOnly: true })}
                   />
                   </div>
                 </>
@@ -3711,7 +3714,7 @@ export default function OinkSoccerCalc() {
       {injuryModalState.open && (
         <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/70 p-4">
           <div className="w-full max-w-[320px] rounded-xl border border-[#253040] bg-[#161c28] p-6">
-            <div className="text-[15px] font-bold">🩹 Injury Severity</div>
+            <div className="text-[15px] font-bold">🩹 {injuryModalState.readOnly ? 'Injury Details' : 'Injury Severity'}</div>
             <p className="mt-1 text-xs text-[#6b7a94]">{injuryModalPlayer?.name || 'Player injury status'}</p>
 
             {injuryModalDefinition ? (
@@ -3735,26 +3738,32 @@ export default function OinkSoccerCalc() {
               </p>
             )}
 
-            <div className="mt-4 space-y-2">
-              {[
-                { key: 'None', label: '⬜ No injury' },
-                { key: 'Low', label: '🟡 Minor — 95% effectiveness' },
-                { key: 'Mid', label: '🟠 Moderate — 90% effectiveness' },
-                { key: 'High', label: '🔴 Severe — 85% effectiveness' },
-              ].map((option) => (
-                <button
-                  key={option.key}
-                  onClick={() => setInjuryModalState((prev) => ({ ...prev, selected: option.key }))}
-                  className={`w-full rounded-[7px] border px-3 py-2 text-left text-sm ${injuryModalState.selected === option.key ? 'border-[#ffab00] bg-[rgba(255,171,0,0.08)] text-[#ffab00]' : 'border-[#1e2a3a] bg-[#111620] text-[#e8edf5]'}`}
-                >
-                  {option.label}
-                </button>
-              ))}
-            </div>
+            {!injuryModalState.readOnly && (
+              <div className="mt-4 space-y-2">
+                {[
+                  { key: 'None', label: '⬜ No injury' },
+                  { key: 'Low', label: '🟡 Minor — 95% effectiveness' },
+                  { key: 'Mid', label: '🟠 Moderate — 90% effectiveness' },
+                  { key: 'High', label: '🔴 Severe — 85% effectiveness' },
+                ].map((option) => (
+                  <button
+                    key={option.key}
+                    onClick={() => setInjuryModalState((prev) => ({ ...prev, selected: option.key }))}
+                    className={`w-full rounded-[7px] border px-3 py-2 text-left text-sm ${injuryModalState.selected === option.key ? 'border-[#ffab00] bg-[rgba(255,171,0,0.08)] text-[#ffab00]' : 'border-[#1e2a3a] bg-[#111620] text-[#e8edf5]'}`}
+                  >
+                    {option.label}
+                  </button>
+                ))}
+              </div>
+            )}
 
             <div className="mt-4 flex justify-end gap-2">
-              <button onClick={closeInjuryModal} className="rounded-md border border-[#1e2a3a] bg-transparent px-3 py-1.5 text-xs font-semibold text-[#9aa5bb]">Cancel</button>
-              <button onClick={confirmInjuryModal} className="rounded-md bg-[#ffab00] px-3 py-1.5 text-xs font-bold text-black">Confirm</button>
+              <button onClick={closeInjuryModal} className="rounded-md border border-[#1e2a3a] bg-transparent px-3 py-1.5 text-xs font-semibold text-[#9aa5bb]">
+                {injuryModalState.readOnly ? 'Close' : 'Cancel'}
+              </button>
+              {!injuryModalState.readOnly && (
+                <button onClick={confirmInjuryModal} className="rounded-md bg-[#ffab00] px-3 py-1.5 text-xs font-bold text-black">Confirm</button>
+              )}
             </div>
           </div>
         </div>
