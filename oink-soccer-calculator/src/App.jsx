@@ -8,7 +8,7 @@ import {
   fetchHeldAssetBalancesForAddresses,
   fetchHeldAssetIdsForAddresses,
 } from './lib/indexer';
-import { buildWalletPlayers, mergeWalletPlayers } from './lib/walletSync';
+import { applyLiveLineupInjuries, buildWalletPlayers, mergeWalletPlayers } from './lib/walletSync';
 import {
   fetchCurrentSeason,
   fetchGameCounter,
@@ -1576,6 +1576,46 @@ export default function OinkSoccerCalc() {
     };
   }, [myStats, oppStats, homeAdvantage, myForm, oppForm, myTactics, oppTactics]);
 
+  const refreshOwnedTeamInjuries = useCallback(async ({
+    squad = mySquad,
+    team = myTeam,
+    applyState = true,
+    save = true,
+  } = {}) => {
+    if (detectedMyTeamIds.length === 0 || squad.length === 0) {
+      return { nextSquad: squad, nextTeam: team, refreshedCount: 0 };
+    }
+
+    const liveLineups = await Promise.all(
+      detectedMyTeamIds.map(async (teamId) => {
+        try {
+          const lineup = await fetchTeamLineup(teamId);
+          return lineup.players || [];
+        } catch (_) {
+          return [];
+        }
+      }),
+    );
+
+    const livePlayers = liveLineups.flat();
+    if (livePlayers.length === 0) {
+      return { nextSquad: squad, nextTeam: team, refreshedCount: 0 };
+    }
+
+    const nextSquad = applyLiveLineupInjuries(squad, livePlayers);
+    const nextTeam = applyLiveLineupInjuries(team, livePlayers);
+
+    if (applyState) {
+      if (nextSquad !== squad) setMySquad(nextSquad);
+      if (nextTeam !== team) setMyTeam(nextTeam);
+    }
+    if (save && (nextSquad !== squad || nextTeam !== team)) {
+      saveToDb({ mySquad: nextSquad, myTeam: nextTeam });
+    }
+
+    return { nextSquad, nextTeam, refreshedCount: livePlayers.length };
+  }, [detectedMyTeamIds, mySquad, myTeam, saveToDb]);
+
   const handleSyncWalletAssets = useCallback(async (addressesOverride = connectedAddresses) => {
     const addressesToSync = Array.from(new Set((addressesOverride || []).filter(Boolean)));
     if (addressesToSync.length === 0 || walletSyncing) {
@@ -1599,7 +1639,13 @@ export default function OinkSoccerCalc() {
       const heldAssetIds = new Set(heldAssetBalances.keys());
       const nextHeldItems = buildHeldItemCounts(heldAssetBalances);
       const { walletPlayers, matchedCount, unmatchedCount } = buildWalletPlayers(heldAssetIds, catalogByAssetId);
-      const { nextSquad, nextTeam } = mergeWalletPlayers({ mySquad, myTeam, walletPlayers });
+      const merged = mergeWalletPlayers({ mySquad, myTeam, walletPlayers });
+      const { nextSquad, nextTeam } = await refreshOwnedTeamInjuries({
+        squad: merged.nextSquad,
+        team: merged.nextTeam,
+        applyState: false,
+        save: false,
+      });
 
       const updatedMeta = {
         lastSyncedAt: new Date().toISOString(),
@@ -1623,7 +1669,29 @@ export default function OinkSoccerCalc() {
     } finally {
       setWalletSyncing(false);
     }
-  }, [connectedAddresses, mySquad, myTeam, saveToDb, walletSyncMeta, walletSyncing]);
+  }, [connectedAddresses, mySquad, myTeam, refreshOwnedTeamInjuries, saveToDb, walletSyncMeta, walletSyncing]);
+
+  useEffect(() => {
+    if (detectedMyTeamIds.length === 0 || mySquad.length === 0) return;
+
+    let cancelled = false;
+
+    const refresh = async () => {
+      const { nextSquad, nextTeam } = await refreshOwnedTeamInjuries({ applyState: false, save: false });
+      if (cancelled) return;
+      if (nextSquad !== mySquad) setMySquad(nextSquad);
+      if (nextTeam !== myTeam) setMyTeam(nextTeam);
+      if (nextSquad !== mySquad || nextTeam !== myTeam) {
+        saveToDb({ mySquad: nextSquad, myTeam: nextTeam });
+      }
+    };
+
+    void refresh();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [detectedMyTeamIds, refreshOwnedTeamInjuries, mySquad, mySquad.length, myTeam, saveToDb]);
 
   useEffect(() => {
     if (!connectedAddressKey) {

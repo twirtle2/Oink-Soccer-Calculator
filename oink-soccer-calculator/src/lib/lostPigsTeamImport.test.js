@@ -441,6 +441,56 @@ test('fetchTeamLineup maps active API injuries onto imported players', async () 
     assert.equal(lineup.players[0].injuryDetails.name, 'Squirrel Scare');
     assert.equal(lineup.players[0].injuryDetails.statsReduction, 0.95);
     assert.equal(lineup.players[0].injuryDetails.expires, '2026-06-14T23:59:59Z');
+    assert.equal(lineup.players[0].assetId, null);
+  });
+});
+
+test('fetchTeamLineup exposes asset ids so live injuries can map to wallet players', async () => {
+  await withMockedFetch(async (url) => {
+    assert.match(String(url), /\/v2\/soccer\/team\/AlgorandAsset%3A1207576079$/);
+    return okResponse({
+      team: {
+        id: 'AlgorandAsset:1207576079',
+        custom_name: 'Wrexham FC',
+        formation: 'The Diamond',
+      },
+      team_selection: {
+        slots: {
+          2: {
+            asset: {
+              id: 'Algorand:3124034212',
+              name: 'Best Frens #0154',
+              injury: {
+                team_id: 'AlgorandAsset:1207576079',
+                player_id: 'Algorand:3124034212',
+                expires: '2026-07-02T23:59:59Z',
+                injury: {
+                  severity: 'High Severity',
+                  name: 'Post-Match Cramp',
+                  stats_reduction: 0.85,
+                },
+              },
+            },
+            player_attributes: {
+              based_on_player: 'J. Kimmich',
+              position: 'Defense',
+              overall_rating: 89,
+              speed_rating: 70,
+              attack_rating: 73,
+              control_rating: 86,
+              defense_rating: 83,
+              goalkeeper_rating: 15,
+            },
+          },
+        },
+      },
+    });
+  }, async () => {
+    const lineup = await fetchTeamLineup('AlgorandAsset:1207576079');
+    assert.equal(lineup.players[0].assetId, '3124034212');
+    assert.equal(lineup.players[0].assetKey, 'Algorand:3124034212');
+    assert.equal(lineup.players[0].injury, 'High');
+    assert.equal(lineup.players[0].injuryDetails.name, 'Post-Match Cramp');
   });
 });
 

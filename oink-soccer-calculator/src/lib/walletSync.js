@@ -6,6 +6,19 @@ const uniqueById = (players) => {
   return Array.from(map.values());
 };
 
+const normalizeAssetId = (value = '') => {
+  const trimmed = String(value || '').trim();
+  if (!trimmed) return null;
+  const match = trimmed.match(/(?:Algorand:)?(\d+)$/i);
+  return match ? match[1] : null;
+};
+
+const getPlayerAssetId = (player) => (
+  normalizeAssetId(player?.assetId)
+  || normalizeAssetId(player?.assetKey)
+  || normalizeAssetId(player?.id)
+);
+
 const byOvrDesc = (a, b) => b.ovr - a.ovr;
 
 const pickLineup = (currentTeam, squad, limit = 5) => {
@@ -78,4 +91,38 @@ export const mergeWalletPlayers = ({ mySquad, myTeam, walletPlayers }) => {
   const nextTeam = pickLineup(myTeam, nextSquad, 5);
 
   return { nextSquad, nextTeam };
+};
+
+export const applyLiveLineupInjuries = (players, liveLineupPlayers = []) => {
+  const liveByAssetId = new Map();
+  liveLineupPlayers.forEach((player) => {
+    const assetId = getPlayerAssetId(player);
+    if (!assetId) return;
+    liveByAssetId.set(assetId, player);
+  });
+
+  if (liveByAssetId.size === 0) return players;
+
+  let changed = false;
+  const nextPlayers = players.map((player) => {
+    const assetId = getPlayerAssetId(player);
+    if (!assetId || !liveByAssetId.has(assetId)) return player;
+    const livePlayer = liveByAssetId.get(assetId);
+    const nextInjury = livePlayer.injury || null;
+    const nextInjuryDetails = livePlayer.injuryDetails || null;
+    if (
+      player.injury === nextInjury
+      && JSON.stringify(player.injuryDetails || null) === JSON.stringify(nextInjuryDetails)
+    ) {
+      return player;
+    }
+    changed = true;
+    return {
+      ...player,
+      injury: nextInjury,
+      injuryDetails: nextInjuryDetails,
+    };
+  });
+
+  return changed ? nextPlayers : players;
 };

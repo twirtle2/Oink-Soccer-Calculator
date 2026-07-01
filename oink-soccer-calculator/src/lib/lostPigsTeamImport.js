@@ -39,6 +39,13 @@ const teamIdToAssetId = (teamId) => {
   return normalized.replace(/^AlgorandAsset:/i, '');
 };
 
+const normalizePlayerAssetId = (value = '') => {
+  const trimmed = String(value || '').trim();
+  if (!trimmed) return null;
+  const match = trimmed.match(/(?:Algorand:)?(\d+)$/i);
+  return match ? match[1] : null;
+};
+
 const deriveFormationKey = (formationLabel = '') => {
   if (!formationLabel) return null;
   for (const candidate of FORMATION_CANDIDATES) {
@@ -225,6 +232,16 @@ const mapTeamPayloadToPlayers = (teamId, payload) => {
       || `Opponent ${index + 1}`;
     const ovr = computeOvr(stats, pos, attrs.overall_rating);
     const injuryDetails = mapInjuryDetails(slot.asset?.injury || slot.injury || attrs.injury);
+    const assetId = normalizePlayerAssetId(
+      slot.asset?.asset_id
+      || slot.asset?.id
+      || slot.asset_id
+      || slot.player_id
+      || slot.asset?.injury?.player_id
+      || slot.injury?.player_id
+      || attrs.asset_id
+      || attrs.player_id,
+    );
 
     return {
       id: `teamurl:${teamId}:${slotKey}`,
@@ -236,6 +253,8 @@ const mapTeamPayloadToPlayers = (teamId, payload) => {
       injuryDetails,
       role: slot.role || slot.player_role || '',
       source: 'team-url',
+      assetId,
+      assetKey: assetId ? `Algorand:${assetId}` : null,
       imageUrl: slot.asset?.image_url || slot.asset?.image || attrs.image_url || null,
       positions: Array.isArray(attrs.positions) && attrs.positions.length > 0
         ? attrs.positions.map(p => getPositionKey(p, stats))
