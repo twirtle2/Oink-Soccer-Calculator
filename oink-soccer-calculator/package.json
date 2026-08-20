@@ -3,6 +3,9 @@
   "private": true,
   "version": "0.0.0",
   "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
   "homepage": "https://twirtle2.github.io/Oink-Soccer-Calculator/",
   "scripts": {
     "dev": "vite",
@@ -17,16 +20,18 @@
     "check:upstream": "node scripts/sync-oink-common.mjs --check"
   },
   "dependencies": {
-    "@txnlab/use-wallet-react": "^4.5.0",
+    "@txnlab/use-wallet": "^5.0.0",
+    "@txnlab/use-wallet-defly": "^5.0.0",
+    "@txnlab/use-wallet-kibisis": "^5.0.0",
+    "@txnlab/use-wallet-pera": "^5.0.0",
+    "@txnlab/use-wallet-react": "^5.0.0",
     "algosdk": "^3.5.2",
     "lucide-react": "^0.552.0",
     "react": "^18.2.0",
     "react-dom": "^18.2.0"
   },
   "devDependencies": {
-    "@blockshake/defly-connect": "^1.2.1",
     "@eslint/js": "^9.39.1",
-    "@perawallet/connect": "^1.4.1",
     "@types/react": "^18.2.66",
     "@types/react-dom": "^18.2.22",
     "@vitejs/plugin-react": "^4.2.1",
