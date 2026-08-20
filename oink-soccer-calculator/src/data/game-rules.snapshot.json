@@ -1,7 +1,7 @@
 {
-  "generatedAt": "2026-06-23T10:59:21+01:00",
+  "generatedAt": "2026-08-19T13:12:26+01:00",
   "sourceRepo": "https://github.com/stein-f/oink-soccer-common",
-  "sourceRef": "7e410ce91cb522aff25879d4e67967b207930a80",
+  "sourceRef": "777f940d17d65d4e37b01b6d7167ebe61afae7ce",
   "rules": {
     "formations": {
       "Box": {
