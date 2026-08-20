@@ -1,8 +1,23 @@
 import algosdk from 'algosdk';
 
 const INDEXER_BASE = 'https://mainnet-idx.algonode.cloud';
-const IPFS_GATEWAY = 'https://ipfs.io/ipfs/';
+const PERA_ASSET_BASE = 'https://mainnet.api.perawallet.app/v1/public/assets';
+const REQUEST_TIMEOUT_MS = 8000;
 
+// Ordered IPFS gateways. The first is the public gateway that serves the
+// Best Frens/SCHIZO metadata and images; the rest are fallbacks when it is
+// unreachable. The custom oink.club gateway is deliberately not used because
+// it returns 401 outside the club.
+const IPFS_GATEWAYS = [
+  'https://gateway.pinata.cloud/ipfs/',
+  'https://ipfs.io/ipfs/',
+];
+
+// The Lost Pigs game serves each BOT asset's static image from its own CDN.
+const LOST_PIGS_CDN = 'https://cdn.thelostpigs.com/';
+
+// Resolved successes are cached permanently. Transient failures are intentionally
+// NOT cached, so a flaky gateway does not permanently blank an NFT for the tab.
 const cache = new Map();
 
 const BASE58_ALPHABET = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
@@ -116,49 +131,174 @@ const stripUrlFragment = (url) => {
   return url.slice(0, index);
 };
 
-const toHttpUrl = (raw) => {
-  if (!raw || typeof raw !== 'string') return null;
-  if (raw.startsWith('template-ipfs://')) return null;
-  if (raw.startsWith('ipfs://')) return `${IPFS_GATEWAY}${raw.replace('ipfs://', '')}`;
-  if (raw.startsWith('https://') || raw.startsWith('http://')) return raw;
+const extractIpfsPath = (url) => {
+  if (typeof url !== 'string') return null;
+  const match = url.match(/^https?:\/\/[^/]+\/ipfs\/(.+)$/i);
+  return match ? match[1] : null;
+};
+
+const buildCandidateUrls = (raw, reserveAddress) => {
+  if (typeof raw !== 'string') return [];
+  if (raw.startsWith('template-ipfs://')) {
+    const ipfsTemplate = decodeArc19IpfsTemplate(raw, reserveAddress);
+    if (!ipfsTemplate) return [];
+    return IPFS_GATEWAYS.map((gateway) => `${gateway}${ipfsTemplate.replace('template-ipfs://', '')}`);
+  }
+  if (raw.startsWith('ipfs://')) {
+    const ipfsPath = raw.replace('ipfs://', '');
+    return IPFS_GATEWAYS.map((gateway) => `${gateway}${ipfsPath}`);
+  }
+  if (raw.startsWith('https://') || raw.startsWith('http://')) {
+    const ipfsPath = extractIpfsPath(raw);
+    if (ipfsPath) return IPFS_GATEWAYS.map((gateway) => `${gateway}${ipfsPath}`);
+    return [raw];
+  }
+  return [];
+};
+
+const gatewayForUrl = (url) => (
+  IPFS_GATEWAYS.find((gateway) => String(url || '').startsWith(gateway)) || IPFS_GATEWAYS[0]
+);
+
+// The Lost Pigs game serves each BOT asset's static image straight from the
+// collection CDN (`cdn.thelostpigs.com/<cid>`) rather than a generic gateway.
+const detectCollection = (unitName) => (
+  String(unitName || '').trim().toUpperCase().startsWith('BOT') ? 'lostPigs' : 'ipfs'
+);
+
+const imageIpfsPath = (value) => {
+  const clean = stripUrlFragment(value);
+  if (!clean) return null;
+  if (clean.startsWith('ipfs://')) return clean.replace('ipfs://', '');
+  if (clean.startsWith('template-ipfs://')) return null;
+  if (clean.startsWith('https://') || clean.startsWith('http://')) return extractIpfsPath(clean);
   return null;
 };
 
-const resolveAssetUrl = (urlValue, reserveAddress) => {
-  if (!urlValue || typeof urlValue !== 'string') return null;
-  if (urlValue.startsWith('template-ipfs://')) {
-    const ipfsTemplate = decodeArc19IpfsTemplate(urlValue, reserveAddress);
-    if (!ipfsTemplate) return null;
-    return toHttpUrl(ipfsTemplate.replace('template-ipfs://', 'ipfs://'));
+const resolveFinalImage = (rawImage, gateway, collection) => {
+  if (typeof rawImage !== 'string' || !rawImage) return null;
+  const clean = stripUrlFragment(rawImage);
+  if (!clean) return null;
+  if (clean.startsWith('template-ipfs://')) return null;
+
+  if (collection === 'lostPigs') {
+    const ipfsPath = imageIpfsPath(clean);
+    if (ipfsPath) return `${LOST_PIGS_CDN}${ipfsPath}`;
+    if (clean.startsWith('https://') || clean.startsWith('http://')) return clean;
+    return null;
   }
-  return toHttpUrl(urlValue);
+
+  if (clean.startsWith('ipfs://')) {
+    return gateway ? `${gateway}${clean.replace('ipfs://', '')}` : null;
+  }
+  if (clean.startsWith('https://') || clean.startsWith('http://')) {
+    const ipfsPath = extractIpfsPath(clean);
+    if (ipfsPath && gateway) return `${gateway}${ipfsPath}`;
+    return clean;
+  }
+  return null;
 };
 
 const isDirectImageUrl = (url) => /\.(png|jpe?g|gif|webp|svg|avif)(\?.*)?$/i.test(url);
 
-const parseImageFromMetadata = (metadata) => {
-  const candidate = metadata?.image
+const parseImageFromMetadata = (metadata, collection) => {
+  if (collection === 'lostPigs') {
+    // Match the game by preferring the lighter static variant when present.
+    return metadata?.properties?.image_static
+      || metadata?.image
+      || metadata?.image_url
+      || metadata?.properties?.image
+      || metadata?.properties?.image_url
+      || null;
+  }
+  return metadata?.image
     || metadata?.image_url
     || metadata?.properties?.image
-    || metadata?.properties?.image_url;
-  return toHttpUrl(candidate);
+    || metadata?.properties?.image_url
+    || null;
 };
 
-const fetchImageFromMetadataUrl = async (metadataUrl, signal) => {
-  const response = await fetch(metadataUrl, { signal });
-  if (!response.ok) return null;
+const fetchWithTimeout = async (url, signal) => {
+  const controller = new AbortController();
+  const abortFromParent = () => controller.abort(signal?.reason);
+  if (signal?.aborted) {
+    abortFromParent();
+  } else {
+    signal?.addEventListener('abort', abortFromParent, { once: true });
+  }
+  const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+  try {
+    return await fetch(url, { signal: controller.signal });
+  } finally {
+    clearTimeout(timeout);
+    signal?.removeEventListener('abort', abortFromParent);
+  }
+};
+
+const resolveFromPera = async (assetId, signal) => {
+  try {
+    const response = await fetchWithTimeout(`${PERA_ASSET_BASE}/${assetId}/`, signal);
+    if (!response.ok) return null;
+    const payload = await response.json();
+    const collectible = payload?.collectible;
+    if (!collectible) return null;
+
+    const collection = detectCollection(payload?.unit_name);
+    const metadataImage = parseImageFromMetadata(collectible.metadata, collection);
+    if (collection === 'lostPigs' && metadataImage) {
+      return resolveFinalImage(metadataImage, IPFS_GATEWAYS[0], collection);
+    }
+
+    const mediaUrl = collectible.media?.find((media) => media?.type === 'image' && media?.url)?.url;
+    if (mediaUrl) return stripUrlFragment(mediaUrl);
+    return resolveFinalImage(metadataImage, IPFS_GATEWAYS[0], collection);
+  } catch (error) {
+    if (signal?.aborted) throw error;
+    return null;
+  }
+};
+
+const firstReachableUrl = async (urls, signal) => {
+  for (const url of urls) {
+    if (!url) continue;
+    let response;
+    try {
+      response = await fetchWithTimeout(url, signal);
+    } catch (error) {
+      if (signal?.aborted) throw error;
+      continue;
+    }
+    if (response.ok) return url;
+  }
+  return null;
+};
+
+const fetchImageFromMetadataCandidate = async (metadataUrl, signal, collection) => {
+  let response;
+  try {
+    response = await fetchWithTimeout(metadataUrl, signal);
+  } catch (error) {
+    if (signal?.aborted) throw error;
+    return { status: 'fail' };
+  }
+  if (!response.ok) return { status: 'fail' };
 
   const contentType = response.headers.get('content-type') || '';
   if (contentType.startsWith('image/')) {
-    return metadataUrl;
+    return { status: 'ok', isImage: true, image: metadataUrl };
   }
 
   if (contentType.includes('application/json') || contentType.includes('text/json') || metadataUrl.endsWith('.json')) {
-    const metadata = await response.json();
-    return parseImageFromMetadata(metadata);
+    let metadata;
+    try {
+      metadata = await response.json();
+    } catch {
+      return { status: 'fail' };
+    }
+    return { status: 'ok', isImage: false, image: parseImageFromMetadata(metadata, collection) };
   }
 
-  return null;
+  return { status: 'fail' };
 };
 
 const resolveFromAssetParams = async (assetId, signal) => {
@@ -168,18 +308,35 @@ const resolveFromAssetParams = async (assetId, signal) => {
   const params = payload?.asset?.params;
   if (!params) return null;
 
-  const unitImage = resolveAssetUrl(params?.['unit-name-image-url'], params?.reserve);
-  if (unitImage) return stripUrlFragment(unitImage);
+  const collection = detectCollection(params?.['unit-name']);
+  const reserve = params?.reserve;
 
-  const url = resolveAssetUrl(params.url, params.reserve);
-  if (!url) return null;
-  const cleanUrl = stripUrlFragment(url);
-  if (!cleanUrl) return null;
-  if (isDirectImageUrl(cleanUrl)) return cleanUrl;
+  const unitImage = params?.['unit-name-image-url'];
+  if (unitImage) {
+    const finalUnit = resolveFinalImage(
+      stripUrlFragment(await firstReachableUrl(buildCandidateUrls(unitImage, reserve), signal)),
+      undefined,
+      collection,
+    );
+    if (finalUnit) return finalUnit;
+  }
 
-  const metadataImage = await fetchImageFromMetadataUrl(cleanUrl, signal);
-  if (metadataImage) {
-    return stripUrlFragment(metadataImage);
+  const urlCandidates = buildCandidateUrls(params.url, reserve);
+
+  const directCandidates = urlCandidates
+    .map((url) => stripUrlFragment(url))
+    .filter((url) => url && isDirectImageUrl(url));
+  if (directCandidates.length > 0) {
+    const reachable = await firstReachableUrl(directCandidates, signal);
+    if (reachable) return reachable;
+  }
+
+  for (const metadataCandidate of urlCandidates) {
+    const result = await fetchImageFromMetadataCandidate(metadataCandidate, signal, collection);
+    if (result.status === 'fail') continue;
+    if (result.isImage) return stripUrlFragment(result.image);
+    const finalUrl = resolveFinalImage(result.image, gatewayForUrl(metadataCandidate), collection);
+    if (finalUrl) return stripUrlFragment(finalUrl);
   }
 
   return null;
@@ -196,11 +353,14 @@ export const resolvePlayerImage = async (player, signal) => {
   }
 
   try {
-    const resolved = await resolveFromAssetParams(cacheKey, signal);
-    cache.set(cacheKey, resolved || null);
-    return resolved || null;
+    const resolved = await resolveFromPera(cacheKey, signal)
+      || await resolveFromAssetParams(cacheKey, signal);
+    if (resolved) {
+      cache.set(cacheKey, resolved);
+      return resolved;
+    }
+    return null;
   } catch {
-    cache.set(cacheKey, null);
     return null;
   }
 };
