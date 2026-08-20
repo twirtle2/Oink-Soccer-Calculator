@@ -196,6 +196,16 @@ const mapInjuryDetails = (assetInjury) => {
   };
 };
 
+const mapTeamTactics = (tactics) => {
+  if (!tactics || typeof tactics !== 'object') return null;
+  return {
+    press: String(tactics.Press ?? tactics.press ?? 'medium').toLowerCase(),
+    tempo: String(tactics.Tempo ?? tactics.tempo ?? 'normal').toLowerCase(),
+    lineHeight: String(tactics.LineHeight ?? tactics.lineHeight ?? 'normal').toLowerCase(),
+    setPieceTaker: String(tactics.SetPieceTaker ?? tactics.setPieceTaker ?? ''),
+  };
+};
+
 const mapTeamPayloadToPlayers = (teamId, payload) => {
   const slots = payload?.team_selection?.slots || {};
   const formationLabel = payload?.team?.formation || '';
@@ -275,6 +285,7 @@ const mapTeamPayloadToPlayers = (teamId, payload) => {
     teamLabel,
     formationLabel,
     formationKey,
+    tactics: mapTeamTactics(payload?.team?.tactics),
     isDefaultLineup,
     players: lineupPlayers,
   };

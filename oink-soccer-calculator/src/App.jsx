@@ -981,7 +981,7 @@ export default function OinkSoccerCalc() {
   const [myForm, setMyForm] = useState(persistedState.myForm || 'Pyramid');
   const [oppForm, setOppForm] = useState(persistedState.oppForm || 'Pyramid');
   const [myTactics, setMyTactics] = useState(normalizeTactics(persistedState.myTactics));
-  const [oppTactics] = useState(normalizeTactics(persistedState.oppTactics));
+  const [oppTactics, setOppTactics] = useState(normalizeTactics(persistedState.oppTactics));
 
   const [myBoost] = useState(persistedState.myBoost || 'None');
   const [myBoostApps] = useState(persistedState.myBoostApps || 1);
@@ -1722,12 +1722,14 @@ export default function OinkSoccerCalc() {
       const nextFormation = imported.formationKey && FORMATIONS[imported.formationKey]
         ? imported.formationKey
         : oppForm;
+      const nextTactics = normalizeTactics(imported.tactics);
 
       setImportedOpponentTeamId(imported.teamId || null);
       setOpponentLineupMeta({ isDefaultLineup: Boolean(imported.isDefaultLineup) });
       setOppForm(nextFormation);
+      setOppTactics(nextTactics);
       setOpponentTeam(imported.players);
-      saveToDb({ opponentTeam: imported.players, oppForm: nextFormation });
+      saveToDb({ opponentTeam: imported.players, oppForm: nextFormation, oppTactics: nextTactics });
 
       if (!quiet) {
         const formationText = imported.formationKey
@@ -1743,8 +1745,9 @@ export default function OinkSoccerCalc() {
     } catch (err) {
       setImportedOpponentTeamId(null);
       setOpponentLineupMeta({ isDefaultLineup: false });
+      setOppTactics(DEFAULT_TACTICS);
       setOpponentTeam([]);
-      saveToDb({ opponentTeam: [] });
+      saveToDb({ opponentTeam: [], oppTactics: DEFAULT_TACTICS });
       setUploadStatus({
         tone: 'error',
         message: err instanceof Error ? err.message : 'Team import failed.',
@@ -2133,14 +2136,15 @@ export default function OinkSoccerCalc() {
       const opponentFormation = opponentModel.formationKey && FORMATIONS[opponentModel.formationKey]
         ? opponentModel.formationKey
         : 'Pyramid';
-      const opponentStats = calculateTeamScores(opponentModel.players, opponentFormation, TEAM_BOOST_STATE_EMPTY, DEFAULT_TACTICS);
+      const opponentTactics = normalizeTactics(opponentModel.tactics);
+      const opponentStats = calculateTeamScores(opponentModel.players, opponentFormation, TEAM_BOOST_STATE_EMPTY, opponentTactics);
       const projection = projectMatch({
         myStats: currentStats,
         myForm,
         myTactics,
         oppStats: opponentStats,
         oppForm: opponentFormation,
-        oppTactics: DEFAULT_TACTICS,
+        oppTactics: opponentTactics,
         homeAdvantage: isHome ? 'home' : 'away',
       });
       chances[fixture.game_key] = { win: projection.win, myxG: projection.myxG, oppxG: projection.oppxG, source: 'current' };
@@ -2271,7 +2275,7 @@ export default function OinkSoccerCalc() {
       const model = seasonTeams[teamId];
       if (!model?.players?.length) return null;
       const formation = model.formationKey && FORMATIONS[model.formationKey] ? model.formationKey : 'Pyramid';
-      const tactics = DEFAULT_TACTICS;
+      const tactics = normalizeTactics(model.tactics);
       return {
         ...model,
         formation,
@@ -2445,13 +2449,15 @@ export default function OinkSoccerCalc() {
       const opponentFormation = opponentModel.formationKey && FORMATIONS[opponentModel.formationKey]
         ? opponentModel.formationKey
         : 'Pyramid';
-      const opponentStats = calculateTeamScores(opponentModel.players, opponentFormation, TEAM_BOOST_STATE_EMPTY, DEFAULT_TACTICS);
+      const opponentTactics = normalizeTactics(opponentModel.tactics);
+      const opponentStats = calculateTeamScores(opponentModel.players, opponentFormation, TEAM_BOOST_STATE_EMPTY, opponentTactics);
       return {
         opponentId,
         isHome,
         opponentName: isHome ? fixture.away_team_name : fixture.home_team_name,
         opponentFormation,
         opponentStats,
+        opponentTactics,
       };
     };
 
@@ -2466,7 +2472,7 @@ export default function OinkSoccerCalc() {
           myTactics,
           oppStats: opponent.opponentStats,
           oppForm: opponent.opponentFormation,
-          oppTactics: DEFAULT_TACTICS,
+          oppTactics: opponent.opponentTactics,
           homeAdvantage: opponent.isHome ? 'home' : 'away',
         }),
       };
@@ -2764,7 +2770,7 @@ export default function OinkSoccerCalc() {
         const model = seasonTeams[teamId];
         if (!model?.players?.length) return null;
         const formation = model.formationKey && FORMATIONS[model.formationKey] ? model.formationKey : 'Pyramid';
-        const tactics = DEFAULT_TACTICS;
+        const tactics = normalizeTactics(model.tactics);
         return {
           formation,
           tactics,

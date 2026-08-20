@@ -396,6 +396,43 @@ test('fetchTeamLineup returns mapped team players', async () => {
   });
 });
 
+test('fetchTeamLineup maps live opponent tactics from the team payload', async () => {
+  await withMockedFetch(async () => okResponse({
+    team: {
+      id: 'AlgorandAsset:456',
+      custom_name: 'Kings',
+      formation: 'The Pyramid (2-1-1)',
+      tactics: {
+        Press: 'high',
+        Tempo: 'fast',
+        LineHeight: 'deep',
+        SetPieceTaker: 'AlgorandAsset:789',
+      },
+    },
+    team_selection: {
+      slots: {
+        0: {
+          asset: { id: 'AlgorandAsset:789', name: 'Keeper' },
+          player_attributes: {
+            based_on_player: 'Keeper',
+            position: 'Goalkeeper',
+            overall_rating: 80,
+            goalkeeper_rating: 80,
+          },
+        },
+      },
+    },
+  }), async () => {
+    const lineup = await fetchTeamLineup('AlgorandAsset:456');
+    assert.deepEqual(lineup.tactics, {
+      press: 'high',
+      tempo: 'fast',
+      lineHeight: 'deep',
+      setPieceTaker: 'AlgorandAsset:789',
+    });
+  });
+});
+
 test('fetchTeamLineup maps active API injuries onto imported players', async () => {
   await withMockedFetch(async (url) => {
     assert.match(String(url), /\/v2\/soccer\/team\/AlgorandAsset%3A321$/);
