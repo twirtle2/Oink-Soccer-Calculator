@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
-import { Plus, Trash2, Users, Zap, Activity, Pencil, Save, RotateCcw, Loader2, Bandage, X, TrendingUp, ChevronDown, ChevronUp, RefreshCw } from 'lucide-react';
+import { Plus, Trash2, Users, Zap, Activity, Pencil, Save, RotateCcw, Loader2, Bandage, X, TrendingUp, ChevronDown, ChevronUp, ChevronLeft, ChevronRight, RefreshCw } from 'lucide-react';
 import { useWallet } from '@txnlab/use-wallet-react';
 import WalletConnector from './components/WalletConnector';
 import { loadCalculatorState, saveCalculatorState } from './lib/storage';
@@ -687,6 +687,14 @@ const hasFixtureStarted = (fixture, now = Date.now()) => {
   return fixtureTime !== Number.MAX_SAFE_INTEGER && fixtureTime <= now;
 };
 
+const canSelectFixture = (fixture, now = Date.now()) => (
+  Boolean(fixture)
+  && !fixture.cup_bye
+  && (Boolean(fixture.game_result) || !hasFixtureStarted(fixture, now))
+);
+
+const FIXTURE_NAV_BUTTON_CLASS = 'flex h-11 w-11 items-center justify-center rounded-md border border-[#2a3a50] bg-[#111620] text-[#9aa5bb] transition-[transform,background-color,border-color,color] duration-150 hover:border-[#00e676]/60 hover:bg-[#0f2a1b] hover:text-[#00e676] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#00e676]/50 focus-visible:ring-offset-2 focus-visible:ring-offset-[#161c28] active:scale-[0.96] disabled:cursor-not-allowed disabled:border-[#1e2a3a] disabled:text-[#46536a] disabled:hover:bg-[#111620]';
+
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 const ITEM_USE_COOLDOWN_DAYS = 2;
 
@@ -1077,6 +1085,26 @@ export default function OinkSoccerCalc() {
     ))),
     [currentTime, displayedFixtures],
   );
+
+  const navigableFixtures = useMemo(
+    () => sortFixturesByRoundAndTime(displayedFixtures.filter((fixture) => (
+      canSelectFixture(fixture, currentTime)
+    ))),
+    [currentTime, displayedFixtures],
+  );
+
+  const selectedFixtureNavigationIndex = useMemo(
+    () => navigableFixtures.findIndex((fixture) => fixture.game_key === selectedFixtureKey),
+    [navigableFixtures, selectedFixtureKey],
+  );
+
+  const previousFixture = selectedFixtureNavigationIndex > 0
+    ? navigableFixtures[selectedFixtureNavigationIndex - 1]
+    : null;
+  const nextFixture = selectedFixtureNavigationIndex >= 0
+    && selectedFixtureNavigationIndex < navigableFixtures.length - 1
+    ? navigableFixtures[selectedFixtureNavigationIndex + 1]
+    : null;
 
   useEffect(() => {
     if (activeTab !== 'upcoming' || upcomingFixtures.length === 0 || detectedMyTeamIds.length === 0) {
@@ -3438,14 +3466,57 @@ export default function OinkSoccerCalc() {
               <div className="rounded-[10px] border border-[#1e2a3a] bg-[#161c28] p-4">
                 <div className="text-[11px] font-bold uppercase tracking-[0.14em] text-[#00e676]">Selected Matchup</div>
                 {selectedFixture ? (
-                  <div className="mt-2 grid grid-cols-[1fr_auto_1fr] items-center gap-2 text-sm">
-                    <div className={`min-w-0 truncate text-right ${homeAdvantage === 'home' ? 'text-[#00e676]' : 'text-[#e8edf5]'}`}>{selectedFixture.home_team_name}</div>
-                    <div className="rounded bg-[#ffab00] px-2 py-1 text-xs font-bold text-black">
-                      {selectedFixture.game_result
-                        ? `${selectedFixture.game_result.home_team_score}-${selectedFixture.game_result.away_team_score}`
-                        : 'vs'}
+                  <div className="mt-2 grid grid-cols-[44px_minmax(0,1fr)_44px] items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => void handleSelectFixture(previousFixture)}
+                      disabled={!previousFixture || importingTeamUrl}
+                      aria-label={previousFixture
+                        ? `Previous game: ${previousFixture.home_team_name} versus ${previousFixture.away_team_name}`
+                        : 'No previous game'}
+                      title={previousFixture
+                        ? `${previousFixture.home_team_name} vs ${previousFixture.away_team_name}`
+                        : 'No previous game'}
+                      className={FIXTURE_NAV_BUTTON_CLASS}
+                    >
+                      <ChevronLeft size={22} strokeWidth={2} aria-hidden="true" />
+                    </button>
+
+                    <div className="min-w-0">
+                      <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-2 text-sm">
+                        <div className={`min-w-0 truncate text-right ${homeAdvantage === 'home' ? 'text-[#00e676]' : 'text-[#e8edf5]'}`}>{selectedFixture.home_team_name}</div>
+                        <div className="rounded bg-[#ffab00] px-2 py-1 text-xs font-bold text-black">
+                          {selectedFixture.game_result
+                            ? `${selectedFixture.game_result.home_team_score}-${selectedFixture.game_result.away_team_score}`
+                            : 'vs'}
+                        </div>
+                        <div className={`min-w-0 truncate ${homeAdvantage === 'away' ? 'text-[#00e676]' : 'text-[#e8edf5]'}`}>{selectedFixture.away_team_name}</div>
+                      </div>
+                      {selectedFixtureNavigationIndex >= 0 && (
+                        <div className="mt-2 flex flex-wrap items-center justify-center gap-x-1 text-center text-[9px] font-bold uppercase tracking-[0.08em] text-[#6b7a94]">
+                          <span>{getFixtureRoundLabel(selectedFixture)}</span>
+                          <span aria-hidden="true">•</span>
+                          <span>{formatFixtureTime(selectedFixture.game_time)}</span>
+                          <span aria-hidden="true">•</span>
+                          <span>Game {selectedFixtureNavigationIndex + 1} of {navigableFixtures.length}</span>
+                        </div>
+                      )}
                     </div>
-                    <div className={`min-w-0 truncate ${homeAdvantage === 'away' ? 'text-[#00e676]' : 'text-[#e8edf5]'}`}>{selectedFixture.away_team_name}</div>
+
+                    <button
+                      type="button"
+                      onClick={() => void handleSelectFixture(nextFixture)}
+                      disabled={!nextFixture || importingTeamUrl}
+                      aria-label={nextFixture
+                        ? `Next game: ${nextFixture.home_team_name} versus ${nextFixture.away_team_name}`
+                        : 'No next game'}
+                      title={nextFixture
+                        ? `${nextFixture.home_team_name} vs ${nextFixture.away_team_name}`
+                        : 'No next game'}
+                      className={FIXTURE_NAV_BUTTON_CLASS}
+                    >
+                      <ChevronRight size={22} strokeWidth={2} aria-hidden="true" />
+                    </button>
                   </div>
                 ) : (
                   <div className="mt-2 text-sm text-[#9aa5bb]">Choose a fixture from Upcoming to calculate the best setup.</div>
@@ -3811,7 +3882,7 @@ function FixtureTableSection({
           const isCup = fixture.competition === 'cup';
           const isBye = Boolean(fixture.cup_bye);
           const isResultPending = !fixture.game_result && !isBye && hasFixtureStarted(fixture);
-          const isInactive = isBye || isResultPending;
+          const isInactive = !canSelectFixture(fixture);
           const mySide = myTeams.has(fixture.home_team_id)
             ? 'home'
             : myTeams.has(fixture.away_team_id)
