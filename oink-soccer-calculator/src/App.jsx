@@ -27,8 +27,10 @@ import {
   createManualFallbackBoostState,
   getBoostMultipliersFromState,
 } from './lib/boosts';
+import { getPoissonOutcomePercentages } from './lib/matchProjection';
 import { resolvePlayerImage } from './lib/assetImages';
 import {
+  CHANCE_TYPE_WEIGHTS,
   BOOSTS,
   CHANCE_TYPES,
   DEFENSE_BIAS_MULTIPLIER,
@@ -303,9 +305,9 @@ const cornerDeliveryFactor = (assignedPlayers, tacticsInput) => {
   return Math.max(0.80, Math.min(1.20, 1 + ((technique - 60) / 100) * 0.40));
 };
 
-const expectedChanceAttack = (assignedPlayers, boostMults, tacticsInput) => {
-  if (assignedPlayers.length === 0) return 0;
+const expectedChanceAttack = (assignedPlayers, tacticsInput) => {
   const tactics = normalizeTactics(tacticsInput);
+  const byChanceType = {};
   let totalWeightedAttack = 0;
   let totalChanceWeight = 0;
 
@@ -325,7 +327,7 @@ const expectedChanceAttack = (assignedPlayers, boostMults, tacticsInput) => {
       const injuryMod = player.injury && INJURIES[player.injury] ? INJURIES[player.injury].reduction : 1;
       const positionMod = player.outOfPosition ? OUT_OF_POSITION_SCALE : 1;
       const selfMod = captainSelfBoost(player);
-      const score = getAttackScoreForChance(player.stats, chanceType, injuryMod * positionMod * selfMod, boostMults);
+      const score = getAttackScoreForChance(player.stats, chanceType, injuryMod * positionMod * selfMod);
       const roleWeight = player.role === PLAYER_ROLES.targetMan.value && ['Corner', 'Cross'].includes(chanceType) ? 2 : 1;
       const weight = posWeight * Math.max(1, score) * roleWeight;
       attackerScore += score * weight;
@@ -334,11 +336,16 @@ const expectedChanceAttack = (assignedPlayers, boostMults, tacticsInput) => {
 
     if (attackerWeight <= 0) continue;
     const delivery = chanceType === 'Corner' ? cornerDeliveryFactor(assignedPlayers, tactics) : 1;
-    totalWeightedAttack += (attackerScore / attackerWeight) * profile.attackBoost * delivery * profile.baseWeight;
-    totalChanceWeight += profile.baseWeight;
+    const chanceAttack = (attackerScore / attackerWeight) * profile.attackBoost * delivery;
+    byChanceType[chanceType] = chanceAttack;
+    totalWeightedAttack += chanceAttack * CHANCE_TYPE_WEIGHTS[chanceType];
+    totalChanceWeight += CHANCE_TYPE_WEIGHTS[chanceType];
   }
 
-  return totalChanceWeight > 0 ? totalWeightedAttack / totalChanceWeight : 0;
+  return {
+    attack: totalChanceWeight > 0 ? totalWeightedAttack / totalChanceWeight : 0,
+    byChanceType,
+  };
 };
 
 const calculateTeamScores = (players, formationKey, boostContext, tacticsInput = DEFAULT_TACTICS) => {
@@ -355,6 +362,7 @@ const calculateTeamScores = (players, formationKey, boostContext, tacticsInput =
   const stats = {
     Control: 0, Defense: 0, Attack: 0,
     AvgControl: 0, AvgDefense: 0, AvgAttack: 0,
+    AttackByChanceType: {},
     Count: players.length
   };
 
@@ -393,11 +401,18 @@ const calculateTeamScores = (players, formationKey, boostContext, tacticsInput =
     * teamCaptainBoost
     * DEFENSE_BIAS_MULTIPLIER;
 
-  stats.Attack = expectedChanceAttack(assignedPlayers, boostMults, tactics)
-    * profile.chanceCreation
+  const chanceAttack = expectedChanceAttack(assignedPlayers, tactics);
+  const attackModifiers = profile.chanceCreation
     * profile.chanceQuality
     * (TACTICS.tempo[tactics.tempo]?.qualityFactor || 1)
     * (TACTICS.press[tactics.press]?.fatigueFactor || 1);
+
+  stats.Attack = chanceAttack.attack * attackModifiers;
+  stats.AttackByChanceType = Object.fromEntries(
+    Object.entries(chanceAttack.byChanceType).map(([chanceType, attack]) => (
+      [chanceType, attack * attackModifiers]
+    )),
+  );
 
   stats.Control = parseFloat(stats.Control.toFixed(1));
   stats.Defense = parseFloat(stats.Defense.toFixed(1));
@@ -406,9 +421,28 @@ const calculateTeamScores = (players, formationKey, boostContext, tacticsInput =
   return stats;
 };
 
-const calcGoalProb = (att, def) => {
-  const total = Math.max(1, att) + Math.max(1, def);
-  return Math.max(0.01, Math.min(0.9, Math.max(1, att) / total));
+const calcGoalProb = (attackByChanceType, aggregateAttack, def) => {
+  const entries = Object.entries(attackByChanceType || {});
+
+  if (entries.length === 0) {
+    const attack = Math.max(1, aggregateAttack);
+    const defense = Math.max(1, def);
+    return attack / (attack + defense);
+  }
+
+  let weightedProbability = 0;
+  let totalWeight = 0;
+  for (const [chanceType, attack] of entries) {
+    const weight = CHANCE_TYPE_WEIGHTS[chanceType] || 0;
+    if (weight <= 0) continue;
+    const defenseScale = CHANCE_TYPES[chanceType]?.defenseScale || 1;
+    const effectiveAttack = Math.max(1, Number(attack));
+    const effectiveDefense = Math.max(1, Number(def) * defenseScale);
+    weightedProbability += weight * (effectiveAttack / (effectiveAttack + effectiveDefense));
+    totalWeight += weight;
+  }
+
+  return totalWeight > 0 ? weightedProbability / totalWeight : 0;
 };
 
 const projectMatch = ({
@@ -421,7 +455,7 @@ const projectMatch = ({
   homeAdvantage,
 }) => {
   if (myStats.Count === 0 || oppStats.Count === 0) {
-    return { win: 50, myPossession: 50, myxG: 0, oppxG: 0 };
+    return { win: 0, draw: 100, loss: 0, myPossession: 50, myxG: 0, oppxG: 0 };
   }
 
   const normalizedMyTactics = normalizeTactics(myTactics);
@@ -435,19 +469,18 @@ const projectMatch = ({
   const totalControl = adjustedMyControl + adjustedOppControl;
   const myPossession = totalControl === 0 ? 0.5 : (adjustedMyControl / totalControl);
 
-  const myGoalProb = calcGoalProb(myStats.Attack, oppStats.Defense);
-  const oppGoalProb = calcGoalProb(oppStats.Attack, myStats.Defense);
+  const myGoalProb = calcGoalProb(myStats.AttackByChanceType, myStats.Attack, oppStats.Defense);
+  const oppGoalProb = calcGoalProb(oppStats.AttackByChanceType, oppStats.Attack, myStats.Defense);
 
   const avgEvents = getAverageEvents(myForm, oppForm, homeAdvantage, normalizedMyTactics, normalizedOppTactics);
   const myEvents = avgEvents * myPossession;
   const oppEvents = avgEvents * (1 - myPossession);
   const myxG = myEvents * myGoalProb;
   const oppxG = oppEvents * oppGoalProb;
-  const totalxG = myxG + oppxG;
-  const win = totalxG === 0 ? 50 : (myxG / totalxG) * 100;
+  const outcomes = getPoissonOutcomePercentages(myxG, oppxG);
 
   return {
-    win,
+    ...outcomes,
     myPossession: myPossession * 100,
     myxG,
     oppxG,
@@ -1599,6 +1632,8 @@ export default function OinkSoccerCalc() {
 
     return {
       win: projection.win.toFixed(1),
+      draw: projection.draw.toFixed(1),
+      loss: projection.loss.toFixed(1),
       myPossession: projection.myPossession.toFixed(0),
       myxG: projection.myxG.toFixed(2),
       oppxG: projection.oppxG.toFixed(2),
@@ -2016,6 +2051,8 @@ export default function OinkSoccerCalc() {
                 tactics,
                 stats: roleResult.stats,
                 win: roleResult.projection.win,
+                draw: roleResult.projection.draw,
+                loss: roleResult.projection.loss,
                 myxG: roleResult.projection.myxG,
                 oppxG: roleResult.projection.oppxG,
                 possession: roleResult.projection.myPossession,
@@ -2234,24 +2271,41 @@ export default function OinkSoccerCalc() {
     ? {
       label: 'Best Setup Projection',
       win: formatNumber(topSuggestion.win),
+      draw: formatNumber(topSuggestion.draw),
+      loss: formatNumber(topSuggestion.loss),
       myxG: formatNumber(topSuggestion.myxG, 2),
       oppxG: formatNumber(topSuggestion.oppxG, 2),
     }
     : {
       label: 'Current Setup Projection',
       win: simulation.win,
+      draw: simulation.draw,
+      loss: simulation.loss,
       myxG: simulation.myxG,
       oppxG: simulation.oppxG,
     };
 
   const winPct = Number.parseFloat(headlineProjection.win) || 0;
-  const scoreGap = Number(headlineProjection.myxG) - Number(headlineProjection.oppxG);
-  const drawPct = Math.max(12, Math.min(34, 24 - Math.abs(scoreGap) * 7));
-  const remaining = Math.max(0, 100 - drawPct);
-  const winShare = Math.max(0, Math.min(1, winPct / 100));
-  const forecastWin = Number((remaining * winShare).toFixed(1));
-  const forecastLoss = Number((100 - drawPct - forecastWin).toFixed(1));
-  const forecastDraw = Number((100 - forecastWin - forecastLoss).toFixed(1));
+  const fallbackOutcome = getPoissonOutcomePercentages(
+    Number(headlineProjection.myxG),
+    Number(headlineProjection.oppxG),
+  );
+  const forecastWin = Number(Number.isFinite(winPct) ? winPct : fallbackOutcome.win);
+  const forecastDraw = Number(
+    Number.isFinite(Number.parseFloat(headlineProjection.draw))
+      ? headlineProjection.draw
+      : fallbackOutcome.draw,
+  );
+  const forecastLoss = Number(
+    Number.isFinite(Number.parseFloat(headlineProjection.loss))
+      ? headlineProjection.loss
+      : fallbackOutcome.loss,
+  );
+  const hasLineups = myTeam.length > 0 && opponentTeam.length > 0;
+  const displayedWin = hasLineups ? `${headlineProjection.win}%` : '--';
+  const displayedForecastWin = hasLineups ? forecastWin : 0;
+  const displayedForecastDraw = hasLineups ? forecastDraw : 0;
+  const displayedForecastLoss = hasLineups ? forecastLoss : 0;
 
   const opponentPitchSuggestion = useMemo(() => {
     if (opponentTeam.length === 0 || !FORMATIONS[oppForm]) return null;
@@ -3163,7 +3217,7 @@ export default function OinkSoccerCalc() {
         <div className="mx-auto flex max-w-[1200px] items-center justify-between gap-6 px-4 py-3 md:px-6">
           <div>
             <div className="text-[10px] font-bold uppercase tracking-[0.14em] text-[#6b7a94]">{headlineProjection.label}</div>
-            <div className="font-['Barlow_Condensed'] text-[42px] font-black leading-none text-[#00e676]">{headlineProjection.win}%</div>
+            <div className="font-['Barlow_Condensed'] text-[42px] font-black leading-none text-[#00e676]">{displayedWin}</div>
             <div className="text-[11px] text-[#6b7a94]">Based on {(Number(headlineProjection.myxG) + Number(headlineProjection.oppxG)).toFixed(2)} simulated goals</div>
           </div>
 
@@ -3181,15 +3235,15 @@ export default function OinkSoccerCalc() {
 
           <div className="hidden items-end gap-5 sm:flex">
             <div className="text-center">
-              <div className="font-['Barlow_Condensed'] text-[20px] font-bold text-[#00e676]">{forecastWin.toFixed(1)}%</div>
+              <div className="font-['Barlow_Condensed'] text-[20px] font-bold text-[#00e676]">{displayedForecastWin.toFixed(1)}%</div>
               <div className="text-[9px] uppercase tracking-[0.12em] text-[#6b7a94]">Win</div>
             </div>
             <div className="text-center">
-              <div className="font-['Barlow_Condensed'] text-[20px] font-bold text-[#9aa5bb]">{forecastDraw.toFixed(1)}%</div>
+              <div className="font-['Barlow_Condensed'] text-[20px] font-bold text-[#9aa5bb]">{displayedForecastDraw.toFixed(1)}%</div>
               <div className="text-[9px] uppercase tracking-[0.12em] text-[#6b7a94]">Draw</div>
             </div>
             <div className="text-center">
-              <div className="font-['Barlow_Condensed'] text-[20px] font-bold text-[#ff4444]">{forecastLoss.toFixed(1)}%</div>
+              <div className="font-['Barlow_Condensed'] text-[20px] font-bold text-[#ff4444]">{displayedForecastLoss.toFixed(1)}%</div>
               <div className="text-[9px] uppercase tracking-[0.12em] text-[#6b7a94]">Loss</div>
             </div>
           </div>
@@ -3765,9 +3819,9 @@ export default function OinkSoccerCalc() {
             <div className="rounded-[10px] border border-[#1e2a3a] bg-[#111620] p-4">
               <div className="mb-2 text-sm font-semibold">Outcome Forecast</div>
               <div className="space-y-2">
-                <OutcomeBar label="Win" value={forecastWin} color="#00e676" textClass="text-[#00e676]" />
-                <OutcomeBar label="Draw" value={forecastDraw} color="#6b7a94" textClass="text-[#9aa5bb]" />
-                <OutcomeBar label="Loss" value={forecastLoss} color="#ff4444" textClass="text-[#ff4444]" />
+                <OutcomeBar label="Win" value={displayedForecastWin} color="#00e676" textClass="text-[#00e676]" />
+                <OutcomeBar label="Draw" value={displayedForecastDraw} color="#6b7a94" textClass="text-[#9aa5bb]" />
+                <OutcomeBar label="Loss" value={displayedForecastLoss} color="#ff4444" textClass="text-[#ff4444]" />
               </div>
             </div>
 

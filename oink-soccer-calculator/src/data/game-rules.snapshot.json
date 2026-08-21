@@ -122,7 +122,7 @@
           "label": "High",
           "controlFactor": 0.94,
           "injuryFactor": 1.1,
-          "fatigueFactor": 0.94
+          "fatigueFactor": 0.769033033
         }
       },
       "tempo": {
