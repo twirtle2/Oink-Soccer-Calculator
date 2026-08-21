@@ -14,3 +14,14 @@ test('identical expected-goal rates produce symmetric win and loss probabilities
 test('zero expected goals resolves as a draw', () => {
   assert.deepEqual(getPoissonOutcomePercentages(0, 0), { win: 0, draw: 100, loss: 0 });
 });
+
+test('the team with higher expected goals has the higher win probability', () => {
+  const underdog = getPoissonOutcomePercentages(0.85, 3.73);
+  const favourite = getPoissonOutcomePercentages(3.73, 0.85);
+
+  assert.ok(Math.abs(underdog.win - 4.43) < 0.01);
+  assert.ok(Math.abs(underdog.draw - 7.97) < 0.01);
+  assert.ok(Math.abs(underdog.loss - 87.6) < 0.01);
+  assert.ok(Math.abs(favourite.win - 87.6) < 0.01);
+  assert.ok(Math.abs(favourite.loss - 4.43) < 0.01);
+});

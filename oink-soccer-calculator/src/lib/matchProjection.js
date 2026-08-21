@@ -33,9 +33,9 @@ export const getPoissonOutcomePercentages = (myxG, oppxG) => {
 
   for (let myGoals = 0; myGoals <= MAX_GOALS; myGoals += 1) {
     const myProbability = myProbabilities[myGoals];
-    win += myProbability * oppSuffix[myGoals + 1];
+    win += myProbability * (oppSuffix[0] - oppSuffix[myGoals]);
     draw += myProbability * oppProbabilities[myGoals];
-    loss += myProbability * (oppSuffix[0] - oppSuffix[myGoals]);
+    loss += myProbability * oppSuffix[myGoals + 1];
   }
 
   const total = win + draw + loss;
