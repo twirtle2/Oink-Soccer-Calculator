@@ -47,3 +47,18 @@ export const getPoissonOutcomePercentages = (myxG, oppxG) => {
     loss: (loss / total) * 100,
   };
 };
+
+export const getExpectedPointsFromOutcomePercentages = (outcome) => {
+  const win = Number(outcome?.win);
+  const draw = Number(outcome?.draw);
+  const loss = Number(outcome?.loss);
+
+  if (![win, draw, loss].every(Number.isFinite)) {
+    return { my: 0, opponent: 0 };
+  }
+
+  return {
+    my: (win * 3 + draw) / 100,
+    opponent: (loss * 3 + draw) / 100,
+  };
+};
