@@ -3581,6 +3581,7 @@ export default function OinkSoccerCalc() {
                       suggestion={topSuggestion}
                       analyzing={autoAnalyzing || importingTeamUrl}
                       canAnalyze={mySquad.length >= 5 && opponentTeam.length >= 5}
+                      onApply={() => applySuggestion(topSuggestion)}
                       onInjuryOpen={(player) => openInjuryModal(player, 'myTeam', { readOnly: true })}
                     />
 
@@ -3610,7 +3611,7 @@ export default function OinkSoccerCalc() {
                     {selectedLeagueName || 'Select a league'}
                   </div>
                   <div className="mt-1 text-xs text-[#6b7a94]">
-                    Base table uses actual results already played, then projects remaining fixtures without future item usage. Reopen Season after played matches or skipped item uses to recalculate from the new state.
+                    Base table keeps actual results, then projects remaining matches with your active lineup and tactics and no future item usage. Apply a Best Setup to update the projection.
                   </div>
                 </div>
                 <div className="rounded-md border border-[#253040] bg-[#111620] px-3 py-2 text-xs text-[#9aa5bb]">
@@ -4121,7 +4122,7 @@ function SeasonPredictionTable({ rows, loading, myTeamIds }) {
   );
 }
 
-function BestSetupCard({ suggestion, analyzing, canAnalyze, onInjuryOpen }) {
+function BestSetupCard({ suggestion, analyzing, canAnalyze, onApply, onInjuryOpen }) {
   if (!canAnalyze) {
     return (
       <section className="mb-4 rounded-[10px] border border-[#1e2a3a] bg-[#111620] p-4">
@@ -4162,6 +4163,16 @@ function BestSetupCard({ suggestion, analyzing, canAnalyze, onInjuryOpen }) {
             setPiecePlayer={details.setPiecePlayer}
             className="mt-2"
           />
+          <button
+            type="button"
+            onClick={onApply}
+            className="mt-3 inline-flex w-full items-center justify-center gap-2 rounded-md border border-[#00e676]/40 bg-[#0f2a1b] px-3 py-2 text-xs font-semibold text-[#9af7cb] transition hover:border-[#00e676]/70 hover:text-[#00e676]"
+          >
+            Apply to active setup
+          </button>
+          <p className="mt-2 text-[11px] text-[#6b7a94]">
+            Season projections use the active setup until you apply a recommendation.
+          </p>
         </div>
       </div>
       <FormationPitch suggestion={suggestion} details={details} onInjuryOpen={onInjuryOpen} />
