@@ -1013,6 +1013,7 @@ export default function OinkSoccerCalc() {
   const [seasonPredictionLoading, setSeasonPredictionLoading] = useState(false);
   const [seasonPredictionError, setSeasonPredictionError] = useState('');
   const [detectedMyTeamIds, setDetectedMyTeamIds] = useState([]);
+  const [ownedTeamModels, setOwnedTeamModels] = useState({});
   const [importedOpponentTeamId, setImportedOpponentTeamId] = useState(null);
   const [catalogSeason, setCatalogSeason] = useState(null);
   const [walletSyncing, setWalletSyncing] = useState(false);
@@ -1218,6 +1219,39 @@ export default function OinkSoccerCalc() {
     () => getLeagueIdForTeamId(myTeamIdForBoosts) || (selectedLeagueId ? String(selectedLeagueId) : null),
     [getLeagueIdForTeamId, myTeamIdForBoosts, selectedLeagueId],
   );
+
+  const primaryOwnedTeamModel = myTeamIdForBoosts ? ownedTeamModels[myTeamIdForBoosts] || null : null;
+
+  useEffect(() => {
+    if (detectedMyTeamIds.length === 0) {
+      setOwnedTeamModels({});
+      return undefined;
+    }
+
+    let cancelled = false;
+
+    const loadOwnedLineups = async () => {
+      const entries = await Promise.all(
+        detectedMyTeamIds.map(async (teamId) => {
+          try {
+            return [teamId, await fetchTeamLineup(teamId)];
+          } catch (_) {
+            return null;
+          }
+        }),
+      );
+
+      if (!cancelled) {
+        setOwnedTeamModels(Object.fromEntries(entries.filter(Boolean)));
+      }
+    };
+
+    void loadOwnedLineups();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [detectedMyTeamIds]);
 
   const oppTeamLeagueIdForBoosts = useMemo(
     () => getLeagueIdForTeamId(opponentTeamIdForBoosts) || (selectedLeagueId ? String(selectedLeagueId) : null),
@@ -2183,13 +2217,20 @@ export default function OinkSoccerCalc() {
   ), [activeBoostWindows, activeBoostsByFixture]);
 
   const fixtureWinChances = useMemo(() => {
-    if (myTeam.length < 5 || upcomingFixtures.length === 0 || detectedMyTeamIds.length === 0) {
+    const liveModel = primaryOwnedTeamModel?.players?.length ? primaryOwnedTeamModel : null;
+    const currentPlayers = liveModel?.players || myTeam;
+    const currentForm = liveModel?.formationKey && FORMATIONS[liveModel.formationKey]
+      ? liveModel.formationKey
+      : myForm;
+    const currentTactics = normalizeTactics(liveModel?.tactics || myTactics);
+
+    if (currentPlayers.length < 5 || upcomingFixtures.length === 0 || detectedMyTeamIds.length === 0) {
       return {};
     }
 
     const myTeams = new Set(detectedMyTeamIds);
     const chances = {};
-    const currentStats = calculateTeamScores(myTeam, myForm, mySimulationBoostContext, myTactics);
+    const currentStats = calculateTeamScores(currentPlayers, currentForm, mySimulationBoostContext, currentTactics);
 
     upcomingFixtures.forEach((fixture) => {
       if (fixture.cup_bye) return;
@@ -2208,8 +2249,8 @@ export default function OinkSoccerCalc() {
       const opponentStats = calculateTeamScores(opponentModel.players, opponentFormation, TEAM_BOOST_STATE_EMPTY, opponentTactics);
       const projection = projectMatch({
         myStats: currentStats,
-        myForm,
-        myTactics,
+        myForm: currentForm,
+        myTactics: currentTactics,
         oppStats: opponentStats,
         oppForm: opponentFormation,
         oppTactics: opponentTactics,
@@ -2263,6 +2304,7 @@ export default function OinkSoccerCalc() {
     mySimulationBoostContext,
     myTactics,
     myTeam,
+    primaryOwnedTeamModel,
     selectedFixture,
     selectedFixtureKey,
     seasonTeams,
@@ -2322,9 +2364,6 @@ export default function OinkSoccerCalc() {
 
   const seasonForecast = useMemo(() => {
     const myTeamIds = new Set(detectedMyTeamIds);
-    const mySeasonStats = myTeam.length >= 5
-      ? calculateTeamScores(myTeam, myForm, TEAM_BOOST_STATE_EMPTY, myTactics)
-      : null;
     const rows = new Map();
     const ensureRow = (teamId, teamName) => {
       if (!teamId) return null;
@@ -2349,13 +2388,32 @@ export default function OinkSoccerCalc() {
     leagueTeams.forEach((team) => ensureRow(team.teamId, team.teamName));
 
     const getModel = (teamId) => {
-      if (myTeamIds.has(teamId) && mySeasonStats) {
+      const ownedModel = ownedTeamModels[teamId];
+      if (ownedModel?.players?.length) {
         return {
-          formation: myForm,
-          tactics: myTactics,
-          stats: mySeasonStats,
+          ...ownedModel,
+          formation: ownedModel.formationKey && FORMATIONS[ownedModel.formationKey]
+            ? ownedModel.formationKey
+            : 'Pyramid',
+          tactics: normalizeTactics(ownedModel.tactics),
+          stats: calculateTeamScores(
+            ownedModel.players,
+            ownedModel.formationKey && FORMATIONS[ownedModel.formationKey]
+              ? ownedModel.formationKey
+              : 'Pyramid',
+            TEAM_BOOST_STATE_EMPTY,
+            normalizeTactics(ownedModel.tactics),
+          ),
         };
       }
+
+    if (myTeamIds.has(teamId) && myTeam.length >= 5) {
+      return {
+        formation: myForm,
+        tactics: myTactics,
+        stats: calculateTeamScores(myTeam, myForm, TEAM_BOOST_STATE_EMPTY, myTactics),
+      };
+    }
 
       const model = seasonTeams[teamId];
       if (!model?.players?.length) return null;
@@ -2465,11 +2523,21 @@ export default function OinkSoccerCalc() {
         )),
       projectedFixtures,
     };
-  }, [detectedMyTeamIds, leagueTeams, myForm, myTactics, myTeam, seasonFixtures, seasonTeams]);
+  }, [detectedMyTeamIds, leagueTeams, myForm, myTactics, myTeam, ownedTeamModels, seasonFixtures, seasonTeams]);
 
   const itemSuggestions = useMemo(() => {
     const planningFixtures = teamSeasonFixtures.length > 0 ? teamSeasonFixtures : seasonFixtures;
-    if (myTeam.length < 5 || detectedMyTeamIds.length === 0 || planningFixtures.length === 0) return [];
+    const planningModel = primaryOwnedTeamModel?.players?.length
+      ? primaryOwnedTeamModel
+      : null;
+    const planningPlayers = planningModel?.players || myTeam;
+    const planningForm = planningModel?.formationKey && FORMATIONS[planningModel.formationKey]
+      ? planningModel.formationKey
+      : myForm;
+    const planningTactics = normalizeTactics(planningModel?.tactics || myTactics);
+    const primaryTeamId = myTeamIdForBoosts || detectedMyTeamIds[0];
+
+    if (planningPlayers.length < 5 || !primaryTeamId || planningFixtures.length === 0) return [];
     const heldPerformanceItems = getHeldPerformanceItems(heldItems);
     if (heldPerformanceItems.length === 0) return [];
 
@@ -2479,11 +2547,11 @@ export default function OinkSoccerCalc() {
         !fixture.game_result
         && !fixture.cup_bye
         && !hasFixtureStarted(fixture, currentTime)
-        && (myTeamIds.has(fixture.home_team_id) || myTeamIds.has(fixture.away_team_id))
+        && (fixture.home_team_id === primaryTeamId || fixture.away_team_id === primaryTeamId)
       )),
     );
 
-    const baseStats = calculateTeamScores(myTeam, myForm, TEAM_BOOST_STATE_EMPTY, myTactics);
+    const baseStats = calculateTeamScores(planningPlayers, planningForm, TEAM_BOOST_STATE_EMPTY, planningTactics);
     const liveEffectiveness = myBoostState?.source === 'live' ? Number(myBoostState.effectivenessPct) : Number.NaN;
     const baseEffectivenessPct = Number.isFinite(liveEffectiveness) ? liveEffectiveness : 100;
     const boostCounts = Object.fromEntries(heldPerformanceItems.map((item) => [item.boostKey, item.count]));
@@ -2544,8 +2612,8 @@ export default function OinkSoccerCalc() {
         opponent,
         projection: projectMatch({
           myStats: stats,
-          myForm,
-          myTactics,
+          myForm: planningForm,
+          myTactics: planningTactics,
           oppStats: opponent.opponentStats,
           oppForm: opponent.opponentFormation,
           oppTactics: opponent.opponentTactics,
@@ -2588,7 +2656,7 @@ export default function OinkSoccerCalc() {
         boostKey: item.boostKey,
         effectivenessPct,
       });
-      const boostedStats = calculateTeamScores(myTeam, myForm, boostState, myTactics);
+      const boostedStats = calculateTeamScores(planningPlayers, planningForm, boostState, planningTactics);
       const windowFixtures = remainingMyFixtures
         .slice(startIndex)
         .map((candidate) => {
@@ -2738,7 +2806,7 @@ export default function OinkSoccerCalc() {
         boostKey: item.boostKey,
         effectivenessPct,
       });
-      const boostedStats = calculateTeamScores(myTeam, myForm, boostState, myTactics);
+      const boostedStats = calculateTeamScores(planningPlayers, planningForm, boostState, planningTactics);
       const durationDays = Array.from(
         { length: Math.max(0, (item.maxDays || 0) - (item.minDays || 0)) + 1 },
         (_, index) => (item.minDays || 0) + index,
@@ -2840,10 +2908,27 @@ export default function OinkSoccerCalc() {
       leagueTeams.forEach((team) => ensureRow(team.teamId, team.teamName));
 
       const getTeamModel = (teamId) => {
-        if (myTeamIds.has(teamId)) {
+        const ownedModel = ownedTeamModels[teamId];
+        if (ownedModel?.players?.length) {
+          const formation = ownedModel.formationKey && FORMATIONS[ownedModel.formationKey]
+            ? ownedModel.formationKey
+            : 'Pyramid';
+          const tactics = normalizeTactics(ownedModel.tactics);
+          const isMine = teamId === primaryTeamId;
           return {
-            formation: myForm,
-            tactics: myTactics,
+            formation,
+            tactics,
+            stats: isMine
+              ? baseStats
+              : calculateTeamScores(ownedModel.players, formation, TEAM_BOOST_STATE_EMPTY, tactics),
+            isMine,
+          };
+        }
+
+        if (teamId === primaryTeamId) {
+          return {
+            formation: planningForm,
+            tactics: planningTactics,
             stats: baseStats,
             isMine: true,
           };
@@ -2866,7 +2951,7 @@ export default function OinkSoccerCalc() {
         return plan.find((item) => (
           fixtureTime >= item.startTime
           && (fixtureTime <= item.endTime || fixture.game_key === item.fixture.game_key)
-          && (myTeamIds.has(fixture.home_team_id) || myTeamIds.has(fixture.away_team_id))
+          && (fixture.home_team_id === primaryTeamId || fixture.away_team_id === primaryTeamId)
         ));
       };
 
@@ -3078,7 +3163,23 @@ export default function OinkSoccerCalc() {
         placementGain,
       }))
       .slice(0, 10);
-  }, [currentTime, detectedMyTeamIds, heldItems, itemCooldownEndTime, leagueTeams, myBoostState, myForm, myTactics, myTeam, seasonFixtures, seasonTeams, teamSeasonFixtures]);
+  }, [
+    currentTime,
+    detectedMyTeamIds,
+    heldItems,
+    itemCooldownEndTime,
+    leagueTeams,
+    myBoostState,
+    myForm,
+    myTactics,
+    myTeam,
+    myTeamIdForBoosts,
+    ownedTeamModels,
+    primaryOwnedTeamModel,
+    seasonFixtures,
+    seasonTeams,
+    teamSeasonFixtures,
+  ]);
 
   const plannedItemsByFixture = useMemo(() => {
     const planned = {};
@@ -3611,7 +3712,7 @@ export default function OinkSoccerCalc() {
                     {selectedLeagueName || 'Select a league'}
                   </div>
                   <div className="mt-1 text-xs text-[#6b7a94]">
-                    Base table keeps actual results, then projects remaining matches with your active lineup and tactics and no future item usage. Apply a Best Setup to update the projection.
+                    Base table keeps actual results, then projects remaining matches from each team's live lineup and tactics with no future item usage.
                   </div>
                 </div>
                 <div className="rounded-md border border-[#253040] bg-[#111620] px-3 py-2 text-xs text-[#9aa5bb]">
@@ -4168,10 +4269,10 @@ function BestSetupCard({ suggestion, analyzing, canAnalyze, onApply, onInjuryOpe
             onClick={onApply}
             className="mt-3 inline-flex w-full items-center justify-center gap-2 rounded-md border border-[#00e676]/40 bg-[#0f2a1b] px-3 py-2 text-xs font-semibold text-[#9af7cb] transition hover:border-[#00e676]/70 hover:text-[#00e676]"
           >
-            Apply to active setup
+            Use in calculator
           </button>
           <p className="mt-2 text-[11px] text-[#6b7a94]">
-            Season projections use the active setup until you apply a recommendation.
+            Season projections read your live Lost Pigs lineup directly.
           </p>
         </div>
       </div>
