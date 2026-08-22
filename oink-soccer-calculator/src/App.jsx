@@ -27,7 +27,10 @@ import {
   createManualFallbackBoostState,
   getBoostMultipliersFromState,
 } from './lib/boosts';
-import { getPoissonOutcomePercentages } from './lib/matchProjection';
+import {
+  getExpectedPointsFromOutcomePercentages,
+  getPoissonOutcomePercentages,
+} from './lib/matchProjection';
 import { resolvePlayerImage } from './lib/assetImages';
 import {
   CHANCE_TYPE_WEIGHTS,
@@ -2418,8 +2421,7 @@ export default function OinkSoccerCalc() {
       });
       const homeGoals = projection.myxG;
       const awayGoals = projection.oppxG;
-      const goalGap = homeGoals - awayGoals;
-      const isDraw = Math.abs(goalGap) < 0.18;
+      const expectedPoints = getExpectedPointsFromOutcomePercentages(projection);
 
       home.projected += 1;
       away.projected += 1;
@@ -2427,28 +2429,25 @@ export default function OinkSoccerCalc() {
       home.ga += awayGoals;
       away.gf += awayGoals;
       away.ga += homeGoals;
-
-      if (isDraw) {
-        home.drawn += 1;
-        away.drawn += 1;
-        home.points += 1;
-        away.points += 1;
-      } else if (goalGap > 0) {
-        home.won += 1;
-        away.lost += 1;
-        home.points += 3;
-      } else {
-        away.won += 1;
-        home.lost += 1;
-        away.points += 3;
-      }
+      home.won += projection.win / 100;
+      away.won += projection.loss / 100;
+      home.drawn += projection.draw / 100;
+      away.drawn += projection.draw / 100;
+      home.lost += projection.loss / 100;
+      away.lost += projection.win / 100;
+      home.points += expectedPoints.my;
+      away.points += expectedPoints.opponent;
 
       projectedFixtures.push({
         fixture,
         homeWin: projection.win,
         homeXg: projection.myxG,
         awayXg: projection.oppxG,
-        predicted: isDraw ? 'Draw' : goalGap > 0 ? fixture.home_team_name : fixture.away_team_name,
+        predicted: projection.win >= projection.draw && projection.win >= projection.loss
+          ? fixture.home_team_name
+          : projection.loss >= projection.draw
+            ? fixture.away_team_name
+            : 'Draw',
       });
     });
 
@@ -2494,11 +2493,6 @@ export default function OinkSoccerCalc() {
       const points = Number(currentTeamMetaById.get(teamId)?.currentPoints);
       return Number.isFinite(points) ? Math.max(best, points) : best;
     }, 0);
-    const getProjectedPoints = (projection) => {
-      const goalGap = projection.myxG - projection.oppxG;
-      if (Math.abs(goalGap) < 0.18) return { my: 1, opponent: 1 };
-      return goalGap > 0 ? { my: 3, opponent: 0 } : { my: 0, opponent: 3 };
-    };
     const getOpponentLeverage = (opponentId) => {
       const meta = currentTeamMetaById.get(opponentId);
       const currentRank = Number(meta?.currentRank);
@@ -2621,14 +2615,15 @@ export default function OinkSoccerCalc() {
       let maxFixtureCount = 0;
       let standingsLeverage = 0;
       let rivalCoverage = 0;
+      let expectedPointsDelta = getExpectedPointsFromOutcomePercentages(baseFirst.projection).my * -1;
 
       windowFixtures.forEach((candidate, windowIndex) => {
         const base = projectFixture(candidate.fixture, baseStats);
         const boosted = projectFixture(candidate.fixture, boostedStats);
         if (!base || !boosted) return;
         const delta = boosted.projection.win - base.projection.win;
-        const basePoints = getProjectedPoints(base.projection);
-        const boostedPoints = getProjectedPoints(boosted.projection);
+        const basePoints = getExpectedPointsFromOutcomePercentages(base.projection);
+        const boostedPoints = getExpectedPointsFromOutcomePercentages(boosted.projection);
         const myPointsGain = boostedPoints.my - basePoints.my;
         const opponentPointsDenied = basePoints.opponent - boostedPoints.opponent;
         const opponentLeverage = getOpponentLeverage(base.opponent.opponentId);
@@ -2639,6 +2634,7 @@ export default function OinkSoccerCalc() {
           + (delta * 0.04)
         ) * candidate.coverageChance;
         rivalCoverage += opponentLeverage * candidate.coverageChance;
+        expectedPointsDelta += boostedPoints.my * candidate.coverageChance;
         expectedFixtureCount += candidate.coverageChance;
         if (candidate.coverageChance >= 1) guaranteedFixtureCount += 1;
         maxFixtureCount += 1;
@@ -2659,6 +2655,7 @@ export default function OinkSoccerCalc() {
         boostedWin: firstBoostedWin,
         delta: firstFixtureDelta,
         seasonDelta,
+        expectedPointsDelta,
         standingsLeverage,
         rivalCoverage,
         effectivenessPct,
@@ -2751,6 +2748,7 @@ export default function OinkSoccerCalc() {
       let seasonDelta = 0;
       let standingsLeverage = 0;
       let rivalCoverage = 0;
+      let expectedPointsDelta = baseFirst ? getExpectedPointsFromOutcomePercentages(baseFirst.projection).my * -1 : 0;
       let expectedFixtureCount = 0;
       let guaranteedFixtureCount = 0;
       let maxFixtureCount = 0;
@@ -2770,8 +2768,8 @@ export default function OinkSoccerCalc() {
         const boosted = projectFixture(candidate, boostedStats);
         if (!base || !boosted) return;
         const delta = boosted.projection.win - base.projection.win;
-        const basePoints = getProjectedPoints(base.projection);
-        const boostedPoints = getProjectedPoints(boosted.projection);
+        const basePoints = getExpectedPointsFromOutcomePercentages(base.projection);
+        const boostedPoints = getExpectedPointsFromOutcomePercentages(boosted.projection);
         const myPointsGain = boostedPoints.my - basePoints.my;
         const opponentPointsDenied = basePoints.opponent - boostedPoints.opponent;
         const opponentLeverage = getOpponentLeverage(base.opponent.opponentId);
@@ -2782,6 +2780,7 @@ export default function OinkSoccerCalc() {
           + (delta * 0.04)
         ) * coverageChance;
         rivalCoverage += opponentLeverage * coverageChance;
+        expectedPointsDelta += boostedPoints.my * coverageChance;
         expectedFixtureCount += coverageChance;
         if (coverageChance >= 1) guaranteedFixtureCount += 1;
         maxFixtureCount += 1;
@@ -2793,6 +2792,7 @@ export default function OinkSoccerCalc() {
         boostedWin: boostedFirst?.projection.win ?? item.boostedWin,
         delta: boostedFirst && baseFirst ? boostedFirst.projection.win - baseFirst.projection.win : item.delta,
         seasonDelta,
+        expectedPointsDelta,
         standingsLeverage,
         rivalCoverage,
         effectivenessPct,
@@ -2877,6 +2877,7 @@ export default function OinkSoccerCalc() {
 
         let homeGoals;
         let awayGoals;
+        let expectedPoints = null;
 
         if (fixture.game_result) {
           homeGoals = Number(fixture.game_result.home_team_score || 0);
@@ -2899,6 +2900,7 @@ export default function OinkSoccerCalc() {
             });
             homeGoals = projection.myxG;
             awayGoals = projection.oppxG;
+            expectedPoints = getExpectedPointsFromOutcomePercentages(projection);
           } else if (awayModel.isMine) {
             const projection = projectMatch({
               myStats: plannedWindow?.boostedStats || awayModel.stats,
@@ -2911,6 +2913,7 @@ export default function OinkSoccerCalc() {
             });
             homeGoals = projection.oppxG;
             awayGoals = projection.myxG;
+            expectedPoints = getExpectedPointsFromOutcomePercentages(projection);
           } else {
             const projection = projectMatch({
               myStats: homeModel.stats,
@@ -2923,6 +2926,7 @@ export default function OinkSoccerCalc() {
             });
             homeGoals = projection.myxG;
             awayGoals = projection.oppxG;
+            expectedPoints = getExpectedPointsFromOutcomePercentages(projection);
           }
         }
 
@@ -2931,20 +2935,9 @@ export default function OinkSoccerCalc() {
         away.gf += awayGoals;
         away.ga += homeGoals;
 
-        const goalGap = homeGoals - awayGoals;
-        if (Math.abs(goalGap) < 0.18) {
-          home.drawn += 1;
-          away.drawn += 1;
-          home.points += 1;
-          away.points += 1;
-        } else if (goalGap > 0) {
-          home.won += 1;
-          away.lost += 1;
-          home.points += 3;
-        } else {
-          away.won += 1;
-          home.lost += 1;
-          away.points += 3;
+        if (expectedPoints) {
+          home.points += expectedPoints.my;
+          away.points += expectedPoints.opponent;
         }
       });
 
@@ -3116,6 +3109,10 @@ export default function OinkSoccerCalc() {
       itemCount: itemSuggestions.length,
     };
   }, [itemSuggestions]);
+
+  const heldPerformanceUseCount = Object.values(heldItems || {})
+    .filter((item) => item.boostKey && Number(item.count) > 0)
+    .reduce((sum, item) => sum + Number(item.count), 0);
 
   const copySuggestion = useCallback(async (suggestion) => {
     if (!suggestion?.formation) return;
@@ -3637,6 +3634,9 @@ export default function OinkSoccerCalc() {
               <div className="mt-1 text-xs text-[#6b7a94]">
                 Planned using held items, active windows, cooldowns, direct-rival leverage, and diminishing effectiveness. Uses are kept when they improve final place or protect a fragile promotion buffer.
               </div>
+              <div className="mt-2 inline-flex rounded-md border border-[#253040] bg-[#111620] px-2 py-1 text-xs text-[#9aa5bb]">
+                Detected {heldPerformanceUseCount} performance item use{heldPerformanceUseCount === 1 ? '' : 's'}
+              </div>
 
               <div className="mt-3 flex flex-col gap-3 rounded-md border border-[#ffab00]/30 bg-[#2d230d]/45 p-3 sm:flex-row sm:items-end sm:justify-between">
                 <div>
@@ -3676,14 +3676,14 @@ export default function OinkSoccerCalc() {
                     <div className="mt-1 font-['Barlow_Condensed'] text-[22px] font-black text-[#e8edf5]">
                       {formatOrdinal(itemPlanSummary.basePosition)}
                     </div>
-                    <div>{formatNumber(itemPlanSummary.basePoints, 0)} pts</div>
+                    <div>{formatNumber(itemPlanSummary.basePoints, 1)} pts</div>
                   </div>
                   <div>
                     <div className="text-[10px] font-bold uppercase tracking-[0.12em] text-[#6b7a94]">With Items</div>
                     <div className="mt-1 font-['Barlow_Condensed'] text-[22px] font-black text-[#00e676]">
                       {formatOrdinal(itemPlanSummary.projectedPosition)}
                     </div>
-                    <div>{formatNumber(itemPlanSummary.projectedPoints, 0)} pts</div>
+                    <div>{formatNumber(itemPlanSummary.projectedPoints, 1)} pts</div>
                   </div>
                   <div>
                     <div className="text-[10px] font-bold uppercase tracking-[0.12em] text-[#6b7a94]">Plan Value</div>
@@ -3709,7 +3709,9 @@ export default function OinkSoccerCalc() {
                 )}
                 {!seasonPredictionLoading && itemSuggestions.length === 0 && (
                   <div className="rounded-md border border-[#1e2a3a] bg-[#111620] p-3 text-xs text-[#9aa5bb]">
-                    No efficient held performance item window found. Medical Kits are ignored unless injuries need healing.
+                    {heldPerformanceUseCount === 0
+                      ? 'No performance boosts detected in the connected wallet. Sync wallet assets, then check again.'
+                      : 'No efficient held performance item window found after cooldown and coverage checks.'}
                   </div>
                 )}
                 {!seasonPredictionLoading && itemSuggestions.map((item) => (
@@ -3739,6 +3741,7 @@ export default function OinkSoccerCalc() {
                     </div>
                     <div className="mt-2 text-xs text-[#9aa5bb]">
                       First match: {formatNumber(item.baseWin)}% to {formatNumber(item.boostedWin)}%. Expected coverage {formatNumber(item.windowCount)} fixture-equivalent{Number(item.windowCount) === 1 ? '' : 's'} ({item.guaranteedWindowCount}-{item.maxWindowCount} possible over {item.minDays}-{item.maxDays} days) at {formatNumber(item.effectivenessPct)}% effectiveness.
+                      {' '}Expected-point gain over covered fixtures: {formatNumber(item.expectedPointsDelta, 2)}.
                       {Number(item.rivalCoverage) > 0 ? (
                         <> Rival leverage {formatNumber(item.rivalCoverage)}.</>
                       ) : null}
@@ -4087,7 +4090,7 @@ function SeasonPredictionTable({ rows, loading, myTeamIds }) {
 
   return (
     <div className="mt-4 overflow-hidden rounded-md border border-[#1e2a3a] bg-[#111620]">
-      <div className="grid grid-cols-[34px_1fr_44px_44px_64px] gap-2 border-b border-[#1e2a3a] px-2 py-2 text-[10px] font-bold uppercase tracking-[0.1em] text-[#6b7a94]">
+      <div className="grid grid-cols-[30px_minmax(0,1fr)_48px_52px_86px] gap-2 border-b border-[#1e2a3a] px-2 py-2 text-[10px] font-bold uppercase tracking-[0.1em] text-[#6b7a94]">
         <div>#</div>
         <div>Team</div>
         <div className="text-right">Pts</div>
@@ -4103,13 +4106,15 @@ function SeasonPredictionTable({ rows, loading, myTeamIds }) {
       {!loading && rows.slice(0, 24).map((row, index) => (
         <div
           key={row.teamId}
-          className={`grid grid-cols-[34px_1fr_44px_44px_64px] gap-2 border-b border-[#1e2a3a] px-2 py-2 text-xs last:border-b-0 ${myTeams.has(row.teamId) ? 'bg-[#0f2a1b] text-[#d7ffe9]' : 'text-[#d0d7e5]'}`}
+          className={`grid grid-cols-[30px_minmax(0,1fr)_48px_52px_86px] gap-2 border-b border-[#1e2a3a] px-2 py-2 text-xs last:border-b-0 ${myTeams.has(row.teamId) ? 'bg-[#0f2a1b] text-[#d7ffe9]' : 'text-[#d0d7e5]'}`}
         >
           <div className="font-bold text-[#6b7a94]">{index + 1}</div>
           <div className="min-w-0 truncate font-semibold">{row.teamName}</div>
-          <div className="text-right font-bold text-[#00e676]">{formatNumber(row.points, 0)}</div>
+          <div className="text-right font-bold tabular-nums text-[#00e676]">{formatNumber(row.points, 1)}</div>
           <div className="text-right">{formatNumber(row.gd, 1)}</div>
-          <div className="text-right">{row.won}-{row.drawn}-{row.lost}</div>
+          <div className="text-right tabular-nums">
+            {`${formatNumber(row.won, 1)}-${formatNumber(row.drawn, 1)}-${formatNumber(row.lost, 1)}`}
+          </div>
         </div>
       ))}
     </div>

@@ -1,7 +1,10 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { getPoissonOutcomePercentages } from './matchProjection.js';
+import {
+  getExpectedPointsFromOutcomePercentages,
+  getPoissonOutcomePercentages,
+} from './matchProjection.js';
 
 test('identical expected-goal rates produce symmetric win and loss probabilities', () => {
   const outcome = getPoissonOutcomePercentages(2, 2);
@@ -24,4 +27,15 @@ test('the team with higher expected goals has the higher win probability', () =>
   assert.ok(Math.abs(underdog.loss - 87.6) < 0.01);
   assert.ok(Math.abs(favourite.win - 87.6) < 0.01);
   assert.ok(Math.abs(favourite.loss - 4.43) < 0.01);
+});
+
+test('outcome percentages convert to expected league points', () => {
+  const expectedPoints = getExpectedPointsFromOutcomePercentages({
+    win: 40,
+    draw: 30,
+    loss: 30,
+  });
+
+  assert.equal(expectedPoints.my, 1.5);
+  assert.equal(expectedPoints.opponent, 1.2);
 });
