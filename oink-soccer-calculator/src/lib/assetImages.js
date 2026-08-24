@@ -15,6 +15,9 @@ const IPFS_GATEWAYS = [
 
 // The Lost Pigs game serves each BOT asset's static image from its own CDN.
 const LOST_PIGS_CDN = 'https://cdn.thelostpigs.com/';
+// YBG uses the game's dedicated Pinata gateway. The game appends an
+// origin-scoped cache parameter and loads images with anonymous CORS.
+const YBG_GATEWAY = 'https://ybg.mypinata.cloud/ipfs/';
 
 // Resolved successes are cached permanently. Transient failures are intentionally
 // NOT cached, so a flaky gateway does not permanently blank an NFT for the tab.
@@ -163,7 +166,24 @@ const gatewayForUrl = (url) => (
 // The Lost Pigs game serves each BOT asset's static image straight from the
 // collection CDN (`cdn.thelostpigs.com/<cid>`) rather than a generic gateway.
 const detectCollection = (unitName) => (
-  String(unitName || '').trim().toUpperCase().startsWith('BOT') ? 'lostPigs' : 'ipfs'
+  (() => {
+    const normalized = String(unitName || '').trim().toUpperCase();
+    if (normalized.startsWith('BOT')) return 'lostPigs';
+    if (normalized.startsWith('YBG')) return 'ybg';
+    return 'ipfs';
+  })()
+);
+
+const withOriginScopedCache = (url) => {
+  if (!url?.startsWith(YBG_GATEWAY)) return url;
+  if (url.includes('xo=')) return url;
+  const hostname = globalThis.window?.location?.hostname;
+  if (!hostname) return url;
+  return `${url}${url.includes('?') ? '&' : '?'}xo=${encodeURIComponent(hostname)}`;
+};
+
+export const crossOriginForImageUrl = (url) => (
+  url?.startsWith(YBG_GATEWAY) ? 'anonymous' : undefined
 );
 
 const imageIpfsPath = (value) => {
@@ -181,8 +201,11 @@ const resolveFinalImage = (rawImage, gateway, collection) => {
   if (!clean) return null;
   if (clean.startsWith('template-ipfs://')) return null;
 
-  if (collection === 'lostPigs') {
+  if (collection === 'lostPigs' || collection === 'ybg') {
     const ipfsPath = imageIpfsPath(clean);
+    if (ipfsPath && collection === 'ybg') {
+      return withOriginScopedCache(`${YBG_GATEWAY}${ipfsPath}`);
+    }
     if (ipfsPath) return `${LOST_PIGS_CDN}${ipfsPath}`;
     if (clean.startsWith('https://') || clean.startsWith('http://')) return clean;
     return null;
@@ -218,6 +241,12 @@ const parseImageFromMetadata = (metadata, collection) => {
     || null;
 };
 
+export const getGenericIpfsFallback = (url) => {
+  if (!url?.startsWith(YBG_GATEWAY)) return url;
+  const path = url.slice(YBG_GATEWAY.length).split('?')[0];
+  return `${IPFS_GATEWAYS[0]}${path}`;
+};
+
 const fetchWithTimeout = async (url, signal) => {
   const controller = new AbortController();
   const abortFromParent = () => controller.abort(signal?.reason);
@@ -250,7 +279,13 @@ const resolveFromPera = async (assetId, signal) => {
     }
 
     const mediaUrl = collectible.media?.find((media) => media?.type === 'image' && media?.url)?.url;
-    if (mediaUrl) return stripUrlFragment(mediaUrl);
+    if (mediaUrl) {
+      return collection === 'ybg'
+        ? withOriginScopedCache(mediaUrl.startsWith(YBG_GATEWAY)
+          ? mediaUrl
+          : resolveFinalImage(mediaUrl, YBG_GATEWAY, 'ybg') || mediaUrl)
+        : stripUrlFragment(mediaUrl);
+    }
     return resolveFinalImage(metadataImage, IPFS_GATEWAYS[0], collection);
   } catch (error) {
     if (signal?.aborted) throw error;
@@ -271,6 +306,28 @@ const firstReachableUrl = async (urls, signal) => {
     if (response.ok) return url;
   }
   return null;
+};
+
+const isReachable = async (url, signal) => {
+  if (!url) return false;
+  const controller = new AbortController();
+  const abortFromParent = () => controller.abort(signal?.reason);
+  if (signal?.aborted) {
+    abortFromParent();
+  } else {
+    signal?.addEventListener('abort', abortFromParent, { once: true });
+  }
+  const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+  try {
+    const response = await fetch(url, { method: 'HEAD', signal: controller.signal });
+    return response.ok;
+  } catch (error) {
+    if (signal?.aborted) throw error;
+    return false;
+  } finally {
+    clearTimeout(timeout);
+    signal?.removeEventListener('abort', abortFromParent);
+  }
 };
 
 const fetchImageFromMetadataCandidate = async (metadataUrl, signal, collection) => {
@@ -355,9 +412,18 @@ export const resolvePlayerImage = async (player, signal) => {
   try {
     const resolved = await resolveFromPera(cacheKey, signal)
       || await resolveFromAssetParams(cacheKey, signal);
-    if (resolved) {
-      cache.set(cacheKey, resolved);
-      return resolved;
+
+    let finalResolved = resolved;
+    if (finalResolved?.startsWith(YBG_GATEWAY) && !await isReachable(withOriginScopedCache(finalResolved), signal)) {
+      const genericFallback = getGenericIpfsFallback(finalResolved);
+      if (await isReachable(genericFallback, signal)) {
+        finalResolved = genericFallback;
+      }
+    }
+
+    if (finalResolved) {
+      cache.set(cacheKey, finalResolved);
+      return finalResolved;
     }
     return null;
   } catch {

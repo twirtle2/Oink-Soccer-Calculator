@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
-import { Plus, Trash2, Users, Zap, Activity, Pencil, Save, RotateCcw, Loader2, Bandage, X, TrendingUp, ChevronDown, ChevronUp, ChevronLeft, ChevronRight, RefreshCw } from 'lucide-react';
+import { Plus, Trash2, Users, Zap, Activity, Pencil, Save, RotateCcw, Loader2, Bandage, X, TrendingUp, ChevronDown, ChevronUp, ChevronLeft, ChevronRight, RefreshCw, Info } from 'lucide-react';
 import { useWallet } from '@txnlab/use-wallet-react';
 import WalletConnector from './components/WalletConnector';
 import { loadCalculatorState, saveCalculatorState } from './lib/storage';
@@ -31,7 +31,7 @@ import {
   getExpectedPointsFromOutcomePercentages,
   getPoissonOutcomePercentages,
 } from './lib/matchProjection';
-import { resolvePlayerImage } from './lib/assetImages';
+import { crossOriginForImageUrl, getGenericIpfsFallback, resolvePlayerImage } from './lib/assetImages';
 import {
   CHANCE_TYPE_WEIGHTS,
   BOOSTS,
@@ -609,6 +609,90 @@ const formatNumber = (value, decimals = 1) => {
   return parsed.toFixed(decimals);
 };
 
+const getSuggestionSelectionExplanations = ({
+  suggestion,
+  squad,
+  oppStats,
+  oppForm,
+  oppTactics,
+  homeAdvantage,
+  boostContext,
+}) => {
+  if (!suggestion?.formation || !Array.isArray(suggestion.lineup) || suggestion.lineup.length === 0) {
+    return new Map();
+  }
+
+  const assignedPlayers = assignLineupPositions(
+    suggestion.lineup,
+    FORMATIONS[suggestion.formation].structure,
+  );
+  const explanations = new Map();
+  const selectedIds = new Set(suggestion.lineup.map((selected) => String(selected.id)));
+
+  for (const player of assignedPlayers) {
+    const selectedPosition = player.selectedPosition || player.pos;
+    const alternatives = squad
+      .filter((candidate) => (
+        candidate.id !== player.id
+        && !selectedIds.has(String(candidate.id))
+        && hasPlayablePosition(candidate, selectedPosition)
+        && Number(candidate.ovr) > Number(player.ovr)
+      ))
+      .sort((a, b) => getOfficialOvr(b.stats, selectedPosition) - getOfficialOvr(a.stats, selectedPosition))
+      .slice(0, 3)
+      .map((candidate) => {
+        const swappedLineup = suggestion.lineup.map((selected) => (
+          selected.id === player.id ? candidate : selected
+        ));
+        let projectedWin = Number.NaN;
+        try {
+          projectedWin = optimizeRolesForLineup({
+            lineup: swappedLineup,
+            formation: suggestion.formation,
+            tactics: suggestion.tactics,
+            boostContext,
+            oppStats,
+            oppForm,
+            oppTactics,
+            homeAdvantage,
+          }).projection.win;
+        } catch (_) {
+          return null;
+        }
+
+        return {
+          name: candidate.name,
+          ovr: Number(candidate.ovr),
+          projectedWin,
+        };
+      })
+      .filter(Boolean)
+      .sort((a, b) => b.projectedWin - a.projectedWin);
+
+    const strongestAlternative = alternatives[0];
+    const higherRatedStarter = suggestion.lineup
+      .filter((starter) => (
+        starter.id !== player.id
+        && Number(starter.ovr) > Number(player.ovr)
+        && hasPlayablePosition(starter, selectedPosition)
+      ))
+      .sort((a, b) => Number(b.ovr) - Number(a.ovr))[0];
+    let reason;
+
+    if (strongestAlternative) {
+      reason = `Best of top-rated swaps: ${strongestAlternative.name} (${strongestAlternative.ovr} OVR) projects ${formatNumber(strongestAlternative.projectedWin)}% win versus ${formatNumber(suggestion.win)}%.`;
+    } else if (higherRatedStarter) {
+      reason = `${higherRatedStarter.name} (${higherRatedStarter.ovr} OVR) is already in this best XI at ${higherRatedStarter.selectedPosition || higherRatedStarter.pos}; the optimizer valued them more in that slot.`;
+    } else {
+      reason = 'No higher-rated eligible alternative was available for this slot.';
+    }
+
+    explanations.set(String(player.id), reason);
+  }
+
+  return explanations;
+};
+
 const formatOrdinal = (value) => {
   const parsed = Number.parseInt(String(value), 10);
   if (!Number.isFinite(parsed) || parsed <= 0) return 'N/A';
@@ -628,6 +712,44 @@ const formatStatValue = (value) => {
   const parsed = Number(value);
   if (!Number.isFinite(parsed)) return '0';
   return Math.abs(parsed) >= 10 ? String(Math.round(parsed)) : parsed.toFixed(1);
+};
+
+const getLineupCoverageGaps = (squad) => {
+  const counts = { GK: 0, DF: 0, MF: 0, FW: 0 };
+
+  squad.forEach((player) => {
+    const positions = player.positions && player.positions.length > 0 ? player.positions : [player.pos];
+    positions.forEach((position) => {
+      if (counts[position] !== undefined) counts[position] += 1;
+    });
+  });
+
+  let closestFormationGaps = null;
+
+  Object.values(FORMATIONS).forEach((formation) => {
+    const gaps = [];
+
+    Object.entries(formation.structure).forEach(([position, requiredCount]) => {
+      const deficit = requiredCount - counts[position];
+      if (deficit > 0) {
+        gaps.push(`${deficit} more ${POSITIONS[position]?.label || position}`);
+      }
+    });
+
+    if (gaps.length === 0) {
+      closestFormationGaps = [];
+      return;
+    }
+
+    if (!closestFormationGaps
+      || gaps.length < closestFormationGaps.length
+      || (gaps.length === closestFormationGaps.length
+        && gaps.join(', ').length < closestFormationGaps.join(', ').length)) {
+      closestFormationGaps = gaps;
+    }
+  });
+
+  return closestFormationGaps || [];
 };
 
 function getFormationRows(suggestion) {
@@ -676,31 +798,6 @@ const getSuggestionDetails = (suggestion) => {
     roleLabels,
     rows: getFormationRows(suggestion),
   };
-};
-
-const getSuggestionCopyText = (suggestion) => {
-  if (!suggestion?.formation) return '';
-  const details = getSuggestionDetails(suggestion);
-  const lines = [
-    `Formation: ${details.formation}`,
-    `Press: ${TACTICS.press[suggestion.tactics.press]?.label || suggestion.tactics.press}`,
-    `Tempo: ${TACTICS.tempo[suggestion.tactics.tempo]?.label || suggestion.tactics.tempo}`,
-    `Line: ${TACTICS.lineHeight[suggestion.tactics.lineHeight]?.label || suggestion.tactics.lineHeight}`,
-    `Set pieces: ${details.setPiecePlayer?.name || 'Auto'}`,
-  ];
-
-  if (details.roleLabels.length > 0) {
-    lines.push('Roles:');
-    lines.push(...details.roleLabels.map((role) => `- ${role}`));
-  }
-
-  lines.push('Lineup:');
-  details.rows.forEach((row) => {
-    lines.push(`${row.label}: ${row.players.map((player) => player.name).join(', ')}`);
-  });
-
-  lines.push(`Projected: ${formatNumber(suggestion.win)}% win, xG ${formatNumber(suggestion.myxG)}:${formatNumber(suggestion.oppxG)}`);
-  return lines.join('\n');
 };
 
 // --- Initial Fallback Data ---
@@ -1025,7 +1122,7 @@ export default function OinkSoccerCalc() {
   const [opponentLineupMeta, setOpponentLineupMeta] = useState({ isDefaultLineup: false });
   const [myForm, setMyForm] = useState(persistedState.myForm || 'Pyramid');
   const [oppForm, setOppForm] = useState(persistedState.oppForm || 'Pyramid');
-  const [myTactics, setMyTactics] = useState(normalizeTactics(persistedState.myTactics));
+  const [myTactics] = useState(normalizeTactics(persistedState.myTactics));
   const [oppTactics, setOppTactics] = useState(normalizeTactics(persistedState.oppTactics));
 
   const [myBoost] = useState(persistedState.myBoost || 'None');
@@ -1054,11 +1151,8 @@ export default function OinkSoccerCalc() {
     injury: null
   });
 
-  const [suggestions, setSuggestions] = useState({});
-  const [analyzing, setAnalyzing] = useState(false);
   const [autoSuggestions, setAutoSuggestions] = useState({});
   const [autoAnalyzing, setAutoAnalyzing] = useState(false);
-  const [, setCopiedPlan] = useState(false);
   const [injuryModalState, setInjuryModalState] = useState({
     open: false,
     playerId: null,
@@ -2105,7 +2199,31 @@ export default function OinkSoccerCalc() {
       }
     }
 
-    return { ...bestByFormation, __meta: { evaluatedCount } };
+    const topSuggestion = Object.values(bestByFormation).sort((a, b) => b.win - a.win)[0] || null;
+    const annotatedTopSuggestion = topSuggestion
+      ? {
+        ...topSuggestion,
+        lineup: topSuggestion.lineup.map((player) => ({
+          ...player,
+          selectionReason: getSuggestionSelectionExplanations({
+            suggestion: topSuggestion,
+            squad: mySquad,
+            oppStats: opponentStatsForMatchup,
+            oppForm: opponentFormationForMatchup,
+            oppTactics: opponentTacticsForMatchup,
+            homeAdvantage: homeAdvantageForMatchup,
+            boostContext: mySimulationBoostContext,
+          }).get(String(player.id)) || '',
+        })),
+      }
+      : null;
+
+    return {
+      ...(annotatedTopSuggestion
+        ? { ...bestByFormation, [annotatedTopSuggestion.formation]: annotatedTopSuggestion }
+        : bestByFormation),
+      __meta: { evaluatedCount },
+    };
   }, [
     getCombinations,
     homeAdvantage,
@@ -2116,17 +2234,6 @@ export default function OinkSoccerCalc() {
     oppTactics,
     simulation.win,
   ]);
-
-  const analyzeLineups = async () => {
-    setAnalyzing(true);
-    setSuggestions({});
-
-    // Allow UI to update before heavy calculation
-    await new Promise(resolve => setTimeout(resolve, 100));
-
-    setSuggestions(buildSettingsSuggestions(parseFloat(simulation.win)));
-    setAnalyzing(false);
-  };
 
   useEffect(() => {
     if (mySquad.length < 5 || opponentTeam.length < 5) {
@@ -2146,38 +2253,13 @@ export default function OinkSoccerCalc() {
     };
   }, [buildSettingsSuggestions, mySquad.length, opponentTeam.length, simulation.win]);
 
-  const applySuggestion = (config) => {
-    if (!config) return;
-    const roleById = new Map(config.lineup.map((player) => [player.id, player.role || '']));
-    const nextSquad = mySquad.map((player) => (
-      roleById.has(player.id) ? { ...player, role: roleById.get(player.id) } : player
-    ));
-    setMySquad(nextSquad);
-    setMyTeam(config.lineup);
-    setMyForm(config.formation);
-    setMyTactics(normalizeTactics(config.tactics));
-    saveToDb({
-      mySquad: nextSquad,
-      myTeam: config.lineup,
-      myForm: config.formation,
-      myTactics: normalizeTactics(config.tactics),
-    });
-    setSuggestions({});
-  };
-
   const tabItems = useMemo(() => ([
     { key: 'upcoming', icon: '📅', label: 'Upcoming' },
     { key: 'matchup', icon: '⚽', label: 'Setup' },
     { key: 'season', icon: '📈', label: 'Season' },
   ]), []);
 
-  const suggestionList = useMemo(() => (
-    Object.values(suggestions)
-      .filter((suggestion) => suggestion?.formation)
-      .sort((a, b) => b.win - a.win)
-  ), [suggestions]);
-
-  const activeSuggestions = suggestionList.length > 0 ? suggestions : autoSuggestions;
+  const activeSuggestions = autoSuggestions;
 
   const activeSuggestionList = useMemo(() => (
     Object.values(activeSuggestions)
@@ -3215,17 +3297,10 @@ export default function OinkSoccerCalc() {
     .filter((item) => item.boostKey && Number(item.count) > 0)
     .reduce((sum, item) => sum + Number(item.count), 0);
 
-  const copySuggestion = useCallback(async (suggestion) => {
-    if (!suggestion?.formation) return;
-    const text = getSuggestionCopyText(suggestion);
-    try {
-      await navigator.clipboard.writeText(text);
-      setCopiedPlan(true);
-      window.setTimeout(() => setCopiedPlan(false), 1800);
-    } catch (_) {
-      setUploadStatus({ tone: 'error', message: 'Copy failed. Select the setup text and copy it manually.' });
-    }
-  }, []);
+  const lineupCoverageGaps = useMemo(
+    () => getLineupCoverageGaps(mySquad),
+    [mySquad],
+  );
 
   const openInjuryModal = useCallback((player, teamType, { readOnly = false } = {}) => {
     setInjuryModalState({
@@ -3269,8 +3344,13 @@ export default function OinkSoccerCalc() {
     : null;
   const injuryModalDetails = injuryModalPlayer?.injuryDetails || null;
 
+  const isMatchupView = activeTab === 'matchup';
+
   return (
-    <div className="min-h-screen bg-[#0a0d12] text-[#e8edf5] font-sans pb-8">
+    <div className={`${isMatchupView
+      ? 'flex min-h-[100dvh] flex-col bg-[#0a0d12] text-[#e8edf5] font-sans lg:h-[100dvh] lg:min-h-[600px] lg:overflow-hidden lg:pb-0'
+      : 'min-h-screen bg-[#0a0d12] text-[#e8edf5] font-sans pb-8'}`}
+    >
       <header className="sticky top-0 z-[100] border-b border-[#1e2a3a] bg-[#111620]/95 backdrop-blur">
         <div className="mx-auto flex h-14 max-w-[1200px] items-center justify-between px-4 md:px-6">
           <div className="min-w-0">
@@ -3289,7 +3369,7 @@ export default function OinkSoccerCalc() {
         </div>
       </header>
 
-      <nav className="sticky top-14 z-[99] border-b border-[#1e2a3a] bg-[#111620]">
+      <nav className="sticky top-14 z-[99] shrink-0 border-b border-[#1e2a3a] bg-[#111620]">
         <div className="mx-auto max-w-[1200px] overflow-x-auto px-2 md:px-6 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
           <div className="flex min-w-max items-center gap-1">
             {tabItems.map((tab) => {
@@ -3311,44 +3391,44 @@ export default function OinkSoccerCalc() {
         </div>
       </nav>
 
-      <section className="border-b border-[#1e2a3a] bg-[linear-gradient(135deg,#161c28,rgba(0,230,118,0.05))]">
+      <section className="shrink-0 border-b border-[#1e2a3a] bg-[linear-gradient(135deg,#161c28,rgba(0,230,118,0.05))]">
         <div className="mx-auto flex max-w-[1200px] items-center justify-between gap-6 px-4 py-3 md:px-6">
           <div>
             <div className="text-[10px] font-bold uppercase tracking-[0.14em] text-[#6b7a94]">{headlineProjection.label}</div>
-            <div className="font-['Barlow_Condensed'] text-[42px] font-black leading-none text-[#00e676]">{displayedWin}</div>
+            <div className="font-['Barlow_Condensed'] text-[32px] font-black leading-none text-[#00e676] lg:text-[36px]">{displayedWin}</div>
             <div className="text-[11px] text-[#6b7a94]">Based on {(Number(headlineProjection.myxG) + Number(headlineProjection.oppxG)).toFixed(2)} simulated goals</div>
           </div>
 
           <div className="grid grid-cols-[1fr_auto_1fr] items-end gap-2">
             <div className="text-center">
-              <div className="font-['Barlow_Condensed'] text-[28px] font-black leading-none text-[#00e676]">{headlineProjection.myxG}</div>
+              <div className="font-['Barlow_Condensed'] text-[24px] font-black leading-none text-[#00e676] lg:text-[26px]">{headlineProjection.myxG}</div>
               <div className="text-[9px] uppercase tracking-[0.12em] text-[#6b7a94]">You</div>
             </div>
-            <div className="pb-1 font-['Barlow_Condensed'] text-2xl text-[#6b7a94]">:</div>
+            <div className="font-['Barlow_Condensed'] text-xl leading-none text-[#6b7a94]">:</div>
             <div className="text-center">
-              <div className="font-['Barlow_Condensed'] text-[28px] font-black leading-none text-[#ffab00]">{headlineProjection.oppxG}</div>
+              <div className="font-['Barlow_Condensed'] text-[24px] font-black leading-none text-[#ffab00] lg:text-[26px]">{headlineProjection.oppxG}</div>
               <div className="text-[9px] uppercase tracking-[0.12em] text-[#6b7a94]">Opp</div>
             </div>
           </div>
 
           <div className="hidden items-end gap-5 sm:flex">
             <div className="text-center">
-              <div className="font-['Barlow_Condensed'] text-[20px] font-bold text-[#00e676]">{displayedForecastWin.toFixed(1)}%</div>
+              <div className="font-['Barlow_Condensed'] text-lg font-bold text-[#00e676] lg:text-xl">{displayedForecastWin.toFixed(1)}%</div>
               <div className="text-[9px] uppercase tracking-[0.12em] text-[#6b7a94]">Win</div>
             </div>
             <div className="text-center">
-              <div className="font-['Barlow_Condensed'] text-[20px] font-bold text-[#9aa5bb]">{displayedForecastDraw.toFixed(1)}%</div>
+              <div className="font-['Barlow_Condensed'] text-lg font-bold text-[#9aa5bb] lg:text-xl">{displayedForecastDraw.toFixed(1)}%</div>
               <div className="text-[9px] uppercase tracking-[0.12em] text-[#6b7a94]">Draw</div>
             </div>
             <div className="text-center">
-              <div className="font-['Barlow_Condensed'] text-[20px] font-bold text-[#ff4444]">{displayedForecastLoss.toFixed(1)}%</div>
+              <div className="font-['Barlow_Condensed'] text-lg font-bold text-[#ff4444] lg:text-xl">{displayedForecastLoss.toFixed(1)}%</div>
               <div className="text-[9px] uppercase tracking-[0.12em] text-[#6b7a94]">Loss</div>
             </div>
           </div>
         </div>
       </section>
 
-      <main className={`mx-auto px-4 py-5 md:px-6 md:py-6 ${activeTab === 'matchup' ? 'max-w-[1500px]' : 'max-w-[900px]'}`}>
+      <main className={`mx-auto px-4 md:px-6 ${isMatchupView ? 'max-w-[1500px] min-h-0 flex-1 py-3' : 'py-5 md:py-6'}`}>
         {activeTab === 'squad' && (
           <section id="tab-squad" className="space-y-4">
             <div className="grid grid-cols-1 gap-3 rounded-[10px] border border-[#1e2a3a] bg-[#111620] p-4 md:grid-cols-[1fr_auto_1fr]">
@@ -3614,8 +3694,8 @@ export default function OinkSoccerCalc() {
         )}
 
         {activeTab === 'matchup' && (
-          <section id="tab-matchup" className="space-y-4">
-              <div className="rounded-[10px] border border-[#1e2a3a] bg-[#161c28] p-4">
+          <section id="tab-matchup" className={selectedFixture ? 'lg:grid lg:h-full lg:min-h-0 lg:grid-rows-[auto_minmax(0,1fr)] lg:gap-3' : 'space-y-4'}>
+              <div className="rounded-[10px] border border-[#1e2a3a] bg-[#161c28] p-3">
                 <div className="text-[11px] font-bold uppercase tracking-[0.14em] text-[#00e676]">Selected Matchup</div>
                 {selectedFixture ? (
                   <div className="mt-2 grid grid-cols-[44px_minmax(0,1fr)_44px] items-center gap-2">
@@ -3677,12 +3757,12 @@ export default function OinkSoccerCalc() {
 
               {selectedFixture ? (
                 <>
-                  <div className="grid gap-4 xl:grid-cols-2 xl:items-start">
+                  <div className="grid gap-4 lg:min-h-0 xl:h-full xl:grid-cols-2 xl:gap-3">
                     <BestSetupCard
                       suggestion={topSuggestion}
                       analyzing={autoAnalyzing || importingTeamUrl}
                       canAnalyze={mySquad.length >= 5 && opponentTeam.length >= 5}
-                      onApply={() => applySuggestion(topSuggestion)}
+                      lineupGaps={lineupCoverageGaps}
                       onInjuryOpen={(player) => openInjuryModal(player, 'myTeam', { readOnly: true })}
                     />
 
@@ -3858,92 +3938,7 @@ export default function OinkSoccerCalc() {
           </section>
         )}
 
-        {activeTab === 'simulation' && (
-          <section id="tab-result" className="space-y-4">
-            <div className="rounded-[10px] border border-[#1e2a3a] bg-[#161c28] p-4">
-              <div className="mb-1 text-sm font-bold">⚡ Smart Coach</div>
-              <div className="mb-3 text-xs text-[#6b7a94]">Formation, tactics, roles, and set-piece settings for this matchup</div>
-              <div className="space-y-2">
-                {activeSuggestionList.slice(0, 3).map((sugg) => {
-                  const details = getSuggestionDetails(sugg);
-                  return (
-                  <div
-                    key={sugg.formation}
-                    className="rounded-md border border-[#1e2a3a] bg-[#111620] p-3 text-xs text-[#9aa5bb]"
-                  >
-                    <div>
-                      <strong className="text-[#00e676]">{FORMATIONS[sugg.formation].name}</strong>
-                      {' '}• {formatNumber(sugg.win)}% ({sugg.diff >= 0 ? '+' : ''}{formatNumber(sugg.diff)})
-                      {' '}• xG {formatNumber(sugg.myxG)} : {formatNumber(sugg.oppxG)}
-                    </div>
-                    <div className="mt-1 text-[#d0d7e5]">
-                      Press {TACTICS.press[sugg.tactics.press]?.label}, Tempo {TACTICS.tempo[sugg.tactics.tempo]?.label}, Line {TACTICS.lineHeight[sugg.tactics.lineHeight]?.label}, Set pieces {details.setPiecePlayer?.name || 'Auto'}
-                    </div>
-                    {details.roleLabels.length > 0 && (
-                      <div className="mt-1 text-[#7f8aa3]">{details.roleLabels.join(' · ')}</div>
-                    )}
-                    <div className="mt-3 grid grid-cols-2 gap-2">
-                      <button
-                        type="button"
-                        onClick={() => void copySuggestion(sugg)}
-                        className="rounded border border-[#00e676]/35 bg-[#00e676] px-2 py-1.5 text-[11px] font-bold text-[#07110c]"
-                      >
-                        Copy
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => applySuggestion(sugg)}
-                        className="rounded border border-[#253040] bg-[#161c28] px-2 py-1.5 text-[11px] font-semibold text-[#e8edf5]"
-                      >
-                        Apply
-                      </button>
-                    </div>
-                  </div>
-                  );
-                })}
-                {activeSuggestionList.length === 0 && (
-                  <div className="rounded-md border border-[#1e2a3a] bg-[#111620] p-3 text-xs text-[#9aa5bb]">
-                    {autoAnalyzing ? 'Calculating best settings...' : 'Load your squad and opponent to generate matchup-specific recommendations.'}
-                  </div>
-                )}
-              </div>
-              {activeSuggestions.__meta?.evaluatedCount ? (
-                <div className="mt-2 text-[11px] text-[#6b7a94]">
-                  Checked {activeSuggestions.__meta.evaluatedCount.toLocaleString()} lineup/tactics configurations.
-                </div>
-              ) : null}
-              <button
-                onClick={analyzeLineups}
-                disabled={analyzing || mySquad.length < 5 || opponentTeam.length < 5}
-                className="mt-3 inline-flex w-full items-center justify-center gap-2 rounded-md border border-[#1e2a3a] bg-[#111620] px-3 py-2 text-xs font-semibold text-[#e8edf5] hover:border-[#00e676]/70 hover:text-[#00e676] disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                {analyzing ? <Loader2 size={13} className="animate-spin" /> : <Zap size={13} />} Analyze Best Settings →
-              </button>
-            </div>
 
-            <div className="rounded-[10px] border border-[#1e2a3a] bg-[#111620] p-4">
-              <div className="mb-2 text-sm font-semibold">Outcome Forecast</div>
-              <div className="space-y-2">
-                <OutcomeBar label="Win" value={displayedForecastWin} color="#00e676" textClass="text-[#00e676]" />
-                <OutcomeBar label="Draw" value={displayedForecastDraw} color="#6b7a94" textClass="text-[#9aa5bb]" />
-                <OutcomeBar label="Loss" value={displayedForecastLoss} color="#ff4444" textClass="text-[#ff4444]" />
-              </div>
-            </div>
-
-            <div className="grid grid-cols-2 gap-3">
-              <div className="rounded-lg bg-[#111620] p-3 text-center border border-[#1e2a3a]">
-                <div className="text-[10px] uppercase tracking-[0.1em] text-[#6b7a94]">My Expected Goals</div>
-                <div className="font-['Barlow_Condensed'] text-[28px] font-black text-[#00e676]">{simulation.myxG}</div>
-                <div className="text-[11px] text-[#6b7a94]">You</div>
-              </div>
-              <div className="rounded-lg bg-[#111620] p-3 text-center border border-[#1e2a3a]">
-                <div className="text-[10px] uppercase tracking-[0.1em] text-[#6b7a94]">Opponent xG</div>
-                <div className="font-['Barlow_Condensed'] text-[28px] font-black text-[#ffab00]">{simulation.oppxG}</div>
-                <div className="text-[11px] text-[#6b7a94]">Opponent</div>
-              </div>
-            </div>
-          </section>
-        )}
 
       </main>
 
@@ -4154,10 +4149,10 @@ function TeamFormationCard({ title, subtitle, suggestion, emptyText, tone = 'my'
   const details = getSuggestionDetails(suggestion);
 
   return (
-    <section className="overflow-hidden rounded-[10px] border border-[#1e2a3a] bg-[#111620]">
-      <div className="border-b border-[#1e2a3a] p-4">
+    <section className="flex min-h-0 flex-col overflow-hidden rounded-[10px] border border-[#1e2a3a] bg-[#111620]">
+      <div className="shrink-0 border-b border-[#1e2a3a] p-3">
         <div className={`text-[11px] font-bold uppercase tracking-[0.14em] ${tone === 'opp' ? 'text-[#ffab00]' : 'text-[#00e676]'}`}>{title}</div>
-        <div className="mt-1 font-['Barlow_Condensed'] text-[24px] font-black leading-none text-[#e8edf5]">
+          <div className="mt-1 font-['Barlow_Condensed'] text-[20px] font-black leading-none text-[#e8edf5]">
           {subtitle || details.formation}
         </div>
         {suggestion.isDefaultLineup ? (
@@ -4166,23 +4161,29 @@ function TeamFormationCard({ title, subtitle, suggestion, emptyText, tone = 'my'
         <TacticsSummaryChips
           tactics={suggestion.tactics}
           setPiecePlayer={details.setPiecePlayer}
-          className="mt-3"
+          roleLabels={details.roleLabels}
+          className="mt-2"
         />
       </div>
-      <FormationPitch suggestion={suggestion} details={details} onInjuryOpen={onInjuryOpen} />
+      <div className="min-h-0 flex-1">
+        <FormationPitch suggestion={suggestion} details={details} onInjuryOpen={onInjuryOpen} />
+      </div>
     </section>
   );
 }
 
-function TacticsSummaryChips({ tactics, setPiecePlayer, className = '' }) {
+function TacticsSummaryChips({ tactics, setPiecePlayer, roleLabels = [], className = '' }) {
   const normalizedTactics = normalizeTactics(tactics);
 
   return (
-    <div className={`flex flex-wrap gap-2 text-xs text-[#d0d7e5] ${className}`}>
-      <span className="rounded border border-[#253040] bg-[#161c28] px-2 py-1">Press {TACTICS.press[normalizedTactics.press]?.label}</span>
-      <span className="rounded border border-[#253040] bg-[#161c28] px-2 py-1">Tempo {TACTICS.tempo[normalizedTactics.tempo]?.label}</span>
-      <span className="rounded border border-[#253040] bg-[#161c28] px-2 py-1">Line {TACTICS.lineHeight[normalizedTactics.lineHeight]?.label}</span>
-      <span className="rounded border border-[#253040] bg-[#161c28] px-2 py-1">Set pieces {setPiecePlayer?.name || 'Auto'}</span>
+    <div className={`flex flex-wrap gap-1.5 text-[10px] leading-tight text-[#d0d7e5] ${className}`}>
+      <span className="rounded border border-[#253040] bg-[#161c28] px-1.5 py-0.5">Press {TACTICS.press[normalizedTactics.press]?.label}</span>
+      <span className="rounded border border-[#253040] bg-[#161c28] px-1.5 py-0.5">Tempo {TACTICS.tempo[normalizedTactics.tempo]?.label}</span>
+      <span className="rounded border border-[#253040] bg-[#161c28] px-1.5 py-0.5">Line {TACTICS.lineHeight[normalizedTactics.lineHeight]?.label}</span>
+      <span className="rounded border border-[#253040] bg-[#161c28] px-1.5 py-0.5">Set pieces {setPiecePlayer?.name || 'Auto'}</span>
+      {roleLabels.map((roleLabel) => (
+        <span key={roleLabel} className="max-w-full truncate rounded border border-[#253040] bg-[#161c28] px-1.5 py-0.5">{roleLabel}</span>
+      ))}
     </div>
   );
 }
@@ -4223,12 +4224,12 @@ function SeasonPredictionTable({ rows, loading, myTeamIds }) {
   );
 }
 
-function BestSetupCard({ suggestion, analyzing, canAnalyze, onApply, onInjuryOpen }) {
+function BestSetupCard({ suggestion, analyzing, canAnalyze, lineupGaps = [], onInjuryOpen }) {
   if (!canAnalyze) {
     return (
       <section className="mb-4 rounded-[10px] border border-[#1e2a3a] bg-[#111620] p-4">
-        <div className="text-[11px] font-bold uppercase tracking-[0.14em] text-[#00e676]">Best Setup</div>
-        <div className="mt-1 text-sm font-semibold text-[#e8edf5]">Load your squad and next opponent</div>
+        <div className="text-[11px] font-bold uppercase tracking-[0.14em] text-[#00e676]">Recommended Setup</div>
+        <div className="mt-1 text-sm font-semibold text-[#e8edf5]">Waiting for squad and opponent lineups</div>
         <div className="mt-1 text-xs text-[#6b7a94]">Once both teams are available, the calculator will pick the setup automatically.</div>
       </section>
     );
@@ -4246,37 +4247,54 @@ function BestSetupCard({ suggestion, analyzing, canAnalyze, onApply, onInjuryOpe
   }
 
   if (!suggestion) {
-    return null;
+    return (
+      <section aria-live="polite" className="mb-4 rounded-[10px] border border-[#1e2a3a] bg-[#111620] p-4">
+        <div className="text-[11px] font-bold uppercase tracking-[0.14em] text-[#00e676]">No Valid Lineup</div>
+        <div className="mt-1 text-sm font-semibold text-[#e8edf5]">The squad cannot fill a complete formation.</div>
+        <div className="mt-1 text-xs text-[#6b7a94]">
+          {lineupGaps.length > 0
+            ? `Add: ${lineupGaps.join(', ')}.`
+            : 'Check that players have eligible positions and the opponent lineup is available.'}
+        </div>
+      </section>
+    );
   }
 
   const details = getSuggestionDetails(suggestion);
 
   return (
-    <section className="overflow-hidden rounded-[10px] border border-[rgba(0,230,118,0.28)] bg-[#111620]">
-      <div className="border-b border-[#1e2a3a] p-4">
+    <section aria-busy={analyzing} className="flex min-h-0 flex-col overflow-hidden rounded-[10px] border border-[rgba(0,230,118,0.28)] bg-[#111620]">
+      <div className="shrink-0 border-b border-[#1e2a3a] p-3">
         <div className="min-w-0">
-          <div className="text-[11px] font-bold uppercase tracking-[0.14em] text-[#00e676]">Best Setup</div>
-          <div className="mt-1 font-['Barlow_Condensed'] text-[26px] font-black leading-none text-[#e8edf5]">
+          <div className="flex items-center justify-between gap-2">
+            <div className="text-[11px] font-bold uppercase tracking-[0.14em] text-[#00e676]">Recommended Setup</div>
+            {analyzing && (
+              <div className="inline-flex shrink-0 items-center gap-1.5 rounded-full border border-[#00e676]/30 bg-[#0f2a1b] px-2 py-1 text-[10px] font-semibold text-[#9af7cb]">
+                <Loader2 size={11} className="animate-spin" aria-hidden="true" />
+                Updating
+              </div>
+            )}
+          </div>
+          <div className="mt-1 font-['Barlow_Condensed'] text-[20px] font-black leading-none text-[#e8edf5]">
             {details.formation}
           </div>
           <TacticsSummaryChips
             tactics={suggestion.tactics}
             setPiecePlayer={details.setPiecePlayer}
+            roleLabels={details.roleLabels}
             className="mt-2"
           />
-          <button
-            type="button"
-            onClick={onApply}
-            className="mt-3 inline-flex w-full items-center justify-center gap-2 rounded-md border border-[#00e676]/40 bg-[#0f2a1b] px-3 py-2 text-xs font-semibold text-[#9af7cb] transition hover:border-[#00e676]/70 hover:text-[#00e676]"
-          >
-            Use in calculator
-          </button>
-          <p className="mt-2 text-[11px] text-[#6b7a94]">
-            Season projections read your live Lost Pigs lineup directly.
+          <p aria-live="polite" className="sr-only">
+            {analyzing ? 'Updating recommended setup.' : 'Recommended setup is current.'}
+          </p>
+          <p className="mt-2 hidden truncate text-[11px] leading-snug text-[#9aa5bb] lg:block">
+            Apply these settings and roles in Lost Pigs. Fixture, season, and item projections update from your live lineup automatically.
           </p>
         </div>
       </div>
-      <FormationPitch suggestion={suggestion} details={details} onInjuryOpen={onInjuryOpen} />
+      <div className="min-h-0 flex-1">
+        <FormationPitch suggestion={suggestion} details={details} onInjuryOpen={onInjuryOpen} />
+      </div>
     </section>
   );
 }
@@ -4295,30 +4313,31 @@ function FormationPitch({ suggestion, details, onInjuryOpen }) {
   };
 
   return (
-    <div className="p-3">
-      <div className="relative overflow-hidden rounded-[8px] border border-[#1e2a3a]" style={pitchStyle}>
+    <div className="h-full min-h-0 p-2">
+      <div className="relative h-full min-h-0 overflow-hidden rounded-[8px] border border-[#1e2a3a]" style={pitchStyle}>
         <div className="pointer-events-none absolute inset-x-0 top-1/2 h-px bg-white/20" />
         <div className="pointer-events-none absolute left-1/2 top-1/2 h-24 w-24 -translate-x-1/2 -translate-y-1/2 rounded-full border border-white/20" />
         <div className="pointer-events-none absolute inset-x-[18%] bottom-0 h-[19%] border border-b-0 border-white/20" />
         <div className="pointer-events-none absolute inset-x-[18%] top-0 h-[19%] border border-t-0 border-white/20" />
 
-        <div className="relative z-10 flex min-h-[430px] flex-col justify-between gap-4 px-3 py-4 sm:min-h-[520px] sm:px-5">
+        <div className="relative z-10 flex h-full min-h-[430px] flex-col justify-between gap-4 px-3 py-4 sm:min-h-[520px] sm:px-5 lg:min-h-0 lg:gap-2 lg:px-3 lg:py-3">
           {rows.map((row) => (
-            <div key={row.pos} className="min-w-0">
-              <div className="mb-1 text-center font-['Barlow_Condensed'] text-[13px] font-black uppercase tracking-[0.18em] text-[#0d2414]/65">
+            <div key={row.pos} className="flex min-h-0 min-w-0 flex-1 flex-col justify-center">
+              <div className="mb-0.5 shrink-0 text-center font-['Barlow_Condensed'] text-[10px] font-black uppercase leading-none tracking-[0.14em] text-[#0d2414] lg:text-[11px]">
                 {row.label}
               </div>
               <div
-                className="grid justify-center gap-2.5 sm:gap-4"
-                style={{ gridTemplateColumns: `repeat(${row.players.length}, minmax(0, 150px))` }}
+                className="grid min-h-0 flex-1 items-center justify-center gap-2.5 sm:gap-4 lg:gap-2"
+                style={{ gridTemplateColumns: `repeat(${row.players.length}, minmax(0, 1fr))` }}
               >
                 {row.players.map((player) => (
-                  <FormationPlayerCard
-                    key={`${row.pos}-${player.id}`}
-                    player={player}
-                    setPieceTaker={suggestion.tactics?.setPieceTaker}
-                    onInjuryOpen={onInjuryOpen}
-                  />
+                  <div key={`${row.pos}-${player.id}`} className="mx-auto flex h-full max-h-[210px] w-full max-w-[130px] min-w-0 items-stretch justify-center">
+                    <FormationPlayerCard
+                      player={player}
+                      setPieceTaker={suggestion.tactics?.setPieceTaker}
+                      onInjuryOpen={onInjuryOpen}
+                    />
+                  </div>
                 ))}
               </div>
             </div>
@@ -4330,6 +4349,8 @@ function FormationPitch({ suggestion, details, onInjuryOpen }) {
 }
 
 function FormationPlayerCard({ player, setPieceTaker, onInjuryOpen }) {
+  const [reasonOpen, setReasonOpen] = useState(false);
+  const [reasonPosition, setReasonPosition] = useState({ left: 0, top: 0, width: 288 });
   const role = player.role
     ? Object.values(PLAYER_ROLES).find((entry) => entry.value === player.role)
     : null;
@@ -4351,19 +4372,81 @@ function FormationPlayerCard({ player, setPieceTaker, onInjuryOpen }) {
       : selectedPosition === 'MF'
         ? 'from-[#59d171] to-[#217a35] text-[#06130a]'
         : 'from-[#ff7070] to-[#b52235] text-white';
+  const reasonId = `selection-reason-${player.id}`;
+
+  useEffect(() => {
+    if (!reasonOpen) return undefined;
+
+    const closeReason = () => setReasonOpen(false);
+    window.addEventListener('resize', closeReason);
+    window.addEventListener('scroll', closeReason, true);
+
+    return () => {
+      window.removeEventListener('resize', closeReason);
+      window.removeEventListener('scroll', closeReason, true);
+    };
+  }, [reasonOpen]);
 
   return (
-    <div className="min-w-0 overflow-hidden rounded-[8px] border border-[#142315] bg-[#d8c22f] shadow-[4px_5px_0_rgba(7,17,12,0.35)]">
-      <div className="flex min-h-[42px] items-start justify-between gap-1 bg-[#d9bd2b] px-2 py-1">
-        <div className="min-w-0 whitespace-normal break-words font-['Barlow_Condensed'] text-[13px] font-black uppercase leading-[0.95] tracking-[0.04em] text-[#2a2713]">
+    <div className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden rounded-[8px] border border-[#142315] bg-[#d8c22f] shadow-[4px_5px_0_rgba(7,17,12,0.35)]">
+      <div className="flex min-h-[30px] shrink-0 items-start justify-between gap-1 bg-[#d9bd2b] px-1.5 py-1">
+        <div className="min-w-0 break-words font-['Barlow_Condensed'] text-[11px] font-black uppercase leading-[0.95] tracking-[0.02em] text-[#2a2713] line-clamp-2">
           {player.name}
         </div>
-        <div className={`shrink-0 rounded-[4px] bg-gradient-to-b px-1.5 py-0.5 font-['Barlow_Condensed'] text-[12px] font-black ${positionTone}`}>
+        <div className={`shrink-0 rounded-[4px] bg-gradient-to-b px-1 py-0.5 font-['Barlow_Condensed'] text-[10px] font-black ${positionTone}`}>
           {selectedPosition}
         </div>
       </div>
-      <div className="relative bg-[#f0e6a1]">
+      <div className="relative aspect-square overflow-hidden bg-[#f0e6a1] lg:aspect-auto lg:min-h-0 lg:flex-1">
         <PlayerCardPortrait player={player} />
+        {player.selectionReason && (
+          <div className="absolute right-2 top-2">
+            <button
+              type="button"
+              onClick={(event) => {
+                const buttonRect = event.currentTarget.getBoundingClientRect();
+                const width = Math.min(288, window.innerWidth - 24);
+                const estimatedHeight = 160;
+                const left = Math.min(
+                  Math.max(12, buttonRect.right - width),
+                  Math.max(12, window.innerWidth - width - 12),
+                );
+                let top = buttonRect.bottom + 8;
+                if (top + estimatedHeight > window.innerHeight - 12) {
+                  top = Math.max(12, buttonRect.top - estimatedHeight - 8);
+                }
+
+                setReasonPosition({ left, top, width });
+                setReasonOpen((open) => !open);
+              }}
+              onBlur={() => setReasonOpen(false)}
+              onKeyDown={(event) => {
+                if (event.key === 'Escape') setReasonOpen(false);
+              }}
+              aria-label={`Why ${player.name} was selected`}
+              title="Why this player was selected"
+              aria-expanded={reasonOpen}
+              aria-describedby={reasonOpen ? reasonId : undefined}
+              className="relative flex h-7 w-7 items-center justify-center rounded-full bg-black/45 text-white transition-[background-color,transform] duration-150 after:absolute after:-inset-2 after:rounded-full after:content-[''] hover:bg-black/65 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white active:scale-[0.96]"
+            >
+              <Info size={15} strokeWidth={2} aria-hidden="true" />
+            </button>
+            {reasonOpen && (
+              <div
+                id={reasonId}
+                role="note"
+                style={{
+                  left: `${reasonPosition.left}px`,
+                  top: `${reasonPosition.top}px`,
+                  width: `${reasonPosition.width}px`,
+                }}
+                className="fixed z-[200] rounded-md border border-white/25 bg-[rgba(10,13,18,0.96)] p-2.5 text-xs font-medium normal-case leading-snug tracking-normal text-[#e8edf5] shadow-[0_12px_28px_rgba(4,8,12,0.5)]"
+              >
+                {player.selectionReason}
+              </div>
+            )}
+          </div>
+        )}
         {injury && (
           <button
             type="button"
@@ -4371,19 +4454,19 @@ function FormationPlayerCard({ player, setPieceTaker, onInjuryOpen }) {
               event.stopPropagation();
               if (onInjuryOpen) onInjuryOpen(player);
             }}
-            className="absolute left-2 top-2 flex h-7 min-w-7 items-center justify-center rounded-[5px] border border-white/70 bg-[#d73535] px-1.5 font-['Barlow_Condensed'] text-[18px] font-black leading-none text-white shadow-[2px_2px_0_rgba(7,17,12,0.4)] transition hover:bg-[#ff4444] focus:outline-none focus:ring-2 focus:ring-white/80"
+            className="absolute left-2 top-2 flex h-7 min-w-7 items-center justify-center rounded-[5px] border border-white/70 bg-[#d73535] px-1.5 font-['Barlow_Condensed'] text-[18px] font-black leading-none text-white shadow-[2px_2px_0_rgba(7,17,12,0.4)] transition after:absolute after:-inset-2 after:content-[''] hover:bg-[#ff4444] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/80"
             title={injuryTitle}
             aria-label={injuryTitle}
           >
             +
           </button>
         )}
-        <div className="absolute bottom-0 left-0 right-0 flex items-center justify-between bg-[rgba(17,22,32,0.72)] px-2 py-1 font-['Barlow_Condensed'] text-[14px] font-black text-white">
+        <div className="absolute bottom-0 left-0 right-0 flex items-center justify-between gap-1 bg-[rgba(17,22,32,0.72)] px-1.5 py-1 font-['Barlow_Condensed'] text-[11px] font-black leading-none text-white">
           <span>{isSetPieceTaker ? 'SP' : roleLabel}</span>
           <span>{player.outOfPosition ? `OOP ${playableLabel}` : playableLabel}</span>
         </div>
       </div>
-      <div className="flex items-center justify-center gap-2 bg-[#c9ad28] px-2 py-1 font-['Barlow_Condensed'] text-[17px] font-black uppercase tracking-[0.08em] text-[#4a4114]">
+      <div className="flex shrink-0 items-center justify-center gap-1.5 bg-[#c9ad28] px-2 py-1 font-['Barlow_Condensed'] text-[14px] font-black uppercase tracking-[0.06em] text-[#4a4114]">
         <span>{selectedPosition}</span>
         <span className="text-[#6a5c1a]">|</span>
         <span>{player.ovr}</span>
@@ -4393,7 +4476,11 @@ function FormationPlayerCard({ player, setPieceTaker, onInjuryOpen }) {
 }
 
 function PlayerCardPortrait({ player }) {
-  const [imageSrc, setImageSrc] = useState(player.imageUrl || null);
+  const [imageSrc, setImageSrc] = useState(
+    player.imageUrl && !player.imageUrl.startsWith('ipfs://') ? player.imageUrl : null,
+  );
+  const [fallbackSrc, setFallbackSrc] = useState(null);
+  const displayedSrc = fallbackSrc || imageSrc;
 
   useEffect(() => {
     let cancelled = false;
@@ -4419,9 +4506,13 @@ function PlayerCardPortrait({ player }) {
     };
   }, [player.assetId, player.imageUrl, player.id]);
 
-  if (!imageSrc) {
+  useEffect(() => {
+    setFallbackSrc(null);
+  }, [imageSrc]);
+
+  if (!displayedSrc) {
     return (
-      <div className="flex aspect-square w-full items-center justify-center bg-[#d9d1a5] font-['Barlow_Condensed'] text-[20px] font-black text-[#6c653f]">
+      <div className="absolute inset-0 flex items-center justify-center bg-[#d9d1a5] font-['Barlow_Condensed'] text-[16px] font-black text-[#6c653f]">
         NFT
       </div>
     );
@@ -4429,10 +4520,19 @@ function PlayerCardPortrait({ player }) {
 
   return (
     <img
-      src={imageSrc}
+      src={displayedSrc}
       alt={player.name}
-      className="aspect-square w-full object-cover"
+      className="absolute inset-0 h-full w-full object-cover"
       loading="lazy"
+      crossOrigin={crossOriginForImageUrl(displayedSrc)}
+      onError={() => {
+        const genericFallback = getGenericIpfsFallback(imageSrc);
+        if (genericFallback && genericFallback !== imageSrc && !fallbackSrc) {
+          setFallbackSrc(genericFallback);
+        } else {
+          setImageSrc(null);
+        }
+      }}
     />
   );
 }
@@ -4450,7 +4550,11 @@ function OutcomeBar({ label, value, color, textClass }) {
 }
 
 function AssetAvatar({ player }) {
-  const [imageSrc, setImageSrc] = useState(player.imageUrl || null);
+  const [imageSrc, setImageSrc] = useState(
+    player.imageUrl && !player.imageUrl.startsWith('ipfs://') ? player.imageUrl : null,
+  );
+  const [fallbackSrc, setFallbackSrc] = useState(null);
+  const displayedSrc = fallbackSrc || imageSrc;
 
   useEffect(() => {
     let cancelled = false;
@@ -4476,6 +4580,10 @@ function AssetAvatar({ player }) {
     };
   }, [player.assetId, player.imageUrl, player.id]);
 
+  useEffect(() => {
+    setFallbackSrc(null);
+  }, [imageSrc]);
+
   const primaryPos = player.positions && player.positions.length > 0 ? player.positions[0] : player.pos;
   const badgeClass = primaryPos === 'GK'
     ? 'bg-[#b8860b] text-white'
@@ -4487,12 +4595,21 @@ function AssetAvatar({ player }) {
 
   return (
     <div className="relative h-[46px] w-[46px] shrink-0">
-      {imageSrc ? (
+      {displayedSrc ? (
         <img
-          src={imageSrc}
+          src={displayedSrc}
           alt={player.name}
           className="h-full w-full rounded-[8px] border border-[#253040] bg-[#161c28] object-cover"
           loading="lazy"
+          crossOrigin={crossOriginForImageUrl(displayedSrc)}
+          onError={() => {
+            const genericFallback = getGenericIpfsFallback(imageSrc);
+            if (genericFallback && genericFallback !== imageSrc && !fallbackSrc) {
+              setFallbackSrc(genericFallback);
+            } else {
+              setImageSrc(null);
+            }
+          }}
         />
       ) : (
         <div className="flex h-full w-full items-center justify-center rounded-[8px] border border-[#253040] bg-[#161c28] text-[10px] font-bold text-[#9aa5bb]">

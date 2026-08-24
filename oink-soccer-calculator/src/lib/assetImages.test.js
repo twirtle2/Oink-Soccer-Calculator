@@ -9,6 +9,7 @@ const PERA = 'https://mainnet.api.perawallet.app/v1/public/assets/';
 const PINATA = 'https://gateway.pinata.cloud/ipfs/';
 const IPFSIO = 'https://ipfs.io/ipfs/';
 const LOST_PIGS_CDN = 'https://cdn.thelostpigs.com/';
+const YBG_GATEWAY = 'https://ybg.mypinata.cloud/ipfs/';
 
 const reserve = () => algosdk.generateAccount().addr.toString();
 const templateUrl = () => 'template-ipfs://{ipfscid:1:raw:reserve:sha2-256}';
@@ -83,6 +84,59 @@ test('routes Lost Bots (BOT) static image through the collection CDN', async () 
   restore();
 
   assert.equal(url, `${LOST_PIGS_CDN}bafkreid6static`);
+});
+
+test('routes YBG artwork through the game gateway with origin-scoped caching', async () => {
+  globalThis.window = { location: { hostname: 'localhost' } };
+  const restore = mockFetch([
+    { match: (u) => u.startsWith(PERA), respond: () => json({
+      unit_name: 'YBG42',
+      collectible: {
+        metadata: { image: 'ipfs://bafkreih3vl6ffcsub27erb65btyikmv66cgbxlv7reytgjusvjadujqd6u' },
+      },
+    }) },
+    { match: (u) => u.startsWith(YBG_GATEWAY), respond: () => ok() },
+  ]);
+
+  try {
+    const url = await resolvePlayerImage({ assetId: '90004' });
+    assert.equal(url, `${YBG_GATEWAY}bafkreih3vl6ffcsub27erb65btyikmv66cgbxlv7reytgjusvjadujqd6u?xo=localhost`);
+  } finally {
+    restore();
+    delete globalThis.window;
+  }
+});
+
+test('falls back from denied YBG game gateway to a healthy generic gateway', async () => {
+  globalThis.window = { location: { hostname: 'localhost' } };
+  const requests = [];
+  const restore = mockFetch([
+    { match: (u) => u.startsWith(PERA), respond: (u) => {
+      requests.push(u);
+      return json({
+      unit_name: 'YBG42',
+      collectible: {
+        metadata: { image: 'ipfs://bafkreih3vl6ffcsub27erb65btyikmv66cgbxlv7reytgjusvjadujqd6u' },
+      }
+      });
+    } },
+    { match: (u) => u.startsWith(YBG_GATEWAY), respond: (u) => {
+      requests.push(u);
+      return down();
+    } },
+    { match: (u) => u.startsWith(PINATA), respond: (u) => {
+      requests.push(u);
+      return ok();
+    } },
+  ]);
+
+  try {
+    const url = await resolvePlayerImage({ assetId: '90005' });
+    assert.equal(url, `${PINATA}bafkreih3vl6ffcsub27erb65btyikmv66cgbxlv7reytgjusvjadujqd6u`);
+  } finally {
+    restore();
+    delete globalThis.window;
+  }
 });
 
 test('does not permanently cache a transient resolution failure', async () => {
