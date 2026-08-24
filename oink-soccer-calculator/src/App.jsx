@@ -3757,7 +3757,7 @@ export default function OinkSoccerCalc() {
 
               {selectedFixture ? (
                 <>
-                  <div className="grid gap-4 lg:min-h-0 xl:h-full xl:grid-cols-2 xl:gap-3">
+                  <div className="grid gap-4 lg:min-h-0 lg:grid-cols-2 lg:h-full lg:gap-3">
                     <BestSetupCard
                       suggestion={topSuggestion}
                       analyzing={autoAnalyzing || importingTeamUrl}
@@ -3766,7 +3766,7 @@ export default function OinkSoccerCalc() {
                       onInjuryOpen={(player) => openInjuryModal(player, 'myTeam', { readOnly: true })}
                     />
 
-                    <TeamFormationCard
+                  <TeamFormationCard
                     title="Opponent Squad"
                     subtitle={opponentLineupMeta.isDefaultLineup
                       ? `${FORMATIONS[oppForm]?.name || 'Current formation'} · Default lineup`
@@ -4287,9 +4287,6 @@ function BestSetupCard({ suggestion, analyzing, canAnalyze, lineupGaps = [], onI
           <p aria-live="polite" className="sr-only">
             {analyzing ? 'Updating recommended setup.' : 'Recommended setup is current.'}
           </p>
-          <p className="mt-2 hidden truncate text-[11px] leading-snug text-[#9aa5bb] lg:block">
-            Apply these settings and roles in Lost Pigs. Fixture, season, and item projections update from your live lineup automatically.
-          </p>
         </div>
       </div>
       <div className="min-h-0 flex-1">
@@ -4327,11 +4324,14 @@ function FormationPitch({ suggestion, details, onInjuryOpen }) {
                 {row.label}
               </div>
               <div
-                className="grid min-h-0 flex-1 items-center justify-center gap-2.5 sm:gap-4 lg:gap-2"
-                style={{ gridTemplateColumns: `repeat(${row.players.length}, minmax(0, 1fr))` }}
+                className="grid min-h-0 flex-1 content-center items-stretch justify-center gap-2.5 sm:gap-4 lg:gap-2"
+                style={{
+                  gridTemplateColumns: `repeat(${row.players.length}, minmax(0, 1fr))`,
+                  gridAutoRows: '1fr',
+                }}
               >
                 {row.players.map((player) => (
-                  <div key={`${row.pos}-${player.id}`} className="mx-auto flex h-full max-h-[210px] w-full max-w-[130px] min-w-0 items-stretch justify-center">
+                  <div key={`${row.pos}-${player.id}`} className="mx-auto aspect-[4/5] h-full w-auto max-w-[130px] min-w-0">
                     <FormationPlayerCard
                       player={player}
                       setPieceTaker={suggestion.tactics?.setPieceTaker}
@@ -4390,10 +4390,10 @@ function FormationPlayerCard({ player, setPieceTaker, onInjuryOpen }) {
   return (
     <div className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden rounded-[8px] border border-[#142315] bg-[#d8c22f] shadow-[4px_5px_0_rgba(7,17,12,0.35)]">
       <div className="flex min-h-[30px] shrink-0 items-start justify-between gap-1 bg-[#d9bd2b] px-1.5 py-1">
-        <div className="min-w-0 break-words font-['Barlow_Condensed'] text-[11px] font-black uppercase leading-[0.95] tracking-[0.02em] text-[#2a2713] line-clamp-2">
+        <div className="min-w-0 flex-1 self-center truncate font-['Barlow_Condensed'] text-[11px] font-black uppercase leading-[0.95] tracking-[0.02em] text-[#2a2713]">
           {player.name}
         </div>
-        <div className={`shrink-0 rounded-[4px] bg-gradient-to-b px-1 py-0.5 font-['Barlow_Condensed'] text-[10px] font-black ${positionTone}`}>
+        <div className={`w-[26px] shrink-0 rounded-[4px] bg-gradient-to-b px-1 py-0.5 text-center font-['Barlow_Condensed'] text-[10px] font-black ${positionTone}`}>
           {selectedPosition}
         </div>
       </div>
@@ -4461,14 +4461,14 @@ function FormationPlayerCard({ player, setPieceTaker, onInjuryOpen }) {
             +
           </button>
         )}
-        <div className="absolute bottom-0 left-0 right-0 flex items-center justify-between gap-1 bg-[rgba(17,22,32,0.72)] px-1.5 py-1 font-['Barlow_Condensed'] text-[11px] font-black leading-none text-white">
-          <span>{isSetPieceTaker ? 'SP' : roleLabel}</span>
-          <span>{player.outOfPosition ? `OOP ${playableLabel}` : playableLabel}</span>
+        <div className="absolute bottom-0 left-0 right-0 flex h-[22px] items-center justify-between gap-1 bg-[rgba(17,22,32,0.72)] px-1.5 font-['Barlow_Condensed'] text-[10px] font-black uppercase leading-none text-white">
+          <span className="min-w-0 truncate">{isSetPieceTaker ? 'SP' : roleLabel}</span>
+          <span className="min-w-0 truncate text-right">{player.outOfPosition ? `OOP ${playableLabel}` : playableLabel}</span>
         </div>
       </div>
-      <div className="flex shrink-0 items-center justify-center gap-1.5 bg-[#c9ad28] px-2 py-1 font-['Barlow_Condensed'] text-[14px] font-black uppercase tracking-[0.06em] text-[#4a4114]">
+      <div className="flex h-6 shrink-0 items-center justify-center gap-1.5 bg-[#c9ad28] px-2 font-['Barlow_Condensed'] text-[14px] font-black uppercase leading-none tracking-[0.06em] text-[#4a4114]">
         <span>{selectedPosition}</span>
-        <span className="text-[#6a5c1a]">|</span>
+        <span aria-hidden="true" className="text-[#6a5c1a]">|</span>
         <span>{player.ovr}</span>
       </div>
     </div>
