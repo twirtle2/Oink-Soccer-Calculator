@@ -680,7 +680,7 @@ const getSuggestionSelectionExplanations = ({
     let reason;
 
     if (strongestAlternative) {
-      reason = `Best of top-rated swaps: ${strongestAlternative.name} (${strongestAlternative.ovr} OVR) projects ${formatNumber(strongestAlternative.projectedWin)}% win versus ${formatNumber(suggestion.win)}%.`;
+      reason = `Best of top fit-scored swaps: ${strongestAlternative.name} (${strongestAlternative.ovr} OVR) projects ${formatNumber(strongestAlternative.projectedWin)}% win versus ${formatNumber(suggestion.win)}%.`;
     } else if (higherRatedStarter) {
       reason = `${higherRatedStarter.name} (${higherRatedStarter.ovr} OVR) is already in this best XI at ${higherRatedStarter.selectedPosition || higherRatedStarter.pos}; the optimizer valued them more in that slot.`;
     } else {
