@@ -20,6 +20,7 @@ import {
   fetchTeamLineup,
   fetchTeamBoostState,
   importOpponentFromTeamInput,
+  normalizeSetPieceTaker,
   resolveOwnedTeamLeagues,
 } from './lib/lostPigsTeamImport';
 import {
@@ -1116,14 +1117,18 @@ export default function OinkSoccerCalc() {
   const [walletSyncing, setWalletSyncing] = useState(false);
   const [heldItems, setHeldItems] = useState(EMPTY_HELD_ITEMS);
 
+  const initialOpponentPlayers = persistedState.opponentTeam || initialOpponent;
   const [mySquad, setMySquad] = useState(persistedState.mySquad || initialMyTeam); // Full roster
   const [myTeam, setMyTeam] = useState(persistedState.myTeam || initialMyTeam.slice(0, 5)); // Active 5
-  const [opponentTeam, setOpponentTeam] = useState(persistedState.opponentTeam || initialOpponent);
+  const [opponentTeam, setOpponentTeam] = useState(initialOpponentPlayers);
   const [opponentLineupMeta, setOpponentLineupMeta] = useState({ isDefaultLineup: false });
   const [myForm, setMyForm] = useState(persistedState.myForm || 'Pyramid');
   const [oppForm, setOppForm] = useState(persistedState.oppForm || 'Pyramid');
   const [myTactics] = useState(normalizeTactics(persistedState.myTactics));
-  const [oppTactics, setOppTactics] = useState(normalizeTactics(persistedState.oppTactics));
+  const [oppTactics, setOppTactics] = useState(() => normalizeSetPieceTaker(
+    normalizeTactics(persistedState.oppTactics),
+    initialOpponentPlayers,
+  ));
 
   const [myBoost] = useState(persistedState.myBoost || 'None');
   const [myBoostApps] = useState(persistedState.myBoostApps || 1);
@@ -4172,15 +4177,32 @@ function TeamFormationCard({ title, subtitle, suggestion, emptyText, tone = 'my'
   );
 }
 
-function TacticsSummaryChips({ tactics, setPiecePlayer, roleLabels = [], className = '' }) {
+function TacticsSummaryChips({ tactics, setPiecePlayer, roleLabels = [], recommendation = false, className = '' }) {
   const normalizedTactics = normalizeTactics(tactics);
+  const hasConfiguredSetPieceTaker = Boolean(normalizedTactics.setPieceTaker);
+  const setPieceLabel = setPiecePlayer?.name || (hasConfiguredSetPieceTaker ? 'Unavailable' : 'Auto');
+  const setPieceTitle = setPiecePlayer
+    ? recommendation
+      ? `${setPiecePlayer.name} is the recommended set-piece taker. Automatic selection and up to four specialist candidates were compared.`
+      : `${setPiecePlayer.name} is the set-piece taker configured in the live team lineup.`
+    : hasConfiguredSetPieceTaker
+      ? 'A set-piece taker is configured, but that player is not in the active lineup returned by Lost Pigs.'
+      : recommendation
+        ? 'Automatic selection was compared with up to four specialist candidates; it produced the best projection.'
+        : 'No fixed set-piece taker is configured in the live lineup; the game chooses automatically.';
 
   return (
     <div className={`flex flex-wrap gap-1.5 text-[10px] leading-tight text-[#d0d7e5] ${className}`}>
       <span className="rounded border border-[#253040] bg-[#161c28] px-1.5 py-0.5">Press {TACTICS.press[normalizedTactics.press]?.label}</span>
       <span className="rounded border border-[#253040] bg-[#161c28] px-1.5 py-0.5">Tempo {TACTICS.tempo[normalizedTactics.tempo]?.label}</span>
       <span className="rounded border border-[#253040] bg-[#161c28] px-1.5 py-0.5">Line {TACTICS.lineHeight[normalizedTactics.lineHeight]?.label}</span>
-      <span className="rounded border border-[#253040] bg-[#161c28] px-1.5 py-0.5">Set pieces {setPiecePlayer?.name || 'Auto'}</span>
+      <span
+        title={setPieceTitle}
+        aria-label={`Set pieces: ${setPieceLabel}`}
+        className="rounded border border-[#253040] bg-[#161c28] px-1.5 py-0.5"
+      >
+        Set pieces {setPieceLabel}
+      </span>
       {roleLabels.map((roleLabel) => (
         <span key={roleLabel} className="max-w-full truncate rounded border border-[#253040] bg-[#161c28] px-1.5 py-0.5">{roleLabel}</span>
       ))}
@@ -4282,6 +4304,7 @@ function BestSetupCard({ suggestion, analyzing, canAnalyze, lineupGaps = [], onI
             tactics={suggestion.tactics}
             setPiecePlayer={details.setPiecePlayer}
             roleLabels={details.roleLabels}
+            recommendation
             className="mt-2"
           />
           <p aria-live="polite" className="sr-only">

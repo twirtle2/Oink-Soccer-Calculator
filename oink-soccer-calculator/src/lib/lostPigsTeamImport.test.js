@@ -406,13 +406,13 @@ test('fetchTeamLineup maps live opponent tactics from the team payload', async (
         Press: 'high',
         Tempo: 'fast',
         LineHeight: 'deep',
-        SetPieceTaker: 'AlgorandAsset:789',
+        SetPieceTaker: 'Algorand:789',
       },
     },
     team_selection: {
       slots: {
         0: {
-          asset: { id: 'AlgorandAsset:789', name: 'Keeper' },
+          asset: { id: 'Algorand:789', name: 'Keeper' },
           player_attributes: {
             based_on_player: 'Keeper',
             position: 'Goalkeeper',
@@ -428,7 +428,7 @@ test('fetchTeamLineup maps live opponent tactics from the team payload', async (
       press: 'high',
       tempo: 'fast',
       lineHeight: 'deep',
-      setPieceTaker: 'AlgorandAsset:789',
+      setPieceTaker: 'teamurl:AlgorandAsset:456:0',
     });
   });
 });

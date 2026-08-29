@@ -42,7 +42,7 @@ const teamIdToAssetId = (teamId) => {
 const normalizePlayerAssetId = (value = '') => {
   const trimmed = String(value || '').trim();
   if (!trimmed) return null;
-  const match = trimmed.match(/(?:Algorand:)?(\d+)$/i);
+  const match = trimmed.match(/^(?:(?:AlgorandAsset|Algorand|asset):)?(\d+)$/i);
   return match ? match[1] : null;
 };
 
@@ -206,6 +206,22 @@ const mapTeamTactics = (tactics) => {
   };
 };
 
+export const normalizeSetPieceTaker = (tactics, players) => {
+  if (!tactics?.setPieceTaker) return tactics;
+
+  const rawReference = String(tactics.setPieceTaker).trim();
+  const assetId = normalizePlayerAssetId(rawReference);
+  const player = players.find((candidate) => (
+    String(candidate.id) === rawReference
+    || (assetId && candidate.assetId === assetId)
+    || (assetId && normalizePlayerAssetId(candidate.assetKey) === assetId)
+  ));
+
+  return player
+    ? { ...tactics, setPieceTaker: player.id }
+    : tactics;
+};
+
 const mapTeamPayloadToPlayers = (teamId, payload) => {
   const slots = payload?.team_selection?.slots || {};
   const formationLabel = payload?.team?.formation || '';
@@ -279,13 +295,14 @@ const mapTeamPayloadToPlayers = (teamId, payload) => {
       ? createDefaultLineupPlayers(teamId, formationKey)
       : players;
   const isDefaultLineup = lineupPlayers.length > 0 && lineupPlayers.every(isPlaceholderPlayer);
+  const tactics = normalizeSetPieceTaker(mapTeamTactics(payload?.team?.tactics), lineupPlayers);
 
   return {
     teamId,
     teamLabel,
     formationLabel,
     formationKey,
-    tactics: mapTeamTactics(payload?.team?.tactics),
+    tactics,
     isDefaultLineup,
     players: lineupPlayers,
   };
