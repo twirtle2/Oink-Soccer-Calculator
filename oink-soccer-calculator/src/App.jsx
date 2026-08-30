@@ -4252,7 +4252,7 @@ function TacticsSummaryChips({ tactics, setPiecePlayer, roleLabels = [], recomme
     : hasConfiguredSetPieceTaker
       ? 'A set-piece taker is configured, but that player is not in the active lineup returned by Lost Pigs.'
       : recommendation
-        ? 'Automatic selection was compared with up to four specialist candidates; it produced the best projection.'
+        ? 'Auto won the projection comparison. It lets the game weight a different receiver for each chance; naming one player locks free kicks and penalties to them and removes them from corner finishes. Free kicks use ATT + 3x TEC, penalties use 2x ATT + 3x CMP, and WOR affects control rather than set-piece selection.'
         : 'No fixed set-piece taker is configured in the live lineup; the game chooses automatically.';
 
   return (
