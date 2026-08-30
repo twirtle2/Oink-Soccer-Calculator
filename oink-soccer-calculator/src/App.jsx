@@ -137,19 +137,21 @@ const applySkillCurve = (raw) => {
   return Math.max(SKILL_CURVE.floor, Math.pow(raw / 100, SKILL_CURVE.exponent) * 100);
 };
 
-const getControlScore = (stats, pos, injuryMod = 1.0, boostMults = {}, tacticsInput = DEFAULT_TACTICS) => {
+const getRawControlScore = (stats, boostMults = {}, tacticsInput = DEFAULT_TACTICS) => {
   const boosted = getBoostedStats(stats, boostMults);
   const tactics = normalizeTactics(tacticsInput);
-  let raw;
   if (tactics.press === 'high') {
-    raw = weightedRounded((boosted.CTL * 3) + (boosted.WRT * 2), 5);
-  } else if (tactics.press === 'low') {
-    raw = weightedRounded((boosted.CTL * 5) + boosted.WRT, 6);
-  } else {
-    raw = weightedRounded((boosted.CTL * 4) + boosted.WRT, 5);
+    return weightedRounded((boosted.CTL * 3) + (boosted.WRT * 2), 5);
   }
-  return applySkillCurve(raw) * injuryMod;
+  if (tactics.press === 'low') {
+    return weightedRounded((boosted.CTL * 5) + boosted.WRT, 6);
+  }
+  return weightedRounded((boosted.CTL * 4) + boosted.WRT, 5);
 };
+
+const getControlScore = (stats, pos, injuryMod = 1.0, boostMults = {}, tacticsInput = DEFAULT_TACTICS) => (
+  applySkillCurve(getRawControlScore(stats, boostMults, tacticsInput)) * injuryMod
+);
 
 const getAttackScoreForChance = (stats, chanceType = 'OpenPlay', injuryMod = 1.0, boostMults = {}) => {
   const boosted = getBoostedStats(stats, boostMults);
@@ -610,6 +612,57 @@ const formatNumber = (value, decimals = 1) => {
   return parsed.toFixed(decimals);
 };
 
+const getSelectionFitSummary = ({
+  player,
+  selectedPosition,
+  tactics,
+  boostContext,
+  strongestAlternativePlayer,
+}) => {
+  if (!player) return '';
+
+  const stats = player.stats || {};
+  const boostMults = getBoostMultipliersFromState(boostContext);
+  const pressLabel = TACTICS.press[normalizeTactics(tactics).press]?.label || 'Current';
+  const workRate = Math.round(getStat(stats, 'WRT', 'SPD'));
+  const controlRaw = getRawControlScore(stats, boostMults, tactics);
+  const alternativeControlRaw = strongestAlternativePlayer
+    ? getRawControlScore(strongestAlternativePlayer.stats, boostMults, tactics)
+    : null;
+  const controlComparison = strongestAlternativePlayer
+    ? ` vs ${alternativeControlRaw} for ${strongestAlternativePlayer.name}`
+    : '';
+
+  if (player.role === PLAYER_ROLES.targetMan.value) {
+    const heading = Math.round(getStat(stats, 'HDG', 'ATT'));
+    const cross = formatNumber(getAttackScoreForChance(stats, 'Cross'), 1);
+    const corner = formatNumber(getAttackScoreForChance(stats, 'Corner'), 1);
+    return `Target Man fit: WOR ${workRate}, HED ${heading}; Cross ${cross}, Corner ${corner} (target weight x2). ${pressLabel}-press control blend ${controlRaw}${controlComparison}. The optimizer compares projected win, not OVR.`;
+  }
+
+  if (player.role === PLAYER_ROLES.playmaker.value) {
+    const control = Math.round(getStat(stats, 'CTL', 'ATT'));
+    return `Playmaker fit: CTL ${control}, WOR ${workRate}. ${pressLabel}-press control blend ${controlRaw}${controlComparison}.`;
+  }
+
+  if (player.role === PLAYER_ROLES.ballWinner.value) {
+    const defense = Math.round(getStat(stats, 'DEF', 'CTL'));
+    const tackling = Math.round(getStat(stats, 'TCK', 'DEF'));
+    const defenseScore = formatNumber(getDefenseScore(stats, selectedPosition, 1, boostMults, tactics), 1);
+    return `Ball Winner fit: DEF ${defense}, TCK ${tackling}; defense score ${defenseScore}.`;
+  }
+
+  if (player.role === PLAYER_ROLES.captain.value) {
+    const leadership = Math.round(getStat(stats, selectedPosition === 'GK' ? 'GKP' : 'CTL', 'ATT'));
+    const composure = Math.round(getStat(stats, 'CMP', 'CTL'));
+    return `Captain fit: ${selectedPosition === 'GK' ? 'GKP' : 'CTL'} ${leadership}, COM ${composure}; leadership quality ${formatNumber(captainQuality(player), 1)}.`;
+  }
+
+  const attack = Math.round(getStat(stats, 'ATT', 'CTL'));
+  const finishing = Math.round(getStat(stats, 'FIN', 'ATT'));
+  return `${selectedPosition} fit: ATT ${attack}, FIN ${finishing}, WOR ${workRate}.`;
+};
+
 const getSuggestionSelectionExplanations = ({
   suggestion,
   squad,
@@ -662,6 +715,7 @@ const getSuggestionSelectionExplanations = ({
         }
 
         return {
+          id: candidate.id,
           name: candidate.name,
           ovr: Number(candidate.ovr),
           projectedWin,
@@ -671,6 +725,9 @@ const getSuggestionSelectionExplanations = ({
       .sort((a, b) => b.projectedWin - a.projectedWin);
 
     const strongestAlternative = alternatives[0];
+    const strongestAlternativePlayer = strongestAlternative
+      ? squad.find((candidate) => String(candidate.id) === String(strongestAlternative.id))
+      : null;
     const higherRatedStarter = suggestion.lineup
       .filter((starter) => (
         starter.id !== player.id
@@ -678,14 +735,21 @@ const getSuggestionSelectionExplanations = ({
         && hasPlayablePosition(starter, selectedPosition)
       ))
       .sort((a, b) => Number(b.ovr) - Number(a.ovr))[0];
+    const fitSummary = getSelectionFitSummary({
+      player,
+      selectedPosition,
+      tactics: suggestion.tactics,
+      boostContext,
+      strongestAlternativePlayer,
+    });
     let reason;
 
     if (strongestAlternative) {
-      reason = `Best of top fit-scored swaps: ${strongestAlternative.name} (${strongestAlternative.ovr} OVR) projects ${formatNumber(strongestAlternative.projectedWin)}% win versus ${formatNumber(suggestion.win)}%.`;
+      reason = `${fitSummary} Best of top fit-scored swaps: ${strongestAlternative.name} (${strongestAlternative.ovr} OVR) projects ${formatNumber(strongestAlternative.projectedWin)}% win versus ${formatNumber(suggestion.win)}%.`;
     } else if (higherRatedStarter) {
-      reason = `${higherRatedStarter.name} (${higherRatedStarter.ovr} OVR) is already in this best XI at ${higherRatedStarter.selectedPosition || higherRatedStarter.pos}; the optimizer valued them more in that slot.`;
+      reason = `${fitSummary} ${higherRatedStarter.name} (${higherRatedStarter.ovr} OVR) is already in this best XI at ${higherRatedStarter.selectedPosition || higherRatedStarter.pos}; the optimizer valued them more in that slot.`;
     } else {
-      reason = 'No higher-rated eligible alternative was available for this slot.';
+      reason = `${fitSummary} No higher-rated eligible alternative was available for this slot.`;
     }
 
     explanations.set(String(player.id), reason);
@@ -4429,7 +4493,7 @@ function FormationPlayerCard({ player, setPieceTaker, onInjuryOpen }) {
               onClick={(event) => {
                 const buttonRect = event.currentTarget.getBoundingClientRect();
                 const width = Math.min(288, window.innerWidth - 24);
-                const estimatedHeight = 160;
+                const estimatedHeight = 220;
                 const left = Math.min(
                   Math.max(12, buttonRect.right - width),
                   Math.max(12, window.innerWidth - width - 12),
@@ -4463,7 +4527,7 @@ function FormationPlayerCard({ player, setPieceTaker, onInjuryOpen }) {
                   top: `${reasonPosition.top}px`,
                   width: `${reasonPosition.width}px`,
                 }}
-                className="fixed z-[200] rounded-md border border-white/25 bg-[rgba(10,13,18,0.96)] p-2.5 text-xs font-medium normal-case leading-snug tracking-normal text-[#e8edf5] shadow-[0_12px_28px_rgba(4,8,12,0.5)]"
+                className="fixed z-[200] max-h-[calc(100vh-24px)] overflow-y-auto rounded-md border border-white/25 bg-[rgba(10,13,18,0.96)] p-2.5 text-xs font-medium normal-case leading-snug tracking-normal text-[#e8edf5] shadow-[0_12px_28px_rgba(4,8,12,0.5)]"
               >
                 {player.selectionReason}
               </div>
