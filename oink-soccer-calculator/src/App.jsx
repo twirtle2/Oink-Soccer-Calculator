@@ -1414,7 +1414,7 @@ export default function OinkSoccerCalc() {
     return () => {
       cancelled = true;
     };
-  }, [detectedMyTeamIds]);
+  }, [activeTab, detectedMyTeamIds, walletSyncMeta.lastSyncedAt]);
 
   const oppTeamLeagueIdForBoosts = useMemo(
     () => getLeagueIdForTeamId(opponentTeamIdForBoosts) || (selectedLeagueId ? String(selectedLeagueId) : null),
@@ -2153,6 +2153,13 @@ export default function OinkSoccerCalc() {
     const opponentFormationForMatchup = matchupOverrides.oppForm || oppForm;
     const opponentTacticsForMatchup = matchupOverrides.oppTactics || oppTactics;
     const homeAdvantageForMatchup = matchupOverrides.homeAdvantage || homeAdvantage;
+    const squadForMatchup = matchupOverrides.squad || mySquad;
+    const boostContextForMatchup = matchupOverrides.boostContext || mySimulationBoostContext;
+    const includeExplanations = matchupOverrides.includeExplanations !== false;
+    const objective = matchupOverrides.objective || 'win';
+    const scoreProjection = (projection) => objective === 'expectedPoints'
+      ? (projection.win * 3) + projection.draw
+      : projection.win;
     const bestByFormation = {};
     const tacticCombos = ['low', 'medium', 'high'].flatMap((press) =>
       ['slow', 'normal', 'fast'].flatMap((tempo) =>
@@ -2164,7 +2171,7 @@ export default function OinkSoccerCalc() {
     let evaluatedCount = 0;
 
     const byPos = { GK: [], DF: [], MF: [], FW: [] };
-    mySquad.forEach(p => {
+    squadForMatchup.forEach(p => {
       const validPos = p.positions && p.positions.length > 0 ? p.positions : [p.pos];
       validPos.forEach(pos => {
         if (byPos[pos]) byPos[pos].push(p);
@@ -2183,7 +2190,7 @@ export default function OinkSoccerCalc() {
         continue;
       }
 
-      let bestForThisForm = { win: -1, lineup: [], tactics: DEFAULT_TACTICS };
+      let bestForThisForm = { objectiveValue: -Infinity, win: -1, lineup: [], tactics: DEFAULT_TACTICS };
       const lineupCandidates = [];
       const seenLineups = new Set();
       const positionPools = {
@@ -2237,19 +2244,21 @@ export default function OinkSoccerCalc() {
               lineup: candidate.lineup,
               formation: formKey,
               tactics,
-              boostContext: mySimulationBoostContext,
+              boostContext: boostContextForMatchup,
               oppStats: opponentStatsForMatchup,
               oppForm: opponentFormationForMatchup,
               oppTactics: opponentTacticsForMatchup,
               homeAdvantage: homeAdvantageForMatchup,
             });
             evaluatedCount += 1;
-            if (roleResult.projection.win > bestForThisForm.win) {
+            const objectiveValue = scoreProjection(roleResult.projection);
+            if (objectiveValue > bestForThisForm.objectiveValue) {
               bestForThisForm = {
                 formation: formKey,
                 lineup: roleResult.lineup,
                 tactics,
                 stats: roleResult.stats,
+                objectiveValue,
                 win: roleResult.projection.win,
                 draw: roleResult.projection.draw,
                 loss: roleResult.projection.loss,
@@ -2263,25 +2272,26 @@ export default function OinkSoccerCalc() {
         }
       }
 
-      if (bestForThisForm.win > -1) {
+      if (bestForThisForm.objectiveValue > -Infinity) {
         bestByFormation[formKey] = bestForThisForm;
       }
     }
 
-    const topSuggestion = Object.values(bestByFormation).sort((a, b) => b.win - a.win)[0] || null;
-    const annotatedTopSuggestion = topSuggestion
+    const topSuggestion = Object.values(bestByFormation)
+      .sort((a, b) => b.objectiveValue - a.objectiveValue)[0] || null;
+    const annotatedTopSuggestion = topSuggestion && includeExplanations
       ? {
         ...topSuggestion,
         lineup: topSuggestion.lineup.map((player) => ({
           ...player,
           selectionReason: getSuggestionSelectionExplanations({
             suggestion: topSuggestion,
-            squad: mySquad,
+            squad: squadForMatchup,
             oppStats: opponentStatsForMatchup,
             oppForm: opponentFormationForMatchup,
             oppTactics: opponentTacticsForMatchup,
             homeAdvantage: homeAdvantageForMatchup,
-            boostContext: mySimulationBoostContext,
+            boostContext: boostContextForMatchup,
           }).get(String(player.id)) || '',
         })),
       }
@@ -2579,6 +2589,66 @@ export default function OinkSoccerCalc() {
     };
 
     const projectedFixtures = [];
+    let optimizedFixtureCount = 0;
+    let liveFixtureCount = 0;
+    let ownedProjectedFixtureCount = 0;
+    let ownedBaselinePoints = 0;
+    let ownedOptimizedPoints = 0;
+
+    const getOptimizedFixtureProjection = ({ fixture, homeModel, awayModel, baseline }) => {
+      const homeIsMine = myTeamIds.has(fixture.home_team_id);
+      const awayIsMine = myTeamIds.has(fixture.away_team_id);
+      if (homeIsMine === awayIsMine) return null;
+
+      const myModel = homeIsMine ? homeModel : awayModel;
+      const opponentModel = homeIsMine ? awayModel : homeModel;
+      const currentWin = homeIsMine ? baseline.win : baseline.loss;
+      const optimizationSquad = mySquad.length >= 5 ? mySquad : myModel.players;
+      if (!Array.isArray(optimizationSquad) || optimizationSquad.length < 5) return null;
+
+      let suggestions;
+      try {
+        suggestions = buildSettingsSuggestions(currentWin, {
+          squad: optimizationSquad,
+          boostContext: TEAM_BOOST_STATE_EMPTY,
+          oppStats: opponentModel.stats,
+          oppForm: opponentModel.formation,
+          oppTactics: opponentModel.tactics,
+          homeAdvantage: homeIsMine ? 'home' : 'away',
+          objective: 'expectedPoints',
+          includeExplanations: false,
+        });
+      } catch (_) {
+        return null;
+      }
+
+      const bestSetup = Object.values(suggestions || {})
+        .filter((suggestion) => suggestion?.formation && Number.isFinite(Number(suggestion.win)))
+        .sort((a, b) => (b.objectiveValue ?? b.win) - (a.objectiveValue ?? a.win))[0];
+      if (!bestSetup) return null;
+
+      const ownProjection = {
+        win: bestSetup.win,
+        draw: bestSetup.draw,
+        loss: bestSetup.loss,
+        myxG: bestSetup.myxG,
+        oppxG: bestSetup.oppxG,
+      };
+
+      return {
+        scenario: 'optimized',
+        setup: bestSetup,
+        projection: homeIsMine
+          ? ownProjection
+          : {
+            win: ownProjection.loss,
+            draw: ownProjection.draw,
+            loss: ownProjection.win,
+            myxG: ownProjection.oppxG,
+            oppxG: ownProjection.myxG,
+          },
+      };
+    };
 
     seasonFixtures.forEach((fixture) => {
       const home = ensureRow(fixture.home_team_id, fixture.home_team_name);
@@ -2619,7 +2689,7 @@ export default function OinkSoccerCalc() {
         return;
       }
 
-      const projection = projectMatch({
+      const baseline = projectMatch({
         myStats: homeModel.stats,
         myForm: homeModel.formation,
         myTactics: homeModel.tactics,
@@ -2628,9 +2698,21 @@ export default function OinkSoccerCalc() {
         oppTactics: awayModel.tactics,
         homeAdvantage: 'home',
       });
+      const isOwnedFixture = myTeamIds.has(fixture.home_team_id) !== myTeamIds.has(fixture.away_team_id);
+      if (isOwnedFixture) ownedProjectedFixtureCount += 1;
+      const optimized = getOptimizedFixtureProjection({ fixture, homeModel, awayModel, baseline });
+      const projection = optimized?.projection || baseline;
+      if (optimized) optimizedFixtureCount += 1;
+      else if (isOwnedFixture) liveFixtureCount += 1;
       const homeGoals = projection.myxG;
       const awayGoals = projection.oppxG;
       const expectedPoints = getExpectedPointsFromOutcomePercentages(projection);
+      if (isOwnedFixture) {
+        const baselinePoints = getExpectedPointsFromOutcomePercentages(baseline);
+        const homeIsMine = myTeamIds.has(fixture.home_team_id);
+        ownedBaselinePoints += homeIsMine ? baselinePoints.my : baselinePoints.opponent;
+        ownedOptimizedPoints += homeIsMine ? expectedPoints.my : expectedPoints.opponent;
+      }
 
       home.projected += 1;
       away.projected += 1;
@@ -2652,6 +2734,9 @@ export default function OinkSoccerCalc() {
         homeWin: projection.win,
         homeXg: projection.myxG,
         awayXg: projection.oppxG,
+        scenario: optimized?.scenario || 'live',
+        baselineHomeWin: baseline.win,
+        optimizedSetup: optimized?.setup || null,
         predicted: projection.win >= projection.draw && projection.win >= projection.loss
           ? fixture.home_team_name
           : projection.loss >= projection.draw
@@ -2673,8 +2758,14 @@ export default function OinkSoccerCalc() {
           || a.teamName.localeCompare(b.teamName)
         )),
       projectedFixtures,
+      optimizedFixtureCount,
+      liveFixtureCount,
+      ownedProjectedFixtureCount,
+      ownedBaselinePoints,
+      ownedOptimizedPoints,
+      optimizedPointsGain: ownedOptimizedPoints - ownedBaselinePoints,
     };
-  }, [detectedMyTeamIds, leagueTeams, myForm, myTactics, myTeam, ownedTeamModels, seasonFixtures, seasonTeams]);
+  }, [buildSettingsSuggestions, detectedMyTeamIds, leagueTeams, myForm, mySquad, myTactics, myTeam, ownedTeamModels, seasonFixtures, seasonTeams]);
 
   const itemSuggestions = useMemo(() => {
     const planningFixtures = teamSeasonFixtures.length > 0 ? teamSeasonFixtures : seasonFixtures;
@@ -3861,13 +3952,17 @@ export default function OinkSoccerCalc() {
                     {selectedLeagueName || 'Select a league'}
                   </div>
                   <div className="mt-1 text-xs text-[#6b7a94]">
-                    Base table keeps actual results, then projects remaining matches from each team's live lineup and tactics with no future item usage.
+                    {seasonForecast.optimizedFixtureCount > 0
+                      ? `Optimized scenario keeps actual results, then chooses your best available lineup, formation, roles, tactics, and set-piece taker for each of your remaining opponents${seasonForecast.liveFixtureCount > 0 ? '. Fixtures without a complete synced squad use the live snapshot' : ''}. Future item usage is excluded.`
+                      : 'Live snapshot fallback: the optimizer needs at least five synced players to model opponent-by-opponent lineup changes. Future item usage is excluded.'}
                   </div>
                 </div>
                 <div className="rounded-md border border-[#253040] bg-[#111620] px-3 py-2 text-xs text-[#9aa5bb]">
-                  {seasonPredictionLoading
-                    ? 'Loading season...'
-                    : `${seasonForecast.projectedFixtures.length} projected fixtures`}
+                    {seasonPredictionLoading
+                      ? 'Loading season...'
+                      : seasonForecast.optimizedFixtureCount > 0
+                      ? `${seasonForecast.optimizedFixtureCount}/${seasonForecast.ownedProjectedFixtureCount} optimized · ${seasonForecast.optimizedPointsGain >= 0 ? '+' : ''}${formatNumber(seasonForecast.optimizedPointsGain, 1)} pts vs live`
+                      : `${seasonForecast.projectedFixtures.length} projected · live snapshot`}
                 </div>
               </div>
 
