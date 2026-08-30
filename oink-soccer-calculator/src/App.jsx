@@ -637,12 +637,12 @@ const getSelectionFitSummary = ({
     const heading = Math.round(getStat(stats, 'HDG', 'ATT'));
     const cross = formatNumber(getAttackScoreForChance(stats, 'Cross'), 1);
     const corner = formatNumber(getAttackScoreForChance(stats, 'Corner'), 1);
-    return `Target Man fit: WOR ${workRate}, HED ${heading}; Cross ${cross}, Corner ${corner} (target weight x2). ${pressLabel}-press control blend ${controlRaw}${controlComparison}. The optimizer compares projected win, not OVR.`;
+    return `Target Man fit: WOR ${workRate}, HED ${heading}; Cross fit ${cross}, Corner fit ${corner} (target weight x2). ${pressLabel}-press control blend (raw) ${controlRaw}${controlComparison}. The optimizer compares projected win, not OVR.`;
   }
 
   if (player.role === PLAYER_ROLES.playmaker.value) {
     const control = Math.round(getStat(stats, 'CTL', 'ATT'));
-    return `Playmaker fit: CTL ${control}, WOR ${workRate}. ${pressLabel}-press control blend ${controlRaw}${controlComparison}.`;
+    return `Playmaker fit: CTL ${control}, WOR ${workRate}. ${pressLabel}-press control blend (raw) ${controlRaw}${controlComparison}.`;
   }
 
   if (player.role === PLAYER_ROLES.ballWinner.value) {
