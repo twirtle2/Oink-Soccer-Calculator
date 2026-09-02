@@ -354,7 +354,13 @@ const expectedChanceAttack = (assignedPlayers, tacticsInput) => {
   };
 };
 
-const calculateTeamScores = (players, formationKey, boostContext, tacticsInput = DEFAULT_TACTICS) => {
+const calculateTeamScores = (
+  players,
+  formationKey,
+  boostContext,
+  tacticsInput = DEFAULT_TACTICS,
+  assignedPlayersOverride = null,
+) => {
   const form = FORMATIONS[formationKey];
   const profile = FORMATION_PROFILES[formationKey] || {
     possession: 1,
@@ -374,7 +380,7 @@ const calculateTeamScores = (players, formationKey, boostContext, tacticsInput =
 
   if (players.length === 0) return stats;
 
-  const assignedPlayers = assignLineupPositions(players, form.structure);
+  const assignedPlayers = assignedPlayersOverride || assignLineupPositions(players, form.structure);
   const teamCaptainBoost = captainBoost(assignedPlayers);
 
   const getPlayerMod = (player) => {
@@ -554,8 +560,8 @@ const applyRolesToLineup = (lineup, roleById) => lineup.map((player) => ({
   role: roleById[String(player.id)] || '',
 }));
 
-const optimizeRolesForLineup = ({ lineup, formation, tactics, boostContext, oppStats, oppForm, oppTactics, homeAdvantage }) => {
-  const assignedBaseLineup = assignLineupPositions(lineup, FORMATIONS[formation].structure);
+const optimizeRolesForLineup = ({ lineup, formation, tactics, boostContext, oppStats, oppForm, oppTactics, homeAdvantage, assignedLineup = null }) => {
+  const assignedBaseLineup = assignedLineup || assignLineupPositions(lineup, FORMATIONS[formation].structure);
   const roleCandidates = getRoleCandidateIds(assignedBaseLineup, tactics);
   const roleById = {};
   const usedIds = new Set();
@@ -581,7 +587,7 @@ const optimizeRolesForLineup = ({ lineup, formation, tactics, boostContext, oppS
   }
 
   const roleLineup = applyRolesToLineup(assignedBaseLineup, roleById);
-  const stats = calculateTeamScores(roleLineup, formation, boostContext, tactics);
+  const stats = calculateTeamScores(roleLineup, formation, boostContext, tactics, roleLineup);
   const projection = projectMatch({
     myStats: stats,
     myForm: formation,
@@ -1156,6 +1162,7 @@ export default function OinkSoccerCalc() {
   const { wallets } = useWallet();
   const persistedState = useMemo(() => loadCalculatorState(), []);
   const autoSyncedAddressKeyRef = useRef('');
+  const walletSyncRunRef = useRef(0);
 
   const [importingTeamUrl, setImportingTeamUrl] = useState(false);
   const [uploadStatus, setUploadStatus] = useState(null);
@@ -1357,6 +1364,7 @@ export default function OinkSoccerCalc() {
   }, [activeTab, detectedMyTeamIds, seasonTeams, upcomingFixtures]);
 
   const fixtureSeason = gameCounter?.season || catalogSeason;
+  const fixtureRounds = Math.max(1, Math.min(60, gameCounter?.games_per_season || 44));
 
   const getLeagueIdForTeamId = useCallback((teamId) => {
     if (!teamId || !leagueIndex?.allTeams) return null;
@@ -1603,39 +1611,58 @@ export default function OinkSoccerCalc() {
     }
 
     let cancelled = false;
-    const rounds = Math.max(1, Math.min(60, gameCounter?.games_per_season || 44));
     const fixtureTeamId = detectedMyTeamIds.find((teamId) => getLeagueIdForTeamId(teamId) === selectedLeagueId)
       || detectedMyTeamIds[0]
       || null;
     setFixturesLoading(true);
 
-    void Promise.all([
-      fetchLeagueSeasonFixtures({
-        leagueId: selectedLeagueId,
-        season: fixtureSeason,
-        rounds,
-      }),
-      fetchSeasonTournamentFixtures({
-        season: fixtureSeason,
-        leagueRounds: rounds,
-      }).catch(() => []),
-      fixtureTeamId
-        ? fetchTeamSeasonFixtures({
-          teamId: fixtureTeamId,
+    const loadFixturePayload = async () => {
+      if (fixtureTeamId) {
+        try {
+          const teamPayload = await fetchTeamSeasonFixtures({
+            teamId: fixtureTeamId,
+            leagueId: selectedLeagueId,
+            season: fixtureSeason,
+          });
+          if (teamPayload.length > 0) {
+            return {
+              fixturesPayload: teamPayload,
+              seasonPayload: teamPayload.filter((fixture) => fixture.competition !== 'cup'),
+              teamPayload,
+            };
+          }
+        } catch (_) {
+          // Fall back to the league and cup feeds when the team feed is unavailable.
+        }
+      }
+
+      const [leaguePayload, cupPayload] = await Promise.all([
+        fetchLeagueSeasonFixtures({
           leagueId: selectedLeagueId,
           season: fixtureSeason,
-        }).catch(() => [])
-        : Promise.resolve([]),
-    ])
-      .then(([leaguePayload, cupPayload, teamPayload]) => {
+          rounds: fixtureRounds,
+        }),
+        fetchSeasonTournamentFixtures({
+          season: fixtureSeason,
+          leagueRounds: fixtureRounds,
+        }).catch(() => []),
+      ]);
+
+      return {
+        fixturesPayload: [...leaguePayload, ...cupPayload],
+        seasonPayload: leaguePayload,
+        teamPayload: [],
+      };
+    };
+
+    void loadFixturePayload()
+      .then(({ fixturesPayload, seasonPayload, teamPayload }) => {
         if (cancelled) return;
         const payload = sortFixturesByRoundAndTime(
-          teamPayload.length > 0
-            ? teamPayload
-            : [...leaguePayload, ...cupPayload],
+          fixturesPayload,
         );
         setFixtures(payload);
-        setSeasonFixtures(leaguePayload);
+        setSeasonFixtures(seasonPayload);
         setTeamSeasonFixtures(sortFixturesByRoundAndTime(teamPayload));
         setSelectedFixtureKey((current) => (
           current && payload.some((fixture) => fixture.game_key === current)
@@ -1660,7 +1687,7 @@ export default function OinkSoccerCalc() {
     return () => {
       cancelled = true;
     };
-  }, [detectedMyTeamIds, fixtureSeason, gameCounter?.games_per_season, getLeagueIdForTeamId, selectedLeagueId]);
+  }, [detectedMyTeamIds, fixtureRounds, fixtureSeason, getLeagueIdForTeamId, selectedLeagueId]);
 
   useEffect(() => {
     if (activeTab !== 'season' || !selectedLeagueId || !fixtureSeason) {
@@ -1668,7 +1695,6 @@ export default function OinkSoccerCalc() {
     }
 
     let cancelled = false;
-    const rounds = Math.max(1, Math.min(60, gameCounter?.games_per_season || 44));
     setSeasonPredictionLoading(true);
     setSeasonPredictionError('');
 
@@ -1676,7 +1702,7 @@ export default function OinkSoccerCalc() {
       const nextFixtures = await fetchLeagueSeasonFixtures({
         leagueId: selectedLeagueId,
         season: fixtureSeason,
-        rounds,
+        rounds: fixtureRounds,
       });
 
       if (cancelled) return;
@@ -1716,7 +1742,7 @@ export default function OinkSoccerCalc() {
     return () => {
       cancelled = true;
     };
-  }, [activeTab, fixtureSeason, gameCounter?.games_per_season, selectedLeagueId]);
+  }, [activeTab, fixtureRounds, fixtureSeason, selectedLeagueId]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1847,7 +1873,7 @@ export default function OinkSoccerCalc() {
     save = true,
   } = {}) => {
     if (detectedMyTeamIds.length === 0 || squad.length === 0) {
-      return { nextSquad: squad, nextTeam: team, refreshedCount: 0 };
+      return { nextSquad: squad, nextTeam: team, livePlayers: [], refreshedCount: 0 };
     }
 
     const liveLineups = await Promise.all(
@@ -1863,7 +1889,7 @@ export default function OinkSoccerCalc() {
 
     const livePlayers = liveLineups.flat();
     if (livePlayers.length === 0) {
-      return { nextSquad: squad, nextTeam: team, refreshedCount: 0 };
+      return { nextSquad: squad, nextTeam: team, livePlayers, refreshedCount: 0 };
     }
 
     const nextSquad = applyLiveLineupInjuries(squad, livePlayers);
@@ -1877,16 +1903,19 @@ export default function OinkSoccerCalc() {
       saveToDb({ mySquad: nextSquad, myTeam: nextTeam });
     }
 
-    return { nextSquad, nextTeam, refreshedCount: livePlayers.length };
+    return { nextSquad, nextTeam, livePlayers, refreshedCount: livePlayers.length };
   }, [detectedMyTeamIds, mySquad, myTeam, saveToDb]);
 
   const handleSyncWalletAssets = useCallback(async (addressesOverride = connectedAddresses) => {
-    const addressesToSync = Array.from(new Set((addressesOverride || []).filter(Boolean)));
+    const requestedAddresses = Array.isArray(addressesOverride) ? addressesOverride : connectedAddresses;
+    const addressesToSync = Array.from(new Set(requestedAddresses.filter(Boolean)));
     if (addressesToSync.length === 0 || walletSyncing) {
       return;
     }
 
     setWalletSyncing(true);
+    const syncRun = walletSyncRunRef.current + 1;
+    walletSyncRunRef.current = syncRun;
     const nextMeta = {
       ...walletSyncMeta,
       lastError: null,
@@ -1904,12 +1933,6 @@ export default function OinkSoccerCalc() {
       const nextHeldItems = buildHeldItemCounts(heldAssetBalances);
       const { walletPlayers, matchedCount, unmatchedCount } = buildWalletPlayers(heldAssetIds, catalogByAssetId);
       const merged = mergeWalletPlayers({ mySquad, myTeam, walletPlayers });
-      const { nextSquad, nextTeam } = await refreshOwnedTeamInjuries({
-        squad: merged.nextSquad,
-        team: merged.nextTeam,
-        applyState: false,
-        save: false,
-      });
 
       const updatedMeta = {
         lastSyncedAt: new Date().toISOString(),
@@ -1918,11 +1941,26 @@ export default function OinkSoccerCalc() {
         lastError: null,
       };
 
-      setMySquad(nextSquad);
-      setMyTeam(nextTeam);
+      // Show the wallet roster as soon as indexer/catalog data is ready. Live injury
+      // details are an enhancement and must not hold the lineup behind another API call.
+      setMySquad(merged.nextSquad);
+      setMyTeam(merged.nextTeam);
       setHeldItems(nextHeldItems);
       setWalletSyncMeta(updatedMeta);
-      saveToDb({ mySquad: nextSquad, myTeam: nextTeam, walletSyncMeta: updatedMeta });
+      saveToDb({ mySquad: merged.nextSquad, myTeam: merged.nextTeam, walletSyncMeta: updatedMeta });
+
+      void refreshOwnedTeamInjuries({
+        squad: merged.nextSquad,
+        team: merged.nextTeam,
+        applyState: false,
+        save: false,
+      }).then(({ livePlayers }) => {
+        if (walletSyncRunRef.current !== syncRun || livePlayers.length === 0) return;
+        setMySquad((current) => applyLiveLineupInjuries(current, livePlayers));
+        setMyTeam((current) => applyLiveLineupInjuries(current, livePlayers));
+      }).catch(() => {
+        // Wallet data is already usable when the optional lineup refresh fails.
+      });
     } catch (error) {
       const updatedMeta = {
         ...nextMeta,
@@ -2236,6 +2274,7 @@ export default function OinkSoccerCalc() {
         .slice(0, maxLineupsPerFormation);
 
       for (const candidate of shortlist) {
+        const assignedLineup = assignLineupPositions(candidate.lineup, structure);
         const setPieceCandidates = getSetPieceCandidates(candidate.lineup);
         for (const baseTactics of tacticCombos) {
           for (const setPieceTaker of setPieceCandidates) {
@@ -2249,6 +2288,7 @@ export default function OinkSoccerCalc() {
               oppForm: opponentFormationForMatchup,
               oppTactics: opponentTacticsForMatchup,
               homeAdvantage: homeAdvantageForMatchup,
+              assignedLineup,
             });
             evaluatedCount += 1;
             const objectiveValue = scoreProjection(roleResult.projection);
@@ -2315,7 +2355,7 @@ export default function OinkSoccerCalc() {
   ]);
 
   useEffect(() => {
-    if (mySquad.length < 5 || opponentTeam.length < 5) {
+    if (activeTab !== 'matchup' || mySquad.length < 5 || opponentTeam.length < 5) {
       setAutoSuggestions({});
       setAutoAnalyzing(false);
       return undefined;
@@ -2330,7 +2370,7 @@ export default function OinkSoccerCalc() {
     return () => {
       window.clearTimeout(timeoutId);
     };
-  }, [buildSettingsSuggestions, mySquad.length, opponentTeam.length, simulation.win]);
+  }, [activeTab, buildSettingsSuggestions, mySquad.length, opponentTeam.length, simulation.win]);
 
   const tabItems = useMemo(() => ([
     { key: 'upcoming', icon: '📅', label: 'Upcoming' },
@@ -2524,6 +2564,21 @@ export default function OinkSoccerCalc() {
   }, [oppForm, oppTactics, opponentLineupMeta.isDefaultLineup, opponentTeam]);
 
   const seasonForecast = useMemo(() => {
+    const loadedSeasonTeamCount = Object.keys(seasonTeams).length;
+    const seasonModelsReady = leagueTeams.length === 0 || loadedSeasonTeamCount >= leagueTeams.length;
+    if (activeTab !== 'season' || seasonPredictionLoading || !seasonModelsReady) {
+      return {
+        rows: [],
+        projectedFixtures: [],
+        optimizedFixtureCount: 0,
+        liveFixtureCount: 0,
+        ownedProjectedFixtureCount: 0,
+        ownedBaselinePoints: 0,
+        ownedOptimizedPoints: 0,
+        optimizedPointsGain: 0,
+      };
+    }
+
     const myTeamIds = new Set(detectedMyTeamIds);
     const rows = new Map();
     const ensureRow = (teamId, teamName) => {
@@ -2765,7 +2820,7 @@ export default function OinkSoccerCalc() {
       ownedOptimizedPoints,
       optimizedPointsGain: ownedOptimizedPoints - ownedBaselinePoints,
     };
-  }, [buildSettingsSuggestions, detectedMyTeamIds, leagueTeams, myForm, mySquad, myTactics, myTeam, ownedTeamModels, seasonFixtures, seasonTeams]);
+  }, [activeTab, buildSettingsSuggestions, detectedMyTeamIds, leagueTeams, myForm, mySquad, myTactics, myTeam, ownedTeamModels, seasonFixtures, seasonPredictionLoading, seasonTeams]);
 
   const itemSuggestions = useMemo(() => {
     const planningFixtures = teamSeasonFixtures.length > 0 ? teamSeasonFixtures : seasonFixtures;
@@ -3921,21 +3976,22 @@ export default function OinkSoccerCalc() {
                     <BestSetupCard
                       suggestion={topSuggestion}
                       analyzing={autoAnalyzing || importingTeamUrl}
+                      syncing={walletSyncing}
                       canAnalyze={mySquad.length >= 5 && opponentTeam.length >= 5}
                       lineupGaps={lineupCoverageGaps}
                       onInjuryOpen={(player) => openInjuryModal(player, 'myTeam', { readOnly: true })}
                     />
 
-                  <TeamFormationCard
-                    title="Opponent Squad"
-                    subtitle={opponentLineupMeta.isDefaultLineup
-                      ? `${FORMATIONS[oppForm]?.name || 'Current formation'} · Default lineup`
-                      : FORMATIONS[oppForm]?.name || 'Current formation'}
-                    suggestion={opponentPitchSuggestion}
-                    emptyText={importingTeamUrl ? 'Loading opponent lineup...' : 'No active opponent lineup found for this fixture.'}
-                    tone="opp"
-                    onInjuryOpen={(player) => openInjuryModal(player, 'opponent', { readOnly: true })}
-                  />
+                    <TeamFormationCard
+                      title="Opponent Squad"
+                      subtitle={opponentLineupMeta.isDefaultLineup
+                        ? `${FORMATIONS[oppForm]?.name || 'Current formation'} · Default lineup`
+                        : FORMATIONS[oppForm]?.name || 'Current formation'}
+                      suggestion={opponentPitchSuggestion}
+                      emptyText={importingTeamUrl ? 'Loading opponent lineup...' : 'No active opponent lineup found for this fixture.'}
+                      tone="opp"
+                      onInjuryOpen={(player) => openInjuryModal(player, 'opponent', { readOnly: true })}
+                    />
                   </div>
                 </>
               ) : null}
@@ -4405,13 +4461,20 @@ function SeasonPredictionTable({ rows, loading, myTeamIds }) {
   );
 }
 
-function BestSetupCard({ suggestion, analyzing, canAnalyze, lineupGaps = [], onInjuryOpen }) {
+function BestSetupCard({ suggestion, analyzing, syncing = false, canAnalyze, lineupGaps = [], onInjuryOpen }) {
   if (!canAnalyze) {
     return (
       <section className="mb-4 rounded-[10px] border border-[#1e2a3a] bg-[#111620] p-4">
         <div className="text-[11px] font-bold uppercase tracking-[0.14em] text-[#00e676]">Recommended Setup</div>
-        <div className="mt-1 text-sm font-semibold text-[#e8edf5]">Waiting for squad and opponent lineups</div>
-        <div className="mt-1 text-xs text-[#6b7a94]">Once both teams are available, the calculator will pick the setup automatically.</div>
+        <div className="mt-1 flex items-center gap-2 text-sm font-semibold text-[#e8edf5]">
+          {syncing && <Loader2 size={14} className="animate-spin text-[#00e676]" />}
+          {syncing ? 'Syncing wallet squad' : 'Waiting for squad and opponent lineups'}
+        </div>
+        <div className="mt-1 text-xs text-[#6b7a94]">
+          {syncing
+            ? 'Reading held players now; live lineup details will follow in the background.'
+            : 'Once both teams are available, the calculator will pick the setup automatically.'}
+        </div>
       </section>
     );
   }

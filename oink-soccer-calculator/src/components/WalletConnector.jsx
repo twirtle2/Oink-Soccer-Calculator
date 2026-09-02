@@ -117,7 +117,7 @@ export default function WalletConnector({ onSync, isSyncing, syncMeta }) {
           <div className="flex items-center justify-between border-b border-slate-700 bg-slate-900/90 px-4 py-3">
             <div className="text-base font-black text-slate-100">Connect Wallet</div>
             <button
-              onClick={onSync}
+              onClick={() => onSync()}
               disabled={!canSync}
               className={`inline-flex items-center gap-1 rounded-xl border px-3 py-1.5 text-xs font-bold ${
                 canSync

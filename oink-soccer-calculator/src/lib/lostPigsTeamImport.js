@@ -1,4 +1,6 @@
 const LOST_PIGS_API_BASE = 'https://api.thelostpigs.com';
+const inFlightTeamPayloads = new Map();
+const inFlightSeasonFixtures = new Map();
 
 const POSITION_MAP = {
   Goalkeeper: 'GK',
@@ -313,27 +315,40 @@ const hasActivePlayableLineup = (players) => (
   && players.length > 0
 );
 
-const fetchTeamPayload = async (teamId) => {
-  const response = await fetch(`${LOST_PIGS_API_BASE}/v2/soccer/team/${encodeURIComponent(teamId)}`);
-  if (response.ok) {
-    return response.json();
-  }
+const fetchTeamPayload = (teamId) => {
+  const normalizedTeamId = normalizeTeamId(teamId) || teamId;
+  const inFlight = inFlightTeamPayloads.get(normalizedTeamId);
+  if (inFlight) return inFlight;
 
-  let details = '';
-  try {
-    const body = await response.json();
-    details = body?.message || body?.code || '';
-  } catch (_) {
-    details = '';
-  }
+  const request = (async () => {
+    const response = await fetch(`${LOST_PIGS_API_BASE}/v2/soccer/team/${encodeURIComponent(normalizedTeamId)}`);
+    if (response.ok) {
+      return response.json();
+    }
 
-  if (response.status === 404) {
-    throw new Error('Team not found. Check the URL or teamId.');
-  }
-  if (details) {
-    throw new Error(`Lost Pigs API error: ${details}`);
-  }
-  throw new Error(`Lost Pigs API returned ${response.status}.`);
+    let details = '';
+    try {
+      const body = await response.json();
+      details = body?.message || body?.code || '';
+    } catch (_) {
+      details = '';
+    }
+
+    if (response.status === 404) {
+      throw new Error('Team not found. Check the URL or teamId.');
+    }
+    if (details) {
+      throw new Error(`Lost Pigs API error: ${details}`);
+    }
+    throw new Error(`Lost Pigs API returned ${response.status}.`);
+  })().finally(() => {
+    if (inFlightTeamPayloads.get(normalizedTeamId) === request) {
+      inFlightTeamPayloads.delete(normalizedTeamId);
+    }
+  });
+
+  inFlightTeamPayloads.set(normalizedTeamId, request);
+  return request;
 };
 
 const fetchJsonOrThrow = async (path, notFoundMessage) => {
@@ -441,29 +456,42 @@ export const fetchLeagueRoundFixtures = async ({ leagueId, season, round }) => {
   };
 };
 
-export const fetchLeagueSeasonFixtures = async ({ leagueId, season, rounds }) => {
+export const fetchLeagueSeasonFixtures = ({ leagueId, season, rounds }) => {
   const totalRounds = Number.parseInt(String(rounds || 0), 10) || 44;
-  const roundNumbers = Array.from({ length: totalRounds }, (_, index) => index + 1);
-  const payloads = await Promise.allSettled(
-    roundNumbers.map((round) => fetchLeagueRoundFixtures({ leagueId, season, round })),
-  );
+  const requestKey = `${String(leagueId || '').trim()}:${String(season)}:${totalRounds}`;
+  const inFlight = inFlightSeasonFixtures.get(requestKey);
+  if (inFlight) return inFlight;
 
-  const fulfilled = payloads
-    .filter((result) => result.status === 'fulfilled')
-    .map((result) => result.value);
+  const request = (async () => {
+    const roundNumbers = Array.from({ length: totalRounds }, (_, index) => index + 1);
+    const payloads = await Promise.allSettled(
+      roundNumbers.map((round) => fetchLeagueRoundFixtures({ leagueId, season, round })),
+    );
 
-  if (fulfilled.length === 0) {
-    throw new Error('No season fixtures could be loaded.');
-  }
+    const fulfilled = payloads
+      .filter((result) => result.status === 'fulfilled')
+      .map((result) => result.value);
 
-  return fulfilled.flatMap((payload) => (
-    payload.fixtures.map((fixture) => ({
-      ...fixture,
-      game_round: payload.round,
-      sort_round: payload.round,
-      competition: 'league',
-    }))
-  ));
+    if (fulfilled.length === 0) {
+      throw new Error('No season fixtures could be loaded.');
+    }
+
+    return fulfilled.flatMap((payload) => (
+      payload.fixtures.map((fixture) => ({
+        ...fixture,
+        game_round: payload.round,
+        sort_round: payload.round,
+        competition: 'league',
+      }))
+    ));
+  })().finally(() => {
+    if (inFlightSeasonFixtures.get(requestKey) === request) {
+      inFlightSeasonFixtures.delete(requestKey);
+    }
+  });
+
+  inFlightSeasonFixtures.set(requestKey, request);
+  return request;
 };
 
 const getTournamentRoundLabel = (roundNumber, totalRounds) => {
