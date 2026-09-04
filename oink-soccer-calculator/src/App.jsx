@@ -901,6 +901,7 @@ const FIXTURE_NAV_BUTTON_CLASS = 'flex h-11 w-11 items-center justify-center rou
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 const ITEM_USE_COOLDOWN_DAYS = 2;
+const WALLET_SYNC_RETRY_DELAYS_MS = [500, 1500];
 
 const getUtcDayExpiryTime = (startTime, durationDays) => {
   if (!Number.isFinite(startTime)) return startTime;
@@ -1393,6 +1394,52 @@ export default function OinkSoccerCalc() {
 
   const primaryOwnedTeamModel = myTeamIdForBoosts ? ownedTeamModels[myTeamIdForBoosts] || null : null;
 
+  // The live team endpoint can be complete before the wallet catalog scan finishes.
+  // Prefer the full wallet collection, but keep a complete owned lineup usable in the
+  // meantime so the first selected fixture does not get stuck behind the sync.
+  const selectedOwnedTeamId = useMemo(() => {
+    const myTeams = new Set(detectedMyTeamIds);
+    if (selectedFixture) {
+      const homeOwned = myTeams.has(selectedFixture.home_team_id);
+      const awayOwned = myTeams.has(selectedFixture.away_team_id);
+      if (homeOwned && !awayOwned) return selectedFixture.home_team_id;
+      if (awayOwned && !homeOwned) return selectedFixture.away_team_id;
+    }
+    return myTeamIdForBoosts;
+  }, [detectedMyTeamIds, myTeamIdForBoosts, selectedFixture]);
+
+  const liveOwnedLineupModel = useMemo(() => {
+    const preferred = selectedOwnedTeamId ? ownedTeamModels[selectedOwnedTeamId] : null;
+    if (preferred?.players?.length >= 5) return preferred;
+
+    const completeOwnedModel = detectedMyTeamIds
+      .map((teamId) => ownedTeamModels[teamId])
+      .find((model) => model?.players?.length >= 5);
+    return completeOwnedModel || preferred || primaryOwnedTeamModel;
+  }, [detectedMyTeamIds, ownedTeamModels, primaryOwnedTeamModel, selectedOwnedTeamId]);
+
+  const liveOwnedLineup = useMemo(
+    () => (liveOwnedLineupModel?.players?.length >= 5 ? liveOwnedLineupModel.players : []),
+    [liveOwnedLineupModel],
+  );
+  const effectiveMySquad = useMemo(() => {
+    if (mySquad.length >= 5) return mySquad;
+    if (liveOwnedLineup.length >= 5) return liveOwnedLineup;
+    if (myTeam.length >= 5) return myTeam;
+    return [];
+  }, [liveOwnedLineup, mySquad, myTeam]);
+  const effectiveMyTeam = useMemo(
+    () => (myTeam.length >= 5 ? myTeam : liveOwnedLineup),
+    [liveOwnedLineup, myTeam],
+  );
+  const setupFallbackLabel = mySquad.length >= 5
+    ? ''
+    : liveOwnedLineup.length >= 5
+      ? 'Live team lineup'
+      : myTeam.length >= 5
+        ? 'Active lineup'
+        : '';
+
   useEffect(() => {
     if (detectedMyTeamIds.length === 0) {
       setOwnedTeamModels({});
@@ -1842,7 +1889,7 @@ export default function OinkSoccerCalc() {
     });
   }, [mySquad, myTeam, opponentTeam, myForm, oppForm, myTactics, oppTactics, myBoost, myBoostApps, itemCooldownUntil, homeAdvantage, walletSyncMeta]);
 
-  const myStats = useMemo(() => calculateTeamScores(myTeam, myForm, mySimulationBoostContext, myTactics), [myTeam, myForm, mySimulationBoostContext, myTactics]);
+  const myStats = useMemo(() => calculateTeamScores(effectiveMyTeam, myForm, mySimulationBoostContext, myTactics), [effectiveMyTeam, myForm, mySimulationBoostContext, myTactics]);
   const oppStats = useMemo(() => calculateTeamScores(opponentTeam, oppForm, oppBoostContext, oppTactics), [opponentTeam, oppForm, oppBoostContext, oppTactics]);
 
   const simulation = useMemo(() => {
@@ -1923,10 +1970,25 @@ export default function OinkSoccerCalc() {
     setWalletSyncMeta(nextMeta);
 
     try {
-      const [catalogPayload, heldAssetBalances] = await Promise.all([
-        loadPlayableCatalog(),
-        fetchHeldAssetBalancesForAddresses(addressesToSync),
-      ]);
+      let catalogPayload;
+      let heldAssetBalances;
+      let lastError;
+      for (let attempt = 0; attempt <= WALLET_SYNC_RETRY_DELAYS_MS.length; attempt += 1) {
+        try {
+          [catalogPayload, heldAssetBalances] = await Promise.all([
+            loadPlayableCatalog(),
+            fetchHeldAssetBalancesForAddresses(addressesToSync),
+          ]);
+          lastError = null;
+          break;
+        } catch (error) {
+          lastError = error;
+          const retryDelay = WALLET_SYNC_RETRY_DELAYS_MS[attempt];
+          if (retryDelay === undefined) break;
+          await new Promise((resolve) => window.setTimeout(resolve, retryDelay));
+        }
+      }
+      if (lastError) throw lastError;
 
       const catalogByAssetId = catalogPayload?.assets || {};
       const heldAssetIds = new Set(heldAssetBalances.keys());
@@ -2191,7 +2253,7 @@ export default function OinkSoccerCalc() {
     const opponentFormationForMatchup = matchupOverrides.oppForm || oppForm;
     const opponentTacticsForMatchup = matchupOverrides.oppTactics || oppTactics;
     const homeAdvantageForMatchup = matchupOverrides.homeAdvantage || homeAdvantage;
-    const squadForMatchup = matchupOverrides.squad || mySquad;
+    const squadForMatchup = matchupOverrides.squad || effectiveMySquad;
     const boostContextForMatchup = matchupOverrides.boostContext || mySimulationBoostContext;
     const includeExplanations = matchupOverrides.includeExplanations !== false;
     const objective = matchupOverrides.objective || 'win';
@@ -2347,7 +2409,7 @@ export default function OinkSoccerCalc() {
     getCombinations,
     homeAdvantage,
     mySimulationBoostContext,
-    mySquad,
+    effectiveMySquad,
     oppForm,
     oppStats,
     oppTactics,
@@ -2355,7 +2417,7 @@ export default function OinkSoccerCalc() {
   ]);
 
   useEffect(() => {
-    if (activeTab !== 'matchup' || mySquad.length < 5 || opponentTeam.length < 5) {
+    if (activeTab !== 'matchup' || effectiveMySquad.length < 5 || opponentTeam.length === 0) {
       setAutoSuggestions({});
       setAutoAnalyzing(false);
       return undefined;
@@ -2370,7 +2432,7 @@ export default function OinkSoccerCalc() {
     return () => {
       window.clearTimeout(timeoutId);
     };
-  }, [activeTab, buildSettingsSuggestions, mySquad.length, opponentTeam.length, simulation.win]);
+  }, [activeTab, buildSettingsSuggestions, effectiveMySquad.length, opponentTeam.length, simulation.win]);
 
   const tabItems = useMemo(() => ([
     { key: 'upcoming', icon: '📅', label: 'Upcoming' },
@@ -2419,7 +2481,7 @@ export default function OinkSoccerCalc() {
 
   const fixtureWinChances = useMemo(() => {
     const liveModel = primaryOwnedTeamModel?.players?.length ? primaryOwnedTeamModel : null;
-    const currentPlayers = liveModel?.players || myTeam;
+    const currentPlayers = liveModel?.players?.length >= 5 ? liveModel.players : effectiveMyTeam;
     const currentForm = liveModel?.formationKey && FORMATIONS[liveModel.formationKey]
       ? liveModel.formationKey
       : myForm;
@@ -2504,7 +2566,7 @@ export default function OinkSoccerCalc() {
     myForm,
     mySimulationBoostContext,
     myTactics,
-    myTeam,
+    effectiveMyTeam,
     primaryOwnedTeamModel,
     selectedFixture,
     selectedFixtureKey,
@@ -2547,7 +2609,7 @@ export default function OinkSoccerCalc() {
       ? headlineProjection.loss
       : fallbackOutcome.loss,
   );
-  const hasLineups = myTeam.length > 0 && opponentTeam.length > 0;
+  const hasLineups = effectiveMyTeam.length > 0 && opponentTeam.length > 0;
   const displayedWin = hasLineups ? `${headlineProjection.win}%` : '--';
   const displayedForecastWin = hasLineups ? forecastWin : 0;
   const displayedForecastDraw = hasLineups ? forecastDraw : 0;
@@ -2658,7 +2720,7 @@ export default function OinkSoccerCalc() {
       const myModel = homeIsMine ? homeModel : awayModel;
       const opponentModel = homeIsMine ? awayModel : homeModel;
       const currentWin = homeIsMine ? baseline.win : baseline.loss;
-      const optimizationSquad = mySquad.length >= 5 ? mySquad : myModel.players;
+      const optimizationSquad = effectiveMySquad.length >= 5 ? effectiveMySquad : myModel.players;
       if (!Array.isArray(optimizationSquad) || optimizationSquad.length < 5) return null;
 
       let suggestions;
@@ -2820,14 +2882,14 @@ export default function OinkSoccerCalc() {
       ownedOptimizedPoints,
       optimizedPointsGain: ownedOptimizedPoints - ownedBaselinePoints,
     };
-  }, [activeTab, buildSettingsSuggestions, detectedMyTeamIds, leagueTeams, myForm, mySquad, myTactics, myTeam, ownedTeamModels, seasonFixtures, seasonPredictionLoading, seasonTeams]);
+  }, [activeTab, buildSettingsSuggestions, detectedMyTeamIds, effectiveMySquad, leagueTeams, myForm, myTactics, myTeam, ownedTeamModels, seasonFixtures, seasonPredictionLoading, seasonTeams]);
 
   const itemSuggestions = useMemo(() => {
     const planningFixtures = teamSeasonFixtures.length > 0 ? teamSeasonFixtures : seasonFixtures;
     const planningModel = primaryOwnedTeamModel?.players?.length
       ? primaryOwnedTeamModel
       : null;
-    const planningPlayers = planningModel?.players || myTeam;
+    const planningPlayers = planningModel?.players?.length >= 5 ? planningModel.players : effectiveMyTeam;
     const planningForm = planningModel?.formationKey && FORMATIONS[planningModel.formationKey]
       ? planningModel.formationKey
       : myForm;
@@ -3469,7 +3531,7 @@ export default function OinkSoccerCalc() {
     myBoostState,
     myForm,
     myTactics,
-    myTeam,
+    effectiveMyTeam,
     myTeamIdForBoosts,
     ownedTeamModels,
     primaryOwnedTeamModel,
@@ -3513,8 +3575,8 @@ export default function OinkSoccerCalc() {
     .reduce((sum, item) => sum + Number(item.count), 0);
 
   const lineupCoverageGaps = useMemo(
-    () => getLineupCoverageGaps(mySquad),
-    [mySquad],
+    () => getLineupCoverageGaps(effectiveMySquad),
+    [effectiveMySquad],
   );
 
   const openInjuryModal = useCallback((player, teamType, { readOnly = false } = {}) => {
@@ -3977,7 +4039,9 @@ export default function OinkSoccerCalc() {
                       suggestion={topSuggestion}
                       analyzing={autoAnalyzing || importingTeamUrl}
                       syncing={walletSyncing}
-                      canAnalyze={mySquad.length >= 5 && opponentTeam.length >= 5}
+                      fallbackLabel={setupFallbackLabel}
+                      syncError={walletSyncMeta.lastError}
+                      canAnalyze={effectiveMySquad.length >= 5 && opponentTeam.length > 0}
                       lineupGaps={lineupCoverageGaps}
                       onInjuryOpen={(player) => openInjuryModal(player, 'myTeam', { readOnly: true })}
                     />
@@ -4378,6 +4442,11 @@ function TeamFormationCard({ title, subtitle, suggestion, emptyText, tone = 'my'
         {suggestion.isDefaultLineup ? (
           <div className="mt-2 text-xs text-[#9aa5bb]">Default 55 OVR players used for projection.</div>
         ) : null}
+        {suggestion.lineup.length < 5 ? (
+          <div className="mt-2 text-xs text-[#d7bd80]">
+            Incomplete live lineup · projecting with {suggestion.lineup.length} available players.
+          </div>
+        ) : null}
         <TacticsSummaryChips
           tactics={suggestion.tactics}
           setPiecePlayer={details.setPiecePlayer}
@@ -4461,18 +4530,24 @@ function SeasonPredictionTable({ rows, loading, myTeamIds }) {
   );
 }
 
-function BestSetupCard({ suggestion, analyzing, syncing = false, canAnalyze, lineupGaps = [], onInjuryOpen }) {
+function BestSetupCard({ suggestion, analyzing, syncing = false, fallbackLabel = '', syncError = '', canAnalyze, lineupGaps = [], onInjuryOpen }) {
   if (!canAnalyze) {
     return (
       <section className="mb-4 rounded-[10px] border border-[#1e2a3a] bg-[#111620] p-4">
         <div className="text-[11px] font-bold uppercase tracking-[0.14em] text-[#00e676]">Recommended Setup</div>
         <div className="mt-1 flex items-center gap-2 text-sm font-semibold text-[#e8edf5]">
           {syncing && <Loader2 size={14} className="animate-spin text-[#00e676]" />}
-          {syncing ? 'Syncing wallet squad' : 'Waiting for squad and opponent lineups'}
+          {syncing
+            ? 'Syncing wallet squad'
+            : syncError
+              ? 'Wallet squad sync needs another try'
+              : 'Waiting for squad and opponent lineups'}
         </div>
         <div className="mt-1 text-xs text-[#6b7a94]">
           {syncing
             ? 'Reading held players now; live lineup details will follow in the background.'
+            : syncError
+              ? syncError
             : 'Once both teams are available, the calculator will pick the setup automatically.'}
         </div>
       </section>
@@ -4529,6 +4604,11 @@ function BestSetupCard({ suggestion, analyzing, syncing = false, canAnalyze, lin
             recommendation
             className="mt-2"
           />
+          {fallbackLabel && (
+            <div className="mt-2 text-[10px] font-semibold uppercase tracking-[0.08em] text-[#9aa5bb]">
+              {fallbackLabel} · wallet collection still syncing
+            </div>
+          )}
           <p aria-live="polite" className="sr-only">
             {analyzing ? 'Updating recommended setup.' : 'Recommended setup is current.'}
           </p>
