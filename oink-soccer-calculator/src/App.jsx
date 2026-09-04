@@ -4606,7 +4606,7 @@ function BestSetupCard({ suggestion, analyzing, syncing = false, fallbackLabel =
           />
           {fallbackLabel && (
             <div className="mt-2 text-[10px] font-semibold uppercase tracking-[0.08em] text-[#9aa5bb]">
-              {fallbackLabel} · wallet collection still syncing
+              {fallbackLabel} · wallet collection {syncError ? 'unavailable' : 'syncing'}
             </div>
           )}
           <p aria-live="polite" className="sr-only">
