@@ -1,3 +1,4 @@
+import { compareOutcomes } from './lib/itemComparison.js';
 import { getFixtureBoostState } from './lib/fixtureBoosts.js';
 import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { Plus, Trash2, Users, Zap, Activity, Pencil, Save, RotateCcw, Loader2, Bandage, X, TrendingUp, ChevronDown, ChevronUp, ChevronLeft, ChevronRight, RefreshCw, Info } from 'lucide-react';
@@ -2653,6 +2654,26 @@ export default function OinkSoccerCalc() {
   const displayedForecastDraw = hasLineups ? forecastDraw : 0;
   const displayedForecastLoss = hasLineups ? forecastLoss : 0;
 
+  const matchupItemComparisons = useMemo(() => {
+    if (!selectedFixture || selectedFixture.game_result || effectiveMyTeam.length < 5 || opponentTeam.length < 5 || importingTeamUrl || autoAnalyzing) return null;
+    const lineup = topSuggestion?.lineup || effectiveMyTeam;
+    const formation = topSuggestion?.formation || myForm;
+    const tactics = topSuggestion?.tactics || myTactics;
+    const project = (boost) => projectMatch({
+      myStats: calculateTeamScores(lineup, formation, boost, tactics), myForm: formation, myTactics: tactics,
+      oppStats, oppForm, oppTactics, homeAdvantage,
+    });
+    const baseline = project(mySimulationBoostContext);
+    const knownEffectiveness = myBoostState.source === 'live' && Number.isFinite(Number(myBoostState.effectivenessPct));
+    const effectiveness = knownEffectiveness ? Number(myBoostState.effectivenessPct) : 100;
+    const items = getHeldPerformanceItems(heldItems).map((item) => ({
+      ...item,
+      outcome: project(createPlannedItemBoostState({ boostKey: item.boostKey, effectivenessPct: effectiveness })),
+    }));
+    items.sort((a, b) => (a.boostKey === 'GoldenTruffle' ? -1 : 0) - (b.boostKey === 'GoldenTruffle' ? -1 : 0));
+    return { baseline, items, effectiveness, knownEffectiveness };
+  }, [selectedFixture, effectiveMyTeam, opponentTeam, importingTeamUrl, autoAnalyzing, topSuggestion, myForm, myTactics, oppStats, oppForm, oppTactics, homeAdvantage, mySimulationBoostContext, myBoostState, heldItems]);
+
   const opponentPitchSuggestion = useMemo(() => {
     if (opponentTeam.length === 0 || !FORMATIONS[oppForm]) return null;
     return {
@@ -4101,6 +4122,21 @@ export default function OinkSoccerCalc() {
                 )}
                 {importedOpponentTeamId && oppBoostState.fetchError && <p className="mt-2 text-xs text-[#ffcf66]">Opponent item check failed; the matchup assumes no boost. Refresh the fixture to retry.</p>}
                 {importedOpponentTeamId && oppBoostState.source === 'live' && selectedFixture && <p className="mt-2 text-xs text-[#aebbd0]">Opponent: {oppBoostState.boosts.length} active boost(s), {formatNumber(oppBoostState.effectivenessPct)}% current effectiveness; {oppBoostContext.boosts.length} confirmed to cover this fixture. Unknown expiry times are excluded.</p>}
+                {matchupItemComparisons?.items.length > 0 && <div className="mt-3 border-t border-[#253040] pt-3 text-xs text-[#c7d0df]">
+                  <div className="font-semibold text-[#e8edf5]">Held item impact · {topSuggestion ? 'recommended setup' : 'current setup'}</div>
+                  {matchupItemComparisons.items.map((item) => {
+                    const before = matchupItemComparisons.baseline;
+                    const after = item.outcome;
+                    const comparison = compareOutcomes(before, after);
+                    return <div key={item.key} className="mt-2 rounded-md bg-[#111620] p-2.5">
+                      <div className="font-semibold text-[#ffcf66]">{item.label} · {item.count} held</div>
+                      <div className="mt-1">Win {formatNumber(before.win)}% → {formatNumber(after.win)}% ({comparison.winDelta >= 0 ? '+' : ''}{formatNumber(comparison.winDelta)} pp) · Draw {formatNumber(before.draw)}% → {formatNumber(after.draw)}% ({comparison.drawDelta >= 0 ? '+' : ''}{formatNumber(comparison.drawDelta)} pp)</div>
+                      <div className="mt-1 font-semibold text-[#9af7cb]">Win or draw {formatNumber(comparison.pointBefore)}% → {formatNumber(comparison.pointAfter)}% ({comparison.pointDelta >= 0 ? '+' : ''}{formatNumber(comparison.pointDelta)} percentage points)</div>
+                    </div>;
+                  })}
+                  <p className="mt-2 text-[#aebbd0]">Estimated from the current lineup and opponent boost, using {formatNumber(matchupItemComparisons.effectiveness)}% {matchupItemComparisons.knownEffectiveness ? 'current' : 'assumed'} effectiveness. Item scenario replaces any current boost; it assumes the item covers kickoff. These are model estimates, not game-engine simulations.</p>
+                  {itemCooldownEndTime && <p className="mt-1 text-[#ffcf66]">Item cooldown ends {formatFixtureTime(itemCooldownEndTime)}; check timing before use.</p>}
+                </div>}
               </div>
 
               {selectedFixture ? (
