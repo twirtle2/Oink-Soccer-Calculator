@@ -1,3 +1,4 @@
+import { indexOwnResults, fixtureProjection, blendProjections, playedPoints } from './lib/simulationPlanning.js';
 import { compareSetup } from './lib/setupChanges.js';
 import { engineBoosts, engineLineup } from './lib/engineSimulation.js';
 import { selectMatchupDisplay } from './lib/simulationDisplay.js';
@@ -32,26 +33,18 @@ import {
 import {
   createEmptyTeamBoostState,
   createManualFallbackBoostState,
-  getScoreBoostMultipliers,
 } from './lib/boosts';
 import {
   getExpectedPointsFromOutcomePercentages,
-  getPoissonOutcomePercentages,
 } from './lib/matchProjection';
 import { crossOriginForImageUrl, getGenericIpfsFallback, resolvePlayerImage } from './lib/assetImages';
 import {
-  CHANCE_TYPE_WEIGHTS,
   BOOSTS,
-  CHANCE_TYPES,
-  DEFENSE_BIAS_MULTIPLIER,
   DR_DECAY,
   DR_MIN,
   FORMATIONS,
-  FORMATION_CHANCE_RANGES,
-  FORMATION_PROFILES,
   OUT_OF_POSITION_SCALE,
   PLAYER_ROLES,
-  POSITION_WEIGHTS,
   SKILL_CURVE,
   TACTICS,
 } from './lib/gameRules';
@@ -75,32 +68,6 @@ const normalizeTactics = (value) => ({
   ...DEFAULT_TACTICS,
   ...(value || {}),
 });
-
-// --- Event Count Logic (Home/Away Bias + v2 Tempo) ---
-const getAverageEvents = (homeFormKey, awayFormKey, homeAdvantage, myTacticsInput = DEFAULT_TACTICS, oppTacticsInput = DEFAULT_TACTICS) => {
-  const homeStyle = FORMATIONS[homeFormKey]?.style || 'BAL';
-  const awayStyle = FORMATIONS[awayFormKey]?.style || 'BAL';
-  const myTactics = normalizeTactics(myTacticsInput);
-  const oppTactics = normalizeTactics(oppTacticsInput);
-
-  // In the core game, the truth table is fixed as HOME:formation|AWAY:formation.
-  // We need to decide which team is 'Home' and which is 'Away' based on the user's toggle.
-  let key;
-  if (homeAdvantage === 'home') {
-    // My team is Home
-    key = `HOME:${homeStyle}|AWAY:${awayStyle}`;
-  } else {
-    // Opponent team is Home
-    key = `HOME:${awayStyle}|AWAY:${homeStyle}`;
-  }
-
-  const range = FORMATION_CHANCE_RANGES[key] || { min: 3, max: 10 };
-  const tempoFactor = (
-    (TACTICS.tempo[myTactics.tempo]?.chanceFactor || 1)
-    + (TACTICS.tempo[oppTactics.tempo]?.chanceFactor || 1)
-  ) / 2;
-  return ((range.min + range.max) / 2) * tempoFactor;
-};
 
 const INJURIES = {
   None: { label: 'Healthy', reduction: 1.0, color: 'bg-green-500', text: 'text-green-400' },
@@ -227,17 +194,6 @@ const captainQuality = (player) => {
   return (primary + getStat(stats, 'CMP', 'CTL')) / 2;
 };
 
-const captainBoost = (players) => {
-  const captain = players.find((player) => player.role === PLAYER_ROLES.captain.value);
-  if (!captain) return 1;
-  return 1 + ((captainQuality(captain) - 60) / 100) * 0.06;
-};
-
-const captainSelfBoost = (player) => {
-  if (player.role !== PLAYER_ROLES.captain.value) return 1;
-  return 1 + ((captainQuality(player) - 60) / 100) * 0.06;
-};
-
 const assignLineupPositions = (players, structure) => {
   const slots = Object.entries(structure).flatMap(([pos, count]) => (
     Array.from({ length: count }, (_, index) => ({ pos, index }))
@@ -278,233 +234,6 @@ const assignLineupPositions = (players, structure) => {
 
   backtrack(0, [], 0);
   return best || [];
-};
-
-const rolePositionAverage = (assignedPlayers, weights, scoreFn, roleWeights = {}) => {
-  const buckets = {
-    GK: { sum: 0, weight: 0 },
-    DF: { sum: 0, weight: 0 },
-    MF: { sum: 0, weight: 0 },
-    FW: { sum: 0, weight: 0 },
-  };
-
-  for (const player of assignedPlayers) {
-    const pos = player.selectedPosition || player.pos;
-    const bucket = buckets[pos];
-    if (!bucket) continue;
-    const roleWeight = roleWeights[player.role] || 1;
-    bucket.sum += scoreFn(player) * roleWeight;
-    bucket.weight += roleWeight;
-  }
-
-  let total = 0;
-  let populatedWeight = 0;
-  for (const [pos, bucket] of Object.entries(buckets)) {
-    if (bucket.weight <= 0) continue;
-    total += (bucket.sum / bucket.weight) * (weights[pos] || 0);
-    populatedWeight += weights[pos] || 0;
-  }
-
-  return populatedWeight > 0 ? total / populatedWeight : 0;
-};
-
-const cornerDeliveryFactor = (assignedPlayers, tacticsInput) => {
-  const tactics = normalizeTactics(tacticsInput);
-  if (!tactics.setPieceTaker) return 1;
-  const taker = assignedPlayers.find((player) => String(player.id) === String(tactics.setPieceTaker));
-  if (!taker) return 1;
-  const technique = getStat(taker.stats, 'TEC', 'CTL');
-  return Math.max(0.80, Math.min(1.20, 1 + ((technique - 60) / 100) * 0.40));
-};
-
-const expectedChanceAttack = (assignedPlayers, tacticsInput, positionBoosts = {}) => {
-  const tactics = normalizeTactics(tacticsInput);
-  const byChanceType = {};
-  let totalWeightedAttack = 0;
-  let totalChanceWeight = 0;
-
-  for (const [chanceType, profile] of Object.entries(CHANCE_TYPES)) {
-    let attackerScore = 0;
-    let attackerWeight = 0;
-    const directSetPiece = tactics.setPieceTaker && ['FreeKick', 'Penalty'].includes(chanceType);
-    const excludedCornerTaker = tactics.setPieceTaker && chanceType === 'Corner';
-
-    for (const player of assignedPlayers) {
-      if (excludedCornerTaker && String(player.id) === String(tactics.setPieceTaker)) continue;
-      if (directSetPiece && String(player.id) !== String(tactics.setPieceTaker)) continue;
-
-      const posWeight = profile.positionWeights[player.selectedPosition || player.pos] || 0;
-      if (posWeight <= 0) continue;
-
-      const injuryMod = player.injury && INJURIES[player.injury] ? INJURIES[player.injury].reduction : 1;
-      const positionMod = player.outOfPosition ? OUT_OF_POSITION_SCALE : 1;
-      const selfMod = captainSelfBoost(player);
-      const score = getAttackScoreForChance(player.stats, chanceType, injuryMod * positionMod * selfMod);
-      const roleWeight = player.role === PLAYER_ROLES.targetMan.value && ['Corner', 'Cross'].includes(chanceType) ? 2 : 1;
-      const weight = posWeight * Math.max(1, score) * roleWeight;
-      attackerScore += score * (positionBoosts[player.selectedPosition || player.pos] || 1) * weight;
-      attackerWeight += weight;
-    }
-
-    if (attackerWeight <= 0) continue;
-    const delivery = chanceType === 'Corner' ? cornerDeliveryFactor(assignedPlayers, tactics) : 1;
-    const chanceAttack = (attackerScore / attackerWeight) * profile.attackBoost * delivery;
-    byChanceType[chanceType] = chanceAttack;
-    totalWeightedAttack += chanceAttack * CHANCE_TYPE_WEIGHTS[chanceType];
-    totalChanceWeight += CHANCE_TYPE_WEIGHTS[chanceType];
-  }
-
-  return {
-    attack: totalChanceWeight > 0 ? totalWeightedAttack / totalChanceWeight : 0,
-    byChanceType,
-  };
-};
-
-const calculateTeamScores = (
-  players,
-  formationKey,
-  boostContext,
-  tacticsInput = DEFAULT_TACTICS,
-  assignedPlayersOverride = null,
-) => {
-  const form = FORMATIONS[formationKey];
-  const profile = FORMATION_PROFILES[formationKey] || {
-    possession: 1,
-    chanceCreation: 1,
-    chanceQuality: 1,
-    defSolidity: 1,
-  };
-  const tactics = normalizeTactics(tacticsInput);
-  const scoreBoosts = getScoreBoostMultipliers(boostContext);
-
-  const stats = {
-    Control: 0, Defense: 0, Attack: 0,
-    AvgControl: 0, AvgDefense: 0, AvgAttack: 0,
-    AttackByChanceType: {},
-    Count: players.length
-  };
-
-  if (players.length === 0) return stats;
-
-  const assignedPlayers = assignedPlayersOverride || assignLineupPositions(players, form.structure);
-  const teamCaptainBoost = captainBoost(assignedPlayers);
-
-  const getPlayerMod = (player) => {
-    const injuryMod = player.injury && INJURIES[player.injury] ? INJURIES[player.injury].reduction : 1;
-    const positionMod = player.outOfPosition ? OUT_OF_POSITION_SCALE : 1;
-    return injuryMod * positionMod * captainSelfBoost(player);
-  };
-
-  const rawControl = rolePositionAverage(
-    assignedPlayers,
-    POSITION_WEIGHTS.control,
-    (player) => getControlScore(player.stats, player.selectedPosition, getPlayerMod(player), {}, tactics) * (scoreBoosts.positions[player.selectedPosition] || 1),
-    { [PLAYER_ROLES.playmaker.value]: 2 },
-  );
-
-  const rawDefense = rolePositionAverage(
-    assignedPlayers,
-    POSITION_WEIGHTS.defense,
-    (player) => getDefenseScore(player.stats, player.selectedPosition, getPlayerMod(player), {}, tactics) * (scoreBoosts.positions[player.selectedPosition] || 1),
-    { [PLAYER_ROLES.ballWinner.value]: 2 },
-  );
-
-  stats.Control = rawControl
-    * scoreBoosts.team
-    * profile.possession
-    * teamCaptainBoost;
-
-  stats.Defense = rawDefense
-    * scoreBoosts.team
-    * profile.defSolidity
-    * (TACTICS.lineHeight[tactics.lineHeight]?.defenseFactor || 1)
-    * teamCaptainBoost
-    * DEFENSE_BIAS_MULTIPLIER;
-
-  const chanceAttack = expectedChanceAttack(assignedPlayers, tactics, scoreBoosts.positions);
-  const attackModifiers = scoreBoosts.team * profile.chanceCreation
-    * profile.chanceQuality
-    * (TACTICS.tempo[tactics.tempo]?.qualityFactor || 1)
-    * (TACTICS.press[tactics.press]?.fatigueFactor || 1);
-
-  stats.Attack = chanceAttack.attack * attackModifiers;
-  stats.AttackByChanceType = Object.fromEntries(
-    Object.entries(chanceAttack.byChanceType).map(([chanceType, attack]) => (
-      [chanceType, attack * attackModifiers]
-    )),
-  );
-
-  stats.Control = parseFloat(stats.Control.toFixed(1));
-  stats.Defense = parseFloat(stats.Defense.toFixed(1));
-  stats.Attack = parseFloat(stats.Attack.toFixed(1));
-
-  return stats;
-};
-
-const calcGoalProb = (attackByChanceType, aggregateAttack, def) => {
-  const entries = Object.entries(attackByChanceType || {});
-
-  if (entries.length === 0) {
-    const attack = Math.max(1, aggregateAttack);
-    const defense = Math.max(1, def);
-    return attack / (attack + defense);
-  }
-
-  let weightedProbability = 0;
-  let totalWeight = 0;
-  for (const [chanceType, attack] of entries) {
-    const weight = CHANCE_TYPE_WEIGHTS[chanceType] || 0;
-    if (weight <= 0) continue;
-    const defenseScale = CHANCE_TYPES[chanceType]?.defenseScale || 1;
-    const effectiveAttack = Math.max(1, Number(attack));
-    const effectiveDefense = Math.max(1, Number(def) * defenseScale);
-    weightedProbability += weight * (effectiveAttack / (effectiveAttack + effectiveDefense));
-    totalWeight += weight;
-  }
-
-  return totalWeight > 0 ? weightedProbability / totalWeight : 0;
-};
-
-const projectMatch = ({
-  myStats,
-  myForm,
-  myTactics,
-  oppStats,
-  oppForm,
-  oppTactics,
-  homeAdvantage,
-}) => {
-  if (myStats.Count === 0 || oppStats.Count === 0) {
-    return { win: 0, draw: 100, loss: 0, myPossession: 50, myxG: 0, oppxG: 0 };
-  }
-
-  const normalizedMyTactics = normalizeTactics(myTactics);
-  const normalizedOppTactics = normalizeTactics(oppTactics);
-  const adjustedMyControl = myStats.Control
-    * (TACTICS.press[normalizedOppTactics.press]?.controlFactor || 1)
-    * (TACTICS.lineHeight[normalizedOppTactics.lineHeight]?.controlFactor || 1);
-  const adjustedOppControl = oppStats.Control
-    * (TACTICS.press[normalizedMyTactics.press]?.controlFactor || 1)
-    * (TACTICS.lineHeight[normalizedMyTactics.lineHeight]?.controlFactor || 1);
-  const totalControl = adjustedMyControl + adjustedOppControl;
-  const myPossession = totalControl === 0 ? 0.5 : (adjustedMyControl / totalControl);
-
-  const myGoalProb = calcGoalProb(myStats.AttackByChanceType, myStats.Attack, oppStats.Defense);
-  const oppGoalProb = calcGoalProb(oppStats.AttackByChanceType, oppStats.Attack, myStats.Defense);
-
-  const avgEvents = getAverageEvents(myForm, oppForm, homeAdvantage, normalizedMyTactics, normalizedOppTactics);
-  const myEvents = avgEvents * myPossession;
-  const oppEvents = avgEvents * (1 - myPossession);
-  const myxG = myEvents * myGoalProb;
-  const oppxG = oppEvents * oppGoalProb;
-  const outcomes = getPoissonOutcomePercentages(myxG, oppxG);
-
-  return {
-    ...outcomes,
-    myPossession: myPossession * 100,
-    myxG,
-    oppxG,
-  };
 };
 
 const roughPlayerValue = (player) => (
@@ -568,45 +297,17 @@ const applyRolesToLineup = (lineup, roleById) => lineup.map((player) => ({
   role: roleById[String(player.id)] || '',
 }));
 
-const optimizeRolesForLineup = ({ lineup, formation, tactics, boostContext, oppStats, oppForm, oppTactics, homeAdvantage, assignedLineup = null }) => {
-  const assignedBaseLineup = assignedLineup || assignLineupPositions(lineup, FORMATIONS[formation].structure);
-  const roleCandidates = getRoleCandidateIds(assignedBaseLineup, tactics);
-  const roleById = {};
-  const usedIds = new Set();
-  const roleOptions = [
-    ['captain', PLAYER_ROLES.captain.value, roleCandidates.captain],
-    ['targetMan', PLAYER_ROLES.targetMan.value, roleCandidates.targetMan],
-    ['playmaker', PLAYER_ROLES.playmaker.value, roleCandidates.playmaker],
-    ['ballWinner', PLAYER_ROLES.ballWinner.value, roleCandidates.ballWinner],
-  ];
-
-  for (const [, roleValue, candidates] of roleOptions) {
-    for (const candidateId of candidates) {
-      const id = String(candidateId);
-      if (usedIds.has(id)) continue;
-      const player = assignedBaseLineup.find((item) => String(item.id) === id);
-      if (roleValue === PLAYER_ROLES.captain.value && captainQuality(player) < 60) {
-        continue;
-      }
-      roleById[id] = roleValue;
-      usedIds.add(id);
-      break;
-    }
+const candidateRoles = (lineup, tactics, offset = 0) => {
+  const candidates = getRoleCandidateIds(lineup, tactics);
+  const roles = [['captain', PLAYER_ROLES.captain.value], ['targetMan', PLAYER_ROLES.targetMan.value], ['playmaker', PLAYER_ROLES.playmaker.value], ['ballWinner', PLAYER_ROLES.ballWinner.value]];
+  const assigned = {};
+  const used = new Set();
+  for (const [name, role] of roles) {
+    const ordered = [...candidates[name].slice(offset), ...candidates[name].slice(0, offset)];
+    const id = ordered.find((candidate) => !used.has(String(candidate)) && (role !== PLAYER_ROLES.captain.value || captainQuality(lineup.find((p) => String(p.id) === String(candidate))) >= 60));
+    if (id != null) { assigned[String(id)] = role; used.add(String(id)); }
   }
-
-  const roleLineup = applyRolesToLineup(assignedBaseLineup, roleById);
-  const stats = calculateTeamScores(roleLineup, formation, boostContext, tactics, roleLineup);
-  const projection = projectMatch({
-    myStats: stats,
-    myForm: formation,
-    myTactics: tactics,
-    oppStats,
-    oppForm,
-    oppTactics,
-    homeAdvantage,
-  });
-
-  return { lineup: roleLineup, roleById, stats, projection };
+  return applyRolesToLineup(lineup, assigned);
 };
 
 const getSetPieceCandidates = (lineup) => [
@@ -624,152 +325,6 @@ const formatNumber = (value, decimals = 1) => {
   const parsed = Number(value);
   if (!Number.isFinite(parsed)) return '0';
   return parsed.toFixed(decimals);
-};
-
-const getSelectionFitSummary = ({
-  player,
-  selectedPosition,
-  tactics,
-  boostContext,
-  strongestAlternativePlayer,
-}) => {
-  if (!player) return '';
-
-  const stats = player.stats || {};
-  const scoreBoosts = getScoreBoostMultipliers(boostContext);
-  const pressLabel = TACTICS.press[normalizeTactics(tactics).press]?.label || 'Current';
-  const workRate = Math.round(getStat(stats, 'WRT', 'SPD'));
-  const controlRaw = getRawControlScore(stats, {}, tactics);
-  const alternativeControlRaw = strongestAlternativePlayer
-    ? getRawControlScore(strongestAlternativePlayer.stats, {}, tactics)
-    : null;
-  const controlComparison = strongestAlternativePlayer
-    ? ` vs ${alternativeControlRaw} for ${strongestAlternativePlayer.name}`
-    : '';
-
-  if (player.role === PLAYER_ROLES.targetMan.value) {
-    const heading = Math.round(getStat(stats, 'HDG', 'ATT'));
-    const cross = formatNumber(getAttackScoreForChance(stats, 'Cross'), 1);
-    const corner = formatNumber(getAttackScoreForChance(stats, 'Corner'), 1);
-    return `Target Man fit: WOR ${workRate}, HED ${heading}; Cross fit ${cross}, Corner fit ${corner} (target weight x2). ${pressLabel}-press control blend (raw) ${controlRaw}${controlComparison}. The optimizer compares projected win, not OVR.`;
-  }
-
-  if (player.role === PLAYER_ROLES.playmaker.value) {
-    const control = Math.round(getStat(stats, 'CTL', 'ATT'));
-    return `Playmaker fit: CTL ${control}, WOR ${workRate}. ${pressLabel}-press control blend (raw) ${controlRaw}${controlComparison}.`;
-  }
-
-  if (player.role === PLAYER_ROLES.ballWinner.value) {
-    const defense = Math.round(getStat(stats, 'DEF', 'CTL'));
-    const tackling = Math.round(getStat(stats, 'TCK', 'DEF'));
-    const defenseScore = formatNumber(getDefenseScore(stats, selectedPosition, 1, {}, tactics) * scoreBoosts.team * (scoreBoosts.positions[selectedPosition] || 1), 1);
-    return `Ball Winner fit: DEF ${defense}, TCK ${tackling}; defense score ${defenseScore}.`;
-  }
-
-  if (player.role === PLAYER_ROLES.captain.value) {
-    const leadership = Math.round(getStat(stats, selectedPosition === 'GK' ? 'GKP' : 'CTL', 'ATT'));
-    const composure = Math.round(getStat(stats, 'CMP', 'CTL'));
-    return `Captain fit: ${selectedPosition === 'GK' ? 'GKP' : 'CTL'} ${leadership}, COM ${composure}; leadership quality ${formatNumber(captainQuality(player), 1)}.`;
-  }
-
-  const attack = Math.round(getStat(stats, 'ATT', 'CTL'));
-  const finishing = Math.round(getStat(stats, 'FIN', 'ATT'));
-  return `${selectedPosition} fit: ATT ${attack}, FIN ${finishing}, WOR ${workRate}.`;
-};
-
-const getSuggestionSelectionExplanations = ({
-  suggestion,
-  squad,
-  oppStats,
-  oppForm,
-  oppTactics,
-  homeAdvantage,
-  boostContext,
-}) => {
-  if (!suggestion?.formation || !Array.isArray(suggestion.lineup) || suggestion.lineup.length === 0) {
-    return new Map();
-  }
-
-  const assignedPlayers = assignLineupPositions(
-    suggestion.lineup,
-    FORMATIONS[suggestion.formation].structure,
-  );
-  const explanations = new Map();
-  const selectedIds = new Set(suggestion.lineup.map((selected) => String(selected.id)));
-
-  for (const player of assignedPlayers) {
-    const selectedPosition = player.selectedPosition || player.pos;
-    const alternatives = squad
-      .filter((candidate) => (
-        candidate.id !== player.id
-        && !selectedIds.has(String(candidate.id))
-        && hasPlayablePosition(candidate, selectedPosition)
-        && Number(candidate.ovr) > Number(player.ovr)
-      ))
-      .sort((a, b) => getOfficialOvr(b.stats, selectedPosition) - getOfficialOvr(a.stats, selectedPosition))
-      .slice(0, 3)
-      .map((candidate) => {
-        const swappedLineup = suggestion.lineup.map((selected) => (
-          selected.id === player.id ? candidate : selected
-        ));
-        let projectedWin = Number.NaN;
-        try {
-          projectedWin = optimizeRolesForLineup({
-            lineup: swappedLineup,
-            formation: suggestion.formation,
-            tactics: suggestion.tactics,
-            boostContext,
-            oppStats,
-            oppForm,
-            oppTactics,
-            homeAdvantage,
-          }).projection.win;
-        } catch (_) {
-          return null;
-        }
-
-        return {
-          id: candidate.id,
-          name: candidate.name,
-          ovr: Number(candidate.ovr),
-          projectedWin,
-        };
-      })
-      .filter(Boolean)
-      .sort((a, b) => b.projectedWin - a.projectedWin);
-
-    const strongestAlternative = alternatives[0];
-    const strongestAlternativePlayer = strongestAlternative
-      ? squad.find((candidate) => String(candidate.id) === String(strongestAlternative.id))
-      : null;
-    const higherRatedStarter = suggestion.lineup
-      .filter((starter) => (
-        starter.id !== player.id
-        && Number(starter.ovr) > Number(player.ovr)
-        && hasPlayablePosition(starter, selectedPosition)
-      ))
-      .sort((a, b) => Number(b.ovr) - Number(a.ovr))[0];
-    const fitSummary = getSelectionFitSummary({
-      player,
-      selectedPosition,
-      tactics: suggestion.tactics,
-      boostContext,
-      strongestAlternativePlayer,
-    });
-    let reason;
-
-    if (strongestAlternative) {
-      reason = `${fitSummary} Best of top fit-scored swaps: ${strongestAlternative.name} (${strongestAlternative.ovr} OVR) projects ${formatNumber(strongestAlternative.projectedWin)}% win versus ${formatNumber(suggestion.win)}%.`;
-    } else if (higherRatedStarter) {
-      reason = `${fitSummary} ${higherRatedStarter.name} (${higherRatedStarter.ovr} OVR) is already in this best XI at ${higherRatedStarter.selectedPosition || higherRatedStarter.pos}; the optimizer valued them more in that slot.`;
-    } else {
-      reason = `${fitSummary} No higher-rated eligible alternative was available for this slot.`;
-    }
-
-    explanations.set(String(player.id), reason);
-  }
-
-  return explanations;
 };
 
 const formatOrdinal = (value) => {
@@ -1168,10 +723,6 @@ const getFixtureActiveBoost = (fixture, activeBoostWindows) => {
   )) || null;
 };
 
-const getFixtureKeySet = (fixture) => new Set(
-  [fixture?.game_key, fixture?.source_game_key].filter(Boolean).map(String),
-);
-
 export default function OinkSoccerCalc() {
   const { wallets } = useWallet();
   const persistedState = useMemo(() => loadCalculatorState(), []);
@@ -1244,6 +795,8 @@ export default function OinkSoccerCalc() {
 
   const [autoSuggestions, setAutoSuggestions] = useState({});
   const [autoAnalyzing, setAutoAnalyzing] = useState(false);
+  const [autoError, setAutoError] = useState('');
+  const [autoProgress, setAutoProgress] = useState('');
   const [injuryModalState, setInjuryModalState] = useState({
     open: false,
     playerId: null,
@@ -1930,30 +1483,6 @@ export default function OinkSoccerCalc() {
     });
   }, [mySquad, myTeam, opponentTeam, myForm, oppForm, myTactics, oppTactics, myBoost, myBoostApps, itemCooldownUntil, homeAdvantage, walletSyncMeta]);
 
-  const myStats = useMemo(() => calculateTeamScores(effectiveMyTeam, myForm, mySimulationBoostContext, myTactics), [effectiveMyTeam, myForm, mySimulationBoostContext, myTactics]);
-  const oppStats = useMemo(() => calculateTeamScores(opponentTeam, oppForm, oppBoostContext, oppTactics), [opponentTeam, oppForm, oppBoostContext, oppTactics]);
-
-  const simulation = useMemo(() => {
-    const projection = projectMatch({
-      myStats,
-      myForm,
-      myTactics,
-      oppStats,
-      oppForm,
-      oppTactics,
-      homeAdvantage,
-    });
-
-    return {
-      win: projection.win.toFixed(1),
-      draw: projection.draw.toFixed(1),
-      loss: projection.loss.toFixed(1),
-      myPossession: projection.myPossession.toFixed(0),
-      myxG: projection.myxG.toFixed(2),
-      oppxG: projection.oppxG.toFixed(2),
-    };
-  }, [myStats, oppStats, homeAdvantage, myForm, oppForm, myTactics, oppTactics]);
-
   const refreshOwnedTeamInjuries = useCallback(async ({
     squad = mySquad,
     team = myTeam,
@@ -2289,191 +1818,97 @@ export default function OinkSoccerCalc() {
     return [...withFirst, ...withoutFirst];
   }, []);
 
-  const buildSettingsSuggestions = useCallback((currentWin = parseFloat(simulation.win), matchupOverrides = {}) => {
-    const opponentStatsForMatchup = matchupOverrides.oppStats || oppStats;
-    const opponentFormationForMatchup = matchupOverrides.oppForm || oppForm;
-    const opponentTacticsForMatchup = matchupOverrides.oppTactics || oppTactics;
-    const homeAdvantageForMatchup = matchupOverrides.homeAdvantage || homeAdvantage;
-    const squadForMatchup = matchupOverrides.squad || effectiveMySquad;
-    const boostContextForMatchup = matchupOverrides.boostContext || mySimulationBoostContext;
-    const includeExplanations = matchupOverrides.includeExplanations !== false;
-    const objective = matchupOverrides.objective || 'win';
-    const scoreProjection = (projection) => objective === 'expectedPoints'
-      ? (projection.win * 3) + projection.draw
-      : projection.win;
-    const bestByFormation = {};
-    const tacticCombos = ['low', 'medium', 'high'].flatMap((press) =>
-      ['slow', 'normal', 'fast'].flatMap((tempo) =>
-        ['deep', 'normal', 'high'].map((lineHeight) => ({ press, tempo, lineHeight, setPieceTaker: '' })),
-      ),
-    );
-    const candidateLimitByPosition = 8;
-    const maxLineupsPerFormation = 35;
-    let evaluatedCount = 0;
-
-    const byPos = { GK: [], DF: [], MF: [], FW: [] };
-    squadForMatchup.forEach(p => {
-      const validPos = p.positions && p.positions.length > 0 ? p.positions : [p.pos];
-      validPos.forEach(pos => {
-        if (byPos[pos]) byPos[pos].push(p);
+  const buildSettingsCandidates = useCallback(() => {
+    const pools = { GK: [], DF: [], MF: [], FW: [] };
+    effectiveMySquad.forEach((player) => (player.positions?.length ? player.positions : [player.pos]).forEach((pos) => pools[pos]?.push(player)));
+    Object.keys(pools).forEach((pos) => { pools[pos] = pools[pos].sort((a, b) => roughPlayerValue(b) - roughPlayerValue(a)).slice(0, 8); });
+    const tactics = ['low', 'medium', 'high'].flatMap((press) => ['slow', 'normal', 'fast'].flatMap((tempo) => ['deep', 'normal', 'high'].map((lineHeight) => ({ press, tempo, lineHeight }))));
+    const candidates = [];
+    Object.entries(FORMATIONS).forEach(([formation, { structure }]) => {
+      const combos = Object.entries(structure).map(([pos, count]) => getCombinations(pools[pos], count));
+      const lineups = [];
+      const walk = (index, chosen) => {
+        if (index === combos.length) {
+          if (new Set(chosen.map((p) => String(p.assetId || p.id))).size === chosen.length) lineups.push(chosen);
+          return;
+        }
+        combos[index].forEach((players) => walk(index + 1, [...chosen, ...players]));
+      };
+      walk(0, []);
+      const seen = new Set();
+      lineups.sort((a, b) => b.reduce((sum, p) => sum + roughPlayerValue(p), 0) - a.reduce((sum, p) => sum + roughPlayerValue(p), 0));
+      const unique = lineups.filter((lineup) => { const key = lineup.map((p) => String(p.assetId || p.id)).sort().join('|'); if (seen.has(key)) return false; seen.add(key); return true; });
+      const shortlist = unique.slice(0, 3);
+      effectiveMySquad.forEach((player) => {
+        if (shortlist.length >= 8 || shortlist.some((lineup) => lineup.some((p) => String(p.assetId || p.id) === String(player.assetId || player.id)))) return;
+        const alternative = unique.find((lineup) => lineup.some((p) => String(p.assetId || p.id) === String(player.assetId || player.id)));
+        if (alternative) shortlist.push(alternative);
+      });
+      shortlist.forEach((players, lineupIndex) => {
+        const assigned = assignLineupPositions(players, structure);
+        const tacticShortlist = lineupIndex < 3 ? tactics : tactics.filter((_, index) => (index + Math.floor(index / 3) + lineupIndex) % 3 === 0);
+        tacticShortlist.forEach((tactic) => {
+          [0, 1].forEach((roleOffset) => {
+            const lineup = candidateRoles(assigned, tactic, roleOffset);
+            getSetPieceCandidates(lineup).slice(1, 3).forEach((setPieceTaker) => {
+              candidates.push({ formation, lineup, tactics: { ...tactic, setPieceTaker } });
+            });
+          });
+        });
       });
     });
-
-    // Iterate all formations
-    for (const formKey of Object.keys(FORMATIONS)) {
-      const structure = FORMATIONS[formKey].structure;
-
-      // Check if we have enough players for this formation
-      if (byPos.GK.length < structure.GK ||
-        byPos.DF.length < structure.DF ||
-        byPos.MF.length < structure.MF ||
-        byPos.FW.length < structure.FW) {
-        continue;
-      }
-
-      let bestForThisForm = { objectiveValue: -Infinity, win: -1, lineup: [], tactics: DEFAULT_TACTICS };
-      const lineupCandidates = [];
-      const seenLineups = new Set();
-      const positionPools = {
-        GK: [...byPos.GK].sort((a, b) => roughPlayerValue(b) - roughPlayerValue(a)).slice(0, candidateLimitByPosition),
-        DF: [...byPos.DF].sort((a, b) => roughPlayerValue(b) - roughPlayerValue(a)).slice(0, candidateLimitByPosition),
-        MF: [...byPos.MF].sort((a, b) => roughPlayerValue(b) - roughPlayerValue(a)).slice(0, candidateLimitByPosition),
-        FW: [...byPos.FW].sort((a, b) => roughPlayerValue(b) - roughPlayerValue(a)).slice(0, candidateLimitByPosition),
-      };
-
-      // Generate combinations for each position
-      const gkCombos = getCombinations(positionPools.GK, structure.GK);
-      const dfCombos = getCombinations(positionPools.DF, structure.DF);
-      const mfCombos = getCombinations(positionPools.MF, structure.MF);
-      const fwCombos = getCombinations(positionPools.FW, structure.FW);
-
-      // Cartesian product of all position combos
-      for (const gks of gkCombos) {
-        for (const dfs of dfCombos) {
-          for (const mfs of mfCombos) {
-            for (const fws of fwCombos) {
-              const lineup = [...gks, ...dfs, ...mfs, ...fws];
-
-              // Ensure a single player is not fielding multiple positions
-              if (new Set(lineup.map(p => p.id)).size !== lineup.length) {
-                continue;
-              }
-              const key = lineup.map((p) => p.id).sort().join('|');
-              if (seenLineups.has(key)) {
-                continue;
-              }
-              seenLineups.add(key);
-              lineupCandidates.push({
-                lineup,
-                roughScore: lineup.reduce((sum, player) => sum + roughPlayerValue(player), 0),
-              });
-            }
-          }
-        }
-      }
-
-      const shortlist = lineupCandidates
-        .sort((a, b) => b.roughScore - a.roughScore)
-        .slice(0, maxLineupsPerFormation);
-
-      for (const candidate of shortlist) {
-        const assignedLineup = assignLineupPositions(candidate.lineup, structure);
-        const setPieceCandidates = getSetPieceCandidates(candidate.lineup);
-        for (const baseTactics of tacticCombos) {
-          for (const setPieceTaker of setPieceCandidates) {
-            const tactics = { ...baseTactics, setPieceTaker };
-            const roleResult = optimizeRolesForLineup({
-              lineup: candidate.lineup,
-              formation: formKey,
-              tactics,
-              boostContext: boostContextForMatchup,
-              oppStats: opponentStatsForMatchup,
-              oppForm: opponentFormationForMatchup,
-              oppTactics: opponentTacticsForMatchup,
-              homeAdvantage: homeAdvantageForMatchup,
-              assignedLineup,
-            });
-            evaluatedCount += 1;
-            const objectiveValue = scoreProjection(roleResult.projection);
-            if (objectiveValue > bestForThisForm.objectiveValue) {
-              bestForThisForm = {
-                formation: formKey,
-                lineup: roleResult.lineup,
-                tactics,
-                stats: roleResult.stats,
-                objectiveValue,
-                win: roleResult.projection.win,
-                draw: roleResult.projection.draw,
-                loss: roleResult.projection.loss,
-                myxG: roleResult.projection.myxG,
-                oppxG: roleResult.projection.oppxG,
-                possession: roleResult.projection.myPossession,
-                diff: roleResult.projection.win - currentWin,
-              };
-            }
-          }
-        }
-      }
-
-      if (bestForThisForm.objectiveValue > -Infinity) {
-        bestByFormation[formKey] = bestForThisForm;
-      }
-    }
-
-    const topSuggestion = Object.values(bestByFormation)
-      .sort((a, b) => b.objectiveValue - a.objectiveValue)[0] || null;
-    const annotatedTopSuggestion = topSuggestion && includeExplanations
-      ? {
-        ...topSuggestion,
-        lineup: topSuggestion.lineup.map((player) => ({
-          ...player,
-          selectionReason: getSuggestionSelectionExplanations({
-            suggestion: topSuggestion,
-            squad: squadForMatchup,
-            oppStats: opponentStatsForMatchup,
-            oppForm: opponentFormationForMatchup,
-            oppTactics: opponentTacticsForMatchup,
-            homeAdvantage: homeAdvantageForMatchup,
-            boostContext: boostContextForMatchup,
-          }).get(String(player.id)) || '',
-        })),
-      }
-      : null;
-
-    return {
-      ...(annotatedTopSuggestion
-        ? { ...bestByFormation, [annotatedTopSuggestion.formation]: annotatedTopSuggestion }
-        : bestByFormation),
-      __meta: { evaluatedCount },
-    };
-  }, [
-    getCombinations,
-    homeAdvantage,
-    mySimulationBoostContext,
-    effectiveMySquad,
-    oppForm,
-    oppStats,
-    oppTactics,
-    simulation.win,
-  ]);
+    return candidates;
+  }, [effectiveMySquad, getCombinations]);
 
   useEffect(() => {
-    if (activeTab !== 'matchup' || effectiveMySquad.length < 5 || opponentTeam.length === 0) {
-      setAutoSuggestions({});
-      setAutoAnalyzing(false);
-      return undefined;
+    if (activeTab !== 'matchup' || effectiveMySquad.length < 5 || opponentTeam.length < 5 || !selectedFixture || selectedFixture.game_result || importingTeamUrl) {
+      setAutoSuggestions({}); setAutoAnalyzing(false); return undefined;
     }
-
-    setAutoAnalyzing(true);
+    let worker;
+    setAutoSuggestions({}); setAutoError(''); setAutoProgress('Preparing candidates…'); setAutoAnalyzing(true);
     const timeoutId = window.setTimeout(() => {
-      setAutoSuggestions(buildSettingsSuggestions(parseFloat(simulation.win)));
-      setAutoAnalyzing(false);
+      const candidates = buildSettingsCandidates();
+      const opponentPlayers = opponentTeam.every((player) => player.selectedPosition) ? opponentTeam : assignLineupPositions(opponentTeam, FORMATIONS[oppForm].structure);
+      const opponent = engineLineup(opponentPlayers, oppForm, oppTactics, engineBoosts(oppBoostContext, DR_DECAY, DR_MIN));
+      const myHome = homeAdvantage === 'home';
+      const boosts = engineBoosts(mySimulationBoostContext, DR_DECAY, DR_MIN);
+      if (!candidates.length) { setAutoAnalyzing(false); return; }
+      const makeJob = (candidate, key, trials, seed) => {
+        const own = engineLineup(candidate.lineup, candidate.formation, candidate.tactics, boosts);
+        return { key: String(key), request: { home: myHome ? own : opponent, away: myHome ? opponent : own, myHome, trials, seed, scenarios: [{ key: 'baseline', boosts }] } };
+      };
+      worker = new Worker(new URL('./lib/simulationWorker.js', import.meta.url), { type: 'module' });
+      let screening = true;
+      worker.onmessage = ({ data }) => {
+        if (data.error) { setAutoError(data.error); setAutoAnalyzing(false); worker.terminate(); return; }
+        if (!data.batchResults) { if (data.progress === data.total || data.progress % 20 === 0) setAutoProgress(`${screening ? 'Screening' : 'Checking finalists'} ${data.progress}/${data.total}`); return; }
+        if (data.batchResults.some((job) => job.error)) { setAutoError('A candidate simulation failed; try selecting the fixture again.'); setAutoAnalyzing(false); worker.terminate(); return; }
+        const scored = data.batchResults.flatMap(({ key, results: rows, error }) => {
+          const row = rows[0];
+          const candidate = candidates[Number(key)];
+          return !error && row?.trials && candidate ? [{ key, candidate, row, value: (3 * row.wins + row.draws) / row.trials }] : [];
+        }).sort((a, b) => b.value - a.value);
+        if (screening) {
+          screening = false;
+          setAutoProgress('Checking finalists…');
+          const counts = {};
+          const finalists = scored.filter(({ candidate }) => { counts[candidate.formation] = (counts[candidate.formation] || 0) + 1; return counts[candidate.formation] <= 3; });
+          if (!finalists.length) { setAutoAnalyzing(false); worker.terminate(); return; }
+          worker.postMessage({ baseUrl: new URL(import.meta.env.BASE_URL, window.location.href).href, jobs: finalists.map(({ candidate, key }) => makeJob(candidate, key, 5000, 1729)) });
+          return;
+        }
+        const results = {};
+        scored.forEach(({ candidate, row }) => {
+          if (results[candidate.formation]) return;
+          results[candidate.formation] = { ...candidate, win: 100 * row.wins / row.trials, draw: 100 * row.draws / row.trials, loss: 100 * row.losses / row.trials, myxG: row.goalsFor / row.trials, oppxG: row.goalsAgainst / row.trials };
+        });
+        setAutoSuggestions(results); setAutoAnalyzing(false); worker.terminate();
+      };
+      worker.onerror = () => { setAutoError('Setup simulation failed; try selecting the fixture again.'); setAutoAnalyzing(false); worker.terminate(); };
+      worker.postMessage({ baseUrl: new URL(import.meta.env.BASE_URL, window.location.href).href, jobs: candidates.map((candidate, index) => makeJob(candidate, index, 200, 8119)) });
     }, 120);
-
-    return () => {
-      window.clearTimeout(timeoutId);
-    };
-  }, [activeTab, buildSettingsSuggestions, effectiveMySquad.length, opponentTeam.length, simulation.win]);
+    return () => { window.clearTimeout(timeoutId); worker?.terminate(); };
+  }, [activeTab, buildSettingsCandidates, effectiveMySquad.length, opponentTeam, selectedFixture, importingTeamUrl, oppForm, oppTactics, oppBoostContext, homeAdvantage, mySimulationBoostContext]);
 
   const tabItems = useMemo(() => ([
     { key: 'upcoming', icon: '📅', label: 'Upcoming' },
@@ -2486,7 +1921,7 @@ export default function OinkSoccerCalc() {
   const activeSuggestionList = useMemo(() => (
     Object.values(activeSuggestions)
       .filter((suggestion) => suggestion?.formation)
-      .sort((a, b) => b.win - a.win)
+      .sort((a, b) => (3 * b.win + b.draw) - (3 * a.win + a.draw))
   ), [activeSuggestions]);
 
   const topSuggestion = activeSuggestionList[0] || null;
@@ -2520,101 +1955,91 @@ export default function OinkSoccerCalc() {
     })
   ), [activeBoostWindows, activeBoostsByFixture]);
 
-  const fixtureWinChances = useMemo(() => {
-    const liveModel = primaryOwnedTeamModel?.players?.length ? primaryOwnedTeamModel : null;
-    const currentPlayers = liveModel?.players?.length >= 5 ? liveModel.players : effectiveMyTeam;
-    const currentForm = liveModel?.formationKey && FORMATIONS[liveModel.formationKey]
-      ? liveModel.formationKey
-      : myForm;
-    const currentTactics = normalizeTactics(liveModel?.tactics || myTactics);
-
-    if (currentPlayers.length < 5 || upcomingFixtures.length === 0 || detectedMyTeamIds.length === 0) {
-      return {};
-    }
-
-    const myTeams = new Set(detectedMyTeamIds);
-    const chances = {};
-    const currentStats = calculateTeamScores(currentPlayers, currentForm, mySimulationBoostContext, currentTactics);
-
-    upcomingFixtures.forEach((fixture) => {
-      if (fixture.cup_bye) return;
-      const isHome = myTeams.has(fixture.home_team_id);
-      const isAway = myTeams.has(fixture.away_team_id);
-      if (!isHome && !isAway) return;
-
-      const opponentId = isHome ? fixture.away_team_id : fixture.home_team_id;
-      const opponentModel = seasonTeams[opponentId];
-      if (!opponentModel?.players?.length) return;
-
-      const opponentFormation = opponentModel.formationKey && FORMATIONS[opponentModel.formationKey]
-        ? opponentModel.formationKey
-        : 'Pyramid';
-      const opponentTactics = normalizeTactics(opponentModel.tactics);
-      const opponentStats = calculateTeamScores(opponentModel.players, opponentFormation, TEAM_BOOST_STATE_EMPTY, opponentTactics);
-      const projection = projectMatch({
-        myStats: currentStats,
-        myForm: currentForm,
-        myTactics: currentTactics,
-        oppStats: opponentStats,
-        oppForm: opponentFormation,
-        oppTactics: opponentTactics,
-        homeAdvantage: isHome ? 'home' : 'away',
-      });
-      chances[fixture.game_key] = { win: projection.win, myxG: projection.myxG, oppxG: projection.oppxG, source: 'current' };
+  // Season jobs use each team's actual formation slots and only boosts known to
+  // cover the fixture. Keep the fingerprint with the results to prevent stale
+  // forecasts from being reused after lineups or fixtures change.
+  const seasonEngineJobs = useMemo(() => {
+    if (seasonPredictionLoading) return [];
+    const mine = new Set(detectedMyTeamIds);
+    const itemDefs = getHeldPerformanceItems(heldItems);
+    const fixtures = [...new Map([...seasonFixtures, ...teamSeasonFixtures].filter((f) => !f.game_result && !f.cup_bye && f.game_key).map((f) => [String(f.game_key), f])).values()];
+    const firstOwned = new Set(sortFixturesByRoundAndTime(fixtures.filter((f) => mine.has(f.home_team_id) || mine.has(f.away_team_id))).slice(0, 6).map((f) => String(f.game_key)));
+    return fixtures.flatMap((fixture) => {
+      const buildTeam = (teamId) => {
+        const model = ownedTeamModels[teamId]?.players?.length >= 5 ? ownedTeamModels[teamId] : seasonTeams[teamId];
+        if (!model?.players || model.players.length !== 5) return null;
+        const formation = FORMATIONS[model.formationKey] ? model.formationKey : 'Pyramid';
+        const players = model.players.every((player) => player.selectedPosition) ? model.players : assignLineupPositions(model.players, FORMATIONS[formation].structure);
+        return engineLineup(players, formation, normalizeTactics(model.tactics), engineBoosts(getBoostStateForFixture(seasonBoosts[teamId], fixture), DR_DECAY, DR_MIN));
+      };
+      const home = buildTeam(fixture.home_team_id);
+      const away = buildTeam(fixture.away_team_id);
+      if (!home || !away) return [];
+      const id = String(fixture.game_key);
+      const baseline = { key: id, request: { home, away, myHome: true, trials: 1000, seed: 1729, scenarios: [{ key: 'baseline', boosts: home.item_boosts }] } };
+      const myHome = mine.has(fixture.home_team_id);
+      if (myHome === mine.has(fixture.away_team_id)) return [baseline];
+      const ownBoosts = (myHome ? home : away).item_boosts;
+      const exactEffectiveness = Math.max(0, Math.min(100, Number(myBoostState.effectivenessPct ?? 100)));
+      const levels = [...new Set([0, 25, 50, 75, 100, exactEffectiveness])];
+      const scenarios = [{ key: 'baseline', boosts: ownBoosts }, ...itemDefs.flatMap((item) => levels.map((effectivenessPct) => ({ key: `${item.boostKey}:${effectivenessPct}`, boosts: engineBoosts(createPlannedItemBoostState({ boostKey: item.boostKey, effectivenessPct }), DR_DECAY, DR_MIN) })))];
+      const jobs = [];
+      for (let index = 0; index < scenarios.length; index += 10) {
+        jobs.push({ key: `own:${id}:${index}`, request: { home, away, myHome, trials: 1000, seed: 1729, scenarios: scenarios.slice(index, index + 10) } });
+      }
+      if (firstOwned.has(id)) {
+        const ownId = myHome ? fixture.home_team_id : fixture.away_team_id;
+        const model = ownedTeamModels[ownId]?.players?.length >= 5 ? ownedTeamModels[ownId] : seasonTeams[ownId];
+        const formation = FORMATIONS[model?.formationKey] ? model.formationKey : 'Pyramid';
+        const current = model.players.every((p) => p.selectedPosition) ? model.players : assignLineupPositions(model.players, FORMATIONS[formation].structure);
+        const identity = (p) => String(p.assetId || p.id);
+        const selected = new Set(current.map(identity));
+        current.forEach((out) => effectiveMySquad.forEach((candidate) => {
+          const pos = out.selectedPosition || out.pos;
+          if (selected.has(identity(candidate)) || !(candidate.positions?.length ? candidate.positions : [candidate.pos]).includes(pos)) return;
+          const replacement = { ...candidate, selectedPosition: pos, role: isEligibleForRole({ ...candidate, selectedPosition: pos }, out.role) ? out.role : '' };
+          const players = current.map((p) => identity(p) === identity(out) ? replacement : p);
+          const tactics = normalizeTactics(model.tactics);
+          if (String(tactics.setPieceTaker) === String(out.id)) tactics.setPieceTaker = '';
+          const ownLineup = engineLineup(players, formation, tactics, ownBoosts);
+          jobs.push({ key: `swap:${id}:${jobs.length}`, swap: { fixture: id, out: out.name, candidate: candidate.name }, request: { home: myHome ? ownLineup : home, away: myHome ? away : ownLineup, myHome, trials: 1000, seed: 1729, scenarios: [{ key: 'baseline', boosts: ownBoosts }] } });
+        }));
+      }
+      return [...jobs, baseline];
     });
+  }, [seasonPredictionLoading, seasonFixtures, teamSeasonFixtures, seasonTeams, ownedTeamModels, seasonBoosts, detectedMyTeamIds, heldItems, myBoostState.effectivenessPct, effectiveMySquad]);
+  const seasonEngineFingerprint = JSON.stringify(seasonEngineJobs);
+  const completedSeasonFingerprint = useRef('');
+  const [seasonEngine, setSeasonEngine] = useState({ fingerprint: '', status: 'idle', results: {}, progress: 0, total: 0, error: '' });
+  useEffect(() => {
+    if (activeTab !== 'season' || !seasonEngineJobs.length || completedSeasonFingerprint.current === seasonEngineFingerprint) return undefined;
+    const worker = new Worker(new URL('./lib/simulationWorker.js', import.meta.url), { type: 'module' });
+    setSeasonEngine({ fingerprint: seasonEngineFingerprint, status: 'running', results: {}, progress: 0, total: seasonEngineJobs.length, error: '' });
+    worker.onmessage = ({ data }) => {
+      if (data.error) { setSeasonEngine({ fingerprint: seasonEngineFingerprint, status: 'error', results: {}, progress: 0, total: seasonEngineJobs.length, error: data.error }); worker.terminate(); return; }
+      if (!data.batchResults) { setSeasonEngine((state) => ({ ...state, progress: data.progress || 0 })); return; }
+      const failures = data.batchResults.filter((job) => job.error);
+      const results = Object.fromEntries(data.batchResults.filter((job) => !job.error && job.results?.length).map((job) => [job.key, job.results]));
+      if (!failures.length) completedSeasonFingerprint.current = seasonEngineFingerprint;
+      setSeasonEngine({ fingerprint: seasonEngineFingerprint, status: failures.length ? 'error' : 'done', results, progress: data.batchResults.length, total: seasonEngineJobs.length, error: failures.length ? `${failures.length} fixture simulations failed.` : '' });
+      worker.terminate();
+    };
+    worker.onerror = () => { setSeasonEngine({ fingerprint: seasonEngineFingerprint, status: 'error', results: {}, progress: 0, total: seasonEngineJobs.length, error: 'Season simulation failed.' }); worker.terminate(); };
+    worker.postMessage({ baseUrl: new URL(import.meta.env.BASE_URL, window.location.href).href, jobs: seasonEngineJobs });
+    return () => worker.terminate();
+  }, [activeTab, seasonEngineFingerprint, seasonEngineJobs]);
+  const seasonEngineResults = useMemo(() => seasonEngine.fingerprint === seasonEngineFingerprint ? seasonEngine.results : {}, [seasonEngine, seasonEngineFingerprint]);
+  const ownSimulationIndex = useMemo(() => indexOwnResults(seasonEngineResults), [seasonEngineResults]);
+  const simulatedFixture = useCallback((fixture, own, boostKey = '', effectiveness = 100) => fixtureProjection(seasonEngineResults, ownSimulationIndex, String(fixture.game_key), own, boostKey, effectiveness), [seasonEngineResults, ownSimulationIndex]);
 
-    if (topSuggestion) {
-      const selectedKeys = new Set(selectedFixtureKey ? [String(selectedFixtureKey)] : []);
-      const selectedFixtureKeys = getFixtureKeySet(selectedFixture);
-      selectedFixtureKeys.forEach((key) => selectedKeys.add(key));
-
-      const selectedOpponentId = selectedFixture
-        ? myTeams.has(selectedFixture.home_team_id)
-          ? selectedFixture.away_team_id
-          : selectedFixture.home_team_id
-        : importedOpponentTeamId;
-      const selectedHomeAdvantage = selectedFixture
-        ? myTeams.has(selectedFixture.away_team_id) ? 'away' : 'home'
-        : homeAdvantage;
-
-      upcomingFixtures.forEach((fixture) => {
-        if (fixture.cup_bye) return;
-        const fixtureKeys = getFixtureKeySet(fixture);
-        const keyMatches = Array.from(fixtureKeys).some((key) => selectedKeys.has(key));
-        const isHome = myTeams.has(fixture.home_team_id);
-        const isAway = myTeams.has(fixture.away_team_id);
-        const opponentId = isHome ? fixture.away_team_id : fixture.home_team_id;
-        const fixtureHomeAdvantage = isAway ? 'away' : 'home';
-        const matchupMatches = selectedOpponentId
-          && opponentId === selectedOpponentId
-          && fixtureHomeAdvantage === selectedHomeAdvantage;
-
-        if (!fixture.game_key || (!keyMatches && !matchupMatches)) return;
-        chances[fixture.game_key] = {
-          win: topSuggestion.win,
-          myxG: topSuggestion.myxG,
-          oppxG: topSuggestion.oppxG,
-          source: 'best',
-        };
-      });
-    }
-
-    return chances;
-  }, [
-    detectedMyTeamIds,
-    homeAdvantage,
-    importedOpponentTeamId,
-    myForm,
-    mySimulationBoostContext,
-    myTactics,
-    effectiveMyTeam,
-    primaryOwnedTeamModel,
-    selectedFixture,
-    selectedFixtureKey,
-    seasonTeams,
-    topSuggestion,
-    upcomingFixtures,
-  ]);
+  const fixtureWinChances = useMemo(() => {
+    const ids = new Set(detectedMyTeamIds);
+    return Object.fromEntries(upcomingFixtures.flatMap((fixture) => {
+      const own = ids.has(fixture.home_team_id) || ids.has(fixture.away_team_id);
+      const result = own && simulatedFixture(fixture, true);
+      return result ? [[fixture.game_key, { ...result, source: 'current' }]] : [];
+    }));
+  }, [detectedMyTeamIds, upcomingFixtures, simulatedFixture]);
 
   const catalogOutOfDate = Boolean(gameCounter?.season && catalogSeason && Number(gameCounter.season) !== Number(catalogSeason));
 
@@ -2626,8 +2051,9 @@ export default function OinkSoccerCalc() {
     if (!selectedFixture || selectedFixture.game_result || effectiveMyTeam.length < 5 || opponentTeam.length < 5 || importingTeamUrl || autoAnalyzing) return null;
     const formation = topSuggestion?.formation || myForm;
     const tactics = topSuggestion?.tactics || myTactics;
-    const myPlayers = assignLineupPositions(topSuggestion?.lineup || effectiveMyTeam, FORMATIONS[formation].structure);
-    const opponents = assignLineupPositions(opponentTeam, FORMATIONS[oppForm].structure);
+    const ownPlayers = topSuggestion?.lineup || effectiveMyTeam;
+    const myPlayers = ownPlayers.every((player) => player.selectedPosition) ? ownPlayers : assignLineupPositions(ownPlayers, FORMATIONS[formation].structure);
+    const opponents = opponentTeam.every((player) => player.selectedPosition) ? opponentTeam : assignLineupPositions(opponentTeam, FORMATIONS[oppForm].structure);
     const myBoosts = engineBoosts(mySimulationBoostContext, DR_DECAY, DR_MIN);
     const opponentBoosts = engineBoosts(oppBoostContext, DR_DECAY, DR_MIN);
     const myLineup = engineLineup(myPlayers, formation, tactics, myBoosts);
@@ -2637,10 +2063,10 @@ export default function OinkSoccerCalc() {
     const scenarios = [{ key: 'baseline', boosts: myBoosts }, ...getHeldPerformanceItems(heldItems).map((item) => ({
       key: item.boostKey, boosts: engineBoosts(createPlannedItemBoostState({ boostKey: item.boostKey, effectivenessPct: effectiveness }), DR_DECAY, DR_MIN),
     }))];
-    return { home: myHome ? myLineup : opponentLineup, away: myHome ? opponentLineup : myLineup, myHome, trials: 5000, seed: 1729, scenarios };
+    return { home: myHome ? myLineup : opponentLineup, away: myHome ? opponentLineup : myLineup, myHome, trials: 5000, seed: 424242, scenarios };
   }, [selectedFixture, effectiveMyTeam, opponentTeam, importingTeamUrl, autoAnalyzing, topSuggestion, myForm, myTactics, mySimulationBoostContext, oppBoostContext, oppForm, oppTactics, homeAdvantage, myBoostState, heldItems]);
   const engineFingerprint = engineRequest ? JSON.stringify(engineRequest) : '';
-  const runEngineSimulation = () => {
+  const runEngineSimulation = useCallback(() => {
     if (!engineRequest) return;
     simulationWorkerRef.current?.terminate();
     const worker = new Worker(new URL('./lib/simulationWorker.js', import.meta.url), { type: 'module' });
@@ -2659,46 +2085,23 @@ export default function OinkSoccerCalc() {
       simulationWorkerRef.current = null;
     };
     worker.postMessage({ baseUrl: new URL(import.meta.env.BASE_URL, window.location.href).href, request: engineRequest });
-  };
+  }, [engineRequest, engineFingerprint]);
+  useEffect(() => {
+    if (activeTab !== 'matchup' || !engineRequest) return undefined;
+    runEngineSimulation();
+    return () => {
+      simulationWorkerRef.current?.terminate();
+      simulationWorkerRef.current = null;
+    };
+  }, [activeTab, engineRequest, runEngineSimulation]);
   const currentEngineSimulation = engineSimulation.fingerprint === engineFingerprint ? engineSimulation : { status: 'idle', results: [], error: '' };
 
-  const quickHeadlineProjection = topSuggestion
-    ? {
-      label: 'Best setup · estimated win',
-      win: formatNumber(topSuggestion.win),
-      draw: formatNumber(topSuggestion.draw),
-      loss: formatNumber(topSuggestion.loss),
-      myxG: formatNumber(topSuggestion.myxG, 2),
-      oppxG: formatNumber(topSuggestion.oppxG, 2),
-    }
-    : {
-      label: 'Current setup · estimated win',
-      win: simulation.win,
-      draw: simulation.draw,
-      loss: simulation.loss,
-      myxG: simulation.myxG,
-      oppxG: simulation.oppxG,
-    };
-
-  const headlineProjection = selectMatchupDisplay(quickHeadlineProjection, currentEngineSimulation, engineFingerprint, activeTab);
-  const winPct = Number.parseFloat(headlineProjection.win) || 0;
-  const fallbackOutcome = getPoissonOutcomePercentages(
-    Number(headlineProjection.myxG),
-    Number(headlineProjection.oppxG),
-  );
-  const forecastWin = Number(Number.isFinite(winPct) ? winPct : fallbackOutcome.win);
-  const forecastDraw = Number(
-    Number.isFinite(Number.parseFloat(headlineProjection.draw))
-      ? headlineProjection.draw
-      : fallbackOutcome.draw,
-  );
-  const forecastLoss = Number(
-    Number.isFinite(Number.parseFloat(headlineProjection.loss))
-      ? headlineProjection.loss
-      : fallbackOutcome.loss,
-  );
-  const hasLineups = effectiveMyTeam.length > 0 && opponentTeam.length > 0;
-  const displayedWin = hasLineups ? `${headlineProjection.win}%` : '--';
+  const headlineProjection = selectMatchupDisplay({}, currentEngineSimulation, engineFingerprint, activeTab);
+  const forecastWin = Number.parseFloat(headlineProjection.win) || 0;
+  const forecastDraw = Number.parseFloat(headlineProjection.draw) || 0;
+  const forecastLoss = Number.parseFloat(headlineProjection.loss) || 0;
+  const hasLineups = headlineProjection.source === 'engine';
+  const displayedWin = hasLineups ? `${headlineProjection.win}%` : '—';
   const displayedForecastWin = hasLineups ? forecastWin : 0;
   const displayedForecastDraw = hasLineups ? forecastDraw : 0;
   const displayedForecastLoss = hasLineups ? forecastLoss : 0;
@@ -2729,52 +2132,28 @@ export default function OinkSoccerCalc() {
   }, [detectedMyTeamIds, historicalFifth, leagueTeams, pointsTarget, seasonFixtures]);
 
   const matchupLevers = useMemo(() => {
-    const analysisTeam = primaryOwnedTeamModel?.players?.length >= 5 ? primaryOwnedTeamModel.players : effectiveMyTeam;
-    const analysisForm = primaryOwnedTeamModel?.formationKey && FORMATIONS[primaryOwnedTeamModel.formationKey] ? primaryOwnedTeamModel.formationKey : myForm;
-    const analysisTactics = normalizeTactics(primaryOwnedTeamModel?.tactics || myTactics);
-    if (analysisTeam.length < 5 || detectedMyTeamIds.length === 0) return [];
     const myIds = new Set(detectedMyTeamIds);
     const fixturesForTeam = teamSeasonFixtures.length ? teamSeasonFixtures : seasonFixtures;
-    const upcoming = sortFixturesByRoundAndTime(fixturesForTeam.filter((fixture) => !fixture.game_result && !fixture.cup_bye && !hasFixtureStarted(fixture, currentTime) && (myIds.has(fixture.home_team_id) || myIds.has(fixture.away_team_id)))).slice(0, 6);
-    return upcoming.map((fixture) => {
+    return sortFixturesByRoundAndTime(fixturesForTeam.filter((fixture) => !fixture.game_result && !fixture.cup_bye && !hasFixtureStarted(fixture, currentTime) && (myIds.has(fixture.home_team_id) || myIds.has(fixture.away_team_id)))).slice(0, 6).map((fixture) => {
       const isHome = myIds.has(fixture.home_team_id);
       const opponentId = isHome ? fixture.away_team_id : fixture.home_team_id;
-      const opponent = seasonTeams[opponentId];
       const name = isHome ? fixture.away_team_name : fixture.home_team_name;
-      if (!opponent?.players?.length) return { fixture, name, unavailable: true };
-      const formation = opponent.formationKey && FORMATIONS[opponent.formationKey] ? opponent.formationKey : 'Pyramid';
-      const tactics = normalizeTactics(opponent.tactics);
-      const opponentStats = calculateTeamScores(opponent.players, formation, getBoostStateForFixture(seasonBoosts[opponentId], fixture), tactics);
-      const ownBoost = getBoostStateForFixture(seasonBoosts[isHome ? fixture.home_team_id : fixture.away_team_id], fixture);
-      const evaluate = (lineup, boost, ownTactics = analysisTactics) => projectMatch({
-        myStats: calculateTeamScores(lineup, analysisForm, boost, ownTactics), myForm: analysisForm, myTactics: ownTactics,
-        oppStats: opponentStats, oppForm: formation, oppTactics: tactics, homeAdvantage: isHome ? 'home' : 'away',
+      const base = simulatedFixture(fixture, true);
+      if (!base) return { fixture, name, unavailable: true };
+      const effectiveness = myBoostState.source === 'live' && myBoostState.effectivenessPct != null ? myBoostState.effectivenessPct : 100;
+      const items = getHeldPerformanceItems(heldItems).flatMap((item) => {
+        const projection = simulatedFixture(fixture, true, item.boostKey, effectiveness);
+        return projection ? [{ label: item.label, projection }] : [];
       });
-      const base = evaluate(analysisTeam, ownBoost);
-      const effectiveness = myBoostState.source === 'live' ? myBoostState.effectivenessPct : 100;
-      const items = getHeldPerformanceItems(heldItems).map((item) => ({
-        label: item.label,
-        projection: evaluate(analysisTeam, createPlannedItemBoostState({ boostKey: item.boostKey, effectivenessPct: effectiveness })),
-      }));
-      let swap = null;
-      const assignedTeam = assignLineupPositions(analysisTeam, FORMATIONS[analysisForm].structure);
-      const identity = (player) => String(player.assetId || player.id);
-      const selected = new Set(analysisTeam.map(identity));
-      assignedTeam.forEach((out) => effectiveMySquad.forEach((candidate) => {
-        if (selected.has(identity(candidate))) return;
-        const positions = candidate.positions?.length ? candidate.positions : [candidate.pos];
-        if (!positions.includes(out.selectedPosition || out.pos)) return;
-        const replacement = { ...candidate, role: isEligibleForRole({ ...candidate, selectedPosition: out.selectedPosition || out.pos }, out.role) ? out.role : '' };
-        const lineup = assignedTeam.map((player) => player.id === out.id ? replacement : player);
-        const ownTactics = String(analysisTactics.setPieceTaker) === String(out.id) ? { ...analysisTactics, setPieceTaker: '' } : analysisTactics;
-        const projection = evaluate(lineup, ownBoost, ownTactics);
-        if (projection.win > base.win + 0.1 && (!swap || projection.win > swap.projection.win)) swap = { out, candidate, projection };
-      }));
-      const history = seasonItemHistory?.find((entry) => entry.team_id === opponentId);
-      const rank = leagueTeams.find((team) => team.teamId === opponentId)?.currentRank;
-      return { fixture, opponentId, name, base, items, swap, history, rank };
+      const options = seasonEngineJobs.filter((job) => job.swap?.fixture === String(fixture.game_key)).flatMap((job) => {
+        const projection = fixtureProjection(seasonEngineResults, {}, job.key, false);
+        return projection ? [{ ...job.swap, projection }] : [];
+      }).sort((a, b) => (3 * b.projection.win + b.projection.draw) - (3 * a.projection.win + a.projection.draw));
+      const best = options[0];
+      const swap = best && (3 * best.projection.win + best.projection.draw) > (3 * base.win + base.draw) ? best : null;
+      return { fixture, opponentId, name, base, items, swap, history: seasonItemHistory?.find((entry) => entry.team_id === opponentId), rank: leagueTeams.find((team) => team.teamId === opponentId)?.currentRank };
     });
-  }, [currentTime, detectedMyTeamIds, heldItems, leagueTeams, myBoostState, myForm, myTactics, effectiveMyTeam, effectiveMySquad, primaryOwnedTeamModel, seasonBoosts, seasonFixtures, seasonItemHistory, seasonTeams, teamSeasonFixtures]);
+  }, [currentTime, detectedMyTeamIds, heldItems, leagueTeams, myBoostState, seasonFixtures, seasonItemHistory, teamSeasonFixtures, simulatedFixture, seasonEngineJobs, seasonEngineResults]);
 
   const seasonForecast = useMemo(() => {
     const loadedSeasonTeamCount = Object.keys(seasonTeams).length;
@@ -2816,99 +2195,12 @@ export default function OinkSoccerCalc() {
 
     leagueTeams.forEach((team) => ensureRow(team.teamId, team.teamName));
 
-    const getModel = (teamId, fixture) => {
-      const boostState = getBoostStateForFixture(seasonBoosts[teamId], fixture);
-      const ownedModel = ownedTeamModels[teamId];
-      if (ownedModel?.players?.length) {
-        return {
-          ...ownedModel,
-          formation: ownedModel.formationKey && FORMATIONS[ownedModel.formationKey] ? ownedModel.formationKey : 'Pyramid',
-          tactics: normalizeTactics(ownedModel.tactics),
-          stats: calculateTeamScores(ownedModel.players, ownedModel.formationKey && FORMATIONS[ownedModel.formationKey] ? ownedModel.formationKey : 'Pyramid', boostState, normalizeTactics(ownedModel.tactics)),
-        };
-      }
-
-    if (myTeamIds.has(teamId) && myTeam.length >= 5) {
-      return {
-        formation: myForm,
-        tactics: myTactics,
-        stats: calculateTeamScores(myTeam, myForm, boostState, myTactics),
-      };
-    }
-
-      const model = seasonTeams[teamId];
-      if (!model?.players?.length) return null;
-      const formation = model.formationKey && FORMATIONS[model.formationKey] ? model.formationKey : 'Pyramid';
-      const tactics = normalizeTactics(model.tactics);
-      return {
-        ...model,
-        formation,
-        tactics,
-        stats: calculateTeamScores(model.players, formation, boostState, tactics),
-      };
-    };
-
     const projectedFixtures = [];
-    let optimizedFixtureCount = 0;
+    const optimizedFixtureCount = 0;
     let liveFixtureCount = 0;
     let ownedProjectedFixtureCount = 0;
     let ownedBaselinePoints = 0;
     let ownedOptimizedPoints = 0;
-
-    const getOptimizedFixtureProjection = ({ fixture, homeModel, awayModel, baseline }) => {
-      const homeIsMine = myTeamIds.has(fixture.home_team_id);
-      const awayIsMine = myTeamIds.has(fixture.away_team_id);
-      if (homeIsMine === awayIsMine) return null;
-
-      const myModel = homeIsMine ? homeModel : awayModel;
-      const opponentModel = homeIsMine ? awayModel : homeModel;
-      const currentWin = homeIsMine ? baseline.win : baseline.loss;
-      const optimizationSquad = effectiveMySquad.length >= 5 ? effectiveMySquad : myModel.players;
-      if (!Array.isArray(optimizationSquad) || optimizationSquad.length < 5) return null;
-
-      let suggestions;
-      try {
-        suggestions = buildSettingsSuggestions(currentWin, {
-          squad: optimizationSquad,
-          boostContext: getBoostStateForFixture(seasonBoosts[homeIsMine ? fixture.home_team_id : fixture.away_team_id], fixture),
-          oppStats: opponentModel.stats,
-          oppForm: opponentModel.formation,
-          oppTactics: opponentModel.tactics,
-          homeAdvantage: homeIsMine ? 'home' : 'away',
-          objective: 'expectedPoints',
-          includeExplanations: false,
-        });
-      } catch (_) {
-        return null;
-      }
-
-      const bestSetup = Object.values(suggestions || {})
-        .filter((suggestion) => suggestion?.formation && Number.isFinite(Number(suggestion.win)))
-        .sort((a, b) => (b.objectiveValue ?? b.win) - (a.objectiveValue ?? a.win))[0];
-      if (!bestSetup) return null;
-
-      const ownProjection = {
-        win: bestSetup.win,
-        draw: bestSetup.draw,
-        loss: bestSetup.loss,
-        myxG: bestSetup.myxG,
-        oppxG: bestSetup.oppxG,
-      };
-
-      return {
-        scenario: 'optimized',
-        setup: bestSetup,
-        projection: homeIsMine
-          ? ownProjection
-          : {
-            win: ownProjection.loss,
-            draw: ownProjection.draw,
-            loss: ownProjection.win,
-            myxG: ownProjection.oppxG,
-            oppxG: ownProjection.myxG,
-          },
-      };
-    };
 
     seasonFixtures.forEach((fixture) => {
       const home = ensureRow(fixture.home_team_id, fixture.home_team_name);
@@ -2941,29 +2233,23 @@ export default function OinkSoccerCalc() {
         return;
       }
 
-      const homeModel = getModel(fixture.home_team_id, fixture);
-      const awayModel = getModel(fixture.away_team_id, fixture);
-      if (!homeModel || !awayModel) {
+      const simulated = seasonEngineResults[String(fixture.game_key)]?.[0];
+      if (!simulated) {
         home.unavailable += 1;
         away.unavailable += 1;
         return;
       }
-
-      const baseline = projectMatch({
-        myStats: homeModel.stats,
-        myForm: homeModel.formation,
-        myTactics: homeModel.tactics,
-        oppStats: awayModel.stats,
-        oppForm: awayModel.formation,
-        oppTactics: awayModel.tactics,
-        homeAdvantage: 'home',
-      });
+      const baseline = {
+        win: 100 * simulated.wins / simulated.trials,
+        draw: 100 * simulated.draws / simulated.trials,
+        loss: 100 * simulated.losses / simulated.trials,
+        myxG: simulated.goalsFor / simulated.trials,
+        oppxG: simulated.goalsAgainst / simulated.trials,
+      };
       const isOwnedFixture = myTeamIds.has(fixture.home_team_id) !== myTeamIds.has(fixture.away_team_id);
-      if (isOwnedFixture) ownedProjectedFixtureCount += 1;
-      const optimized = getOptimizedFixtureProjection({ fixture, homeModel, awayModel, baseline });
-      const projection = optimized?.projection || baseline;
-      if (optimized) optimizedFixtureCount += 1;
-      else if (isOwnedFixture) liveFixtureCount += 1;
+      if (isOwnedFixture) { ownedProjectedFixtureCount += 1; liveFixtureCount += 1; }
+      const optimized = null;
+      const projection = baseline;
       const homeGoals = projection.myxG;
       const awayGoals = projection.oppxG;
       const expectedPoints = getExpectedPointsFromOutcomePercentages(projection);
@@ -3025,7 +2311,7 @@ export default function OinkSoccerCalc() {
       ownedOptimizedPoints,
       optimizedPointsGain: ownedOptimizedPoints - ownedBaselinePoints,
     };
-  }, [activeTab, buildSettingsSuggestions, detectedMyTeamIds, effectiveMySquad, leagueTeams, myForm, myTactics, myTeam, ownedTeamModels, seasonFixtures, seasonPredictionLoading, seasonTeams, seasonBoosts]);
+  }, [activeTab, detectedMyTeamIds, leagueTeams, seasonFixtures, seasonPredictionLoading, seasonTeams, seasonEngineResults]);
 
   const itemSuggestions = useMemo(() => {
     const planningFixtures = teamSeasonFixtures.length > 0 ? teamSeasonFixtures : seasonFixtures;
@@ -3033,13 +2319,9 @@ export default function OinkSoccerCalc() {
       ? primaryOwnedTeamModel
       : null;
     const planningPlayers = planningModel?.players?.length >= 5 ? planningModel.players : effectiveMyTeam;
-    const planningForm = planningModel?.formationKey && FORMATIONS[planningModel.formationKey]
-      ? planningModel.formationKey
-      : myForm;
-    const planningTactics = normalizeTactics(planningModel?.tactics || myTactics);
     const primaryTeamId = myTeamIdForBoosts || detectedMyTeamIds[0];
 
-    if (planningPlayers.length < 5 || !primaryTeamId || planningFixtures.length === 0) return [];
+    if (planningPlayers.length < 5 || !primaryTeamId || planningFixtures.length === 0 || seasonEngine.status !== 'done' || seasonEngine.fingerprint !== seasonEngineFingerprint || seasonFixtures.some((fixture) => !fixture.game_result && !fixture.cup_bye && !seasonEngineResults[String(fixture.game_key)])) return [];
     const heldPerformanceItems = getHeldPerformanceItems(heldItems);
     if (heldPerformanceItems.length === 0) return [];
 
@@ -3053,8 +2335,8 @@ export default function OinkSoccerCalc() {
       )),
     );
 
-    const baseStats = calculateTeamScores(planningPlayers, planningForm, TEAM_BOOST_STATE_EMPTY, planningTactics);
-    const liveEffectiveness = myBoostState?.source === 'live' ? Number(myBoostState.effectivenessPct) : Number.NaN;
+    const baseStats = { boostKey: '', effectivenessPct: 100 };
+    const liveEffectiveness = myBoostState?.source === 'live' && myBoostState.effectivenessPct != null ? Number(myBoostState.effectivenessPct) : Number.NaN;
     const baseEffectivenessPct = Number.isFinite(liveEffectiveness) ? liveEffectiveness : 100;
     const boostCounts = Object.fromEntries(heldPerformanceItems.map((item) => [item.boostKey, item.count]));
     const selectedWindows = [];
@@ -3092,36 +2374,17 @@ export default function OinkSoccerCalc() {
       const opponentModel = seasonTeams[opponentId];
       if (!opponentModel?.players?.length) return null;
 
-      const opponentFormation = opponentModel.formationKey && FORMATIONS[opponentModel.formationKey]
-        ? opponentModel.formationKey
-        : 'Pyramid';
-      const opponentTactics = normalizeTactics(opponentModel.tactics);
-      const opponentStats = calculateTeamScores(opponentModel.players, opponentFormation, getBoostStateForFixture(seasonBoosts[opponentId], fixture), opponentTactics);
       return {
         opponentId,
         isHome,
         opponentName: isHome ? fixture.away_team_name : fixture.home_team_name,
-        opponentFormation,
-        opponentTactics,
-        opponentStats,
       };
     };
 
     const projectFixture = (fixture, stats) => {
       const opponent = getOpponentModel(fixture);
-      if (!opponent) return null;
-      return {
-        opponent,
-        projection: projectMatch({
-          myStats: stats,
-          myForm: planningForm,
-          myTactics: planningTactics,
-          oppStats: opponent.opponentStats,
-          oppForm: opponent.opponentFormation,
-          oppTactics: opponent.opponentTactics,
-          homeAdvantage: opponent.isHome ? 'home' : 'away',
-        }),
-      };
+      const projection = simulatedFixture(fixture, true, stats.boostKey, stats.effectivenessPct);
+      return opponent && projection ? { opponent, projection } : null;
     };
 
     const intervalsOverlap = (startA, endA, startB, endB) => startA <= endB && startB <= endA;
@@ -3153,12 +2416,8 @@ export default function OinkSoccerCalc() {
         : startsAt;
       if (hasWindowConflict(startsAt, maxEndsAt)) return null;
 
-      const effectivenessPct = getBoostEffectivenessForPlannedUse(baseEffectivenessPct, plannedUseIndex);
-      const boostState = createPlannedItemBoostState({
-        boostKey: item.boostKey,
-        effectivenessPct,
-      });
-      const boostedStats = calculateTeamScores(planningPlayers, planningForm, boostState, planningTactics);
+      const effectivenessPct = (plannedUseIndex === 0 ? baseEffectivenessPct : Math.floor(getBoostEffectivenessForPlannedUse(baseEffectivenessPct, plannedUseIndex) / 25) * 25);
+      const boostedStats = { boostKey: item.boostKey, effectivenessPct };
       const windowFixtures = remainingMyFixtures
         .slice(startIndex)
         .map((candidate) => {
@@ -3185,7 +2444,7 @@ export default function OinkSoccerCalc() {
       let maxFixtureCount = 0;
       let standingsLeverage = 0;
       let rivalCoverage = 0;
-      let expectedPointsDelta = getExpectedPointsFromOutcomePercentages(baseFirst.projection).my * -1;
+      let expectedPointsDelta = 0;
 
       windowFixtures.forEach((candidate, windowIndex) => {
         const base = projectFixture(candidate.fixture, baseStats);
@@ -3204,7 +2463,7 @@ export default function OinkSoccerCalc() {
           + (delta * 0.04)
         ) * candidate.coverageChance;
         rivalCoverage += opponentLeverage * candidate.coverageChance;
-        expectedPointsDelta += boostedPoints.my * candidate.coverageChance;
+        expectedPointsDelta += myPointsGain * candidate.coverageChance;
         expectedFixtureCount += candidate.coverageChance;
         if (candidate.coverageChance >= 1) guaranteedFixtureCount += 1;
         maxFixtureCount += 1;
@@ -3303,12 +2562,8 @@ export default function OinkSoccerCalc() {
 
     const chronologicalRemainingCounts = { ...boostCounts };
     const recalculateChronologicalItem = (item, plannedUseIndex) => {
-      const effectivenessPct = getBoostEffectivenessForPlannedUse(baseEffectivenessPct, plannedUseIndex);
-      const boostState = createPlannedItemBoostState({
-        boostKey: item.boostKey,
-        effectivenessPct,
-      });
-      const boostedStats = calculateTeamScores(planningPlayers, planningForm, boostState, planningTactics);
+      const effectivenessPct = (plannedUseIndex === 0 ? baseEffectivenessPct : Math.floor(getBoostEffectivenessForPlannedUse(baseEffectivenessPct, plannedUseIndex) / 25) * 25);
+      const boostedStats = { boostKey: item.boostKey, effectivenessPct };
       const durationDays = Array.from(
         { length: Math.max(0, (item.maxDays || 0) - (item.minDays || 0)) + 1 },
         (_, index) => (item.minDays || 0) + index,
@@ -3318,7 +2573,7 @@ export default function OinkSoccerCalc() {
       let seasonDelta = 0;
       let standingsLeverage = 0;
       let rivalCoverage = 0;
-      let expectedPointsDelta = baseFirst ? getExpectedPointsFromOutcomePercentages(baseFirst.projection).my * -1 : 0;
+      let expectedPointsDelta = 0;
       let expectedFixtureCount = 0;
       let guaranteedFixtureCount = 0;
       let maxFixtureCount = 0;
@@ -3350,7 +2605,7 @@ export default function OinkSoccerCalc() {
           + (delta * 0.04)
         ) * coverageChance;
         rivalCoverage += opponentLeverage * coverageChance;
-        expectedPointsDelta += boostedPoints.my * coverageChance;
+        expectedPointsDelta += myPointsGain * coverageChance;
         expectedFixtureCount += coverageChance;
         if (coverageChance >= 1) guaranteedFixtureCount += 1;
         maxFixtureCount += 1;
@@ -3409,36 +2664,6 @@ export default function OinkSoccerCalc() {
 
       leagueTeams.forEach((team) => ensureRow(team.teamId, team.teamName));
 
-      const getTeamModel = (teamId, fixture) => {
-        const boostState = getBoostStateForFixture(seasonBoosts[teamId], fixture);
-        const ownedModel = ownedTeamModels[teamId];
-        if (ownedModel?.players?.length) {
-          const formation = ownedModel.formationKey && FORMATIONS[ownedModel.formationKey] ? ownedModel.formationKey : 'Pyramid';
-          const tactics = normalizeTactics(ownedModel.tactics);
-          const isMine = teamId === primaryTeamId;
-          return { formation, tactics, stats: calculateTeamScores(ownedModel.players, formation, boostState, tactics), isMine };
-        }
-        if (teamId === primaryTeamId) {
-          return {
-            formation: planningForm,
-            tactics: planningTactics,
-            stats: calculateTeamScores(effectiveMyTeam, planningForm, boostState, planningTactics),
-            isMine: true,
-          };
-        }
-
-        const model = seasonTeams[teamId];
-        if (!model?.players?.length) return null;
-        const formation = model.formationKey && FORMATIONS[model.formationKey] ? model.formationKey : 'Pyramid';
-        const tactics = normalizeTactics(model.tactics);
-        return {
-          formation,
-          tactics,
-          stats: calculateTeamScores(model.players, formation, boostState, tactics),
-          isMine: false,
-        };
-      };
-
       const getPlannedWindow = (fixture) => {
         const fixtureTime = getFixtureTimeValue(fixture);
         return plan.find((item) => (
@@ -3460,52 +2685,26 @@ export default function OinkSoccerCalc() {
         if (fixture.game_result) {
           homeGoals = Number(fixture.game_result.home_team_score || 0);
           awayGoals = Number(fixture.game_result.away_team_score || 0);
+          expectedPoints = playedPoints(homeGoals, awayGoals);
         } else {
-          const homeModel = getTeamModel(fixture.home_team_id, fixture);
-          const awayModel = getTeamModel(fixture.away_team_id, fixture);
-          if (!homeModel || !awayModel) return;
-
           const plannedWindow = getPlannedWindow(fixture);
-          if (homeModel.isMine) {
-            const projection = projectMatch({
-              myStats: plannedWindow?.boostedStats || homeModel.stats,
-              myForm: homeModel.formation,
-              myTactics: homeModel.tactics,
-              oppStats: awayModel.stats,
-              oppForm: awayModel.formation,
-              oppTactics: awayModel.tactics,
-              homeAdvantage: 'home',
-            });
-            homeGoals = projection.myxG;
-            awayGoals = projection.oppxG;
-            expectedPoints = getExpectedPointsFromOutcomePercentages(projection);
-          } else if (awayModel.isMine) {
-            const projection = projectMatch({
-              myStats: plannedWindow?.boostedStats || awayModel.stats,
-              myForm: awayModel.formation,
-              myTactics: awayModel.tactics,
-              oppStats: homeModel.stats,
-              oppForm: homeModel.formation,
-              oppTactics: homeModel.tactics,
-              homeAdvantage: 'away',
-            });
-            homeGoals = projection.oppxG;
-            awayGoals = projection.myxG;
-            expectedPoints = getExpectedPointsFromOutcomePercentages(projection);
-          } else {
-            const projection = projectMatch({
-              myStats: homeModel.stats,
-              myForm: homeModel.formation,
-              myTactics: homeModel.tactics,
-              oppStats: awayModel.stats,
-              oppForm: awayModel.formation,
-              oppTactics: awayModel.tactics,
-              homeAdvantage: 'home',
-            });
-            homeGoals = projection.myxG;
-            awayGoals = projection.oppxG;
-            expectedPoints = getExpectedPointsFromOutcomePercentages(projection);
+          const homeIsMine = fixture.home_team_id === primaryTeamId;
+          const awayIsMine = fixture.away_team_id === primaryTeamId;
+          const own = homeIsMine || awayIsMine;
+          const baseline = simulatedFixture(fixture, own);
+          if (!baseline) return;
+          let projection = baseline;
+          if (plannedWindow) {
+            const boosted = simulatedFixture(fixture, own, plannedWindow.boostKey, plannedWindow.effectivenessPct);
+            if (!boosted) return;
+            const durations = getDurationDays(plannedWindow);
+            const coverage = durations.filter((days) => getFixtureTimeValue(fixture) <= getUtcDayExpiryTime(plannedWindow.startTime, days)).length / durations.length;
+            projection = blendProjections(baseline, boosted, coverage);
           }
+          homeGoals = awayIsMine ? projection.oppxG : projection.myxG;
+          awayGoals = awayIsMine ? projection.myxG : projection.oppxG;
+          const points = getExpectedPointsFromOutcomePercentages(projection);
+          expectedPoints = awayIsMine ? { my: points.opponent, opponent: points.my } : points;
         }
 
         home.gf += homeGoals;
@@ -3657,7 +2856,7 @@ export default function OinkSoccerCalc() {
         placementGain,
       }))
       .slice(0, 10);
-  }, [currentTime, detectedMyTeamIds, heldItems, itemCooldownEndTime, leagueTeams, myBoostState, myForm, myTactics, effectiveMyTeam, myTeamIdForBoosts, ownedTeamModels, primaryOwnedTeamModel, seasonFixtures, seasonTeams, teamSeasonFixtures, seasonBoosts]);
+  }, [currentTime, detectedMyTeamIds, heldItems, itemCooldownEndTime, leagueTeams, myBoostState, effectiveMyTeam, myTeamIdForBoosts, primaryOwnedTeamModel, seasonFixtures, seasonTeams, teamSeasonFixtures, simulatedFixture, seasonEngine.status, seasonEngine.fingerprint, seasonEngineFingerprint, seasonEngineResults]);
 
   const plannedItemsByFixture = useMemo(() => {
     const planned = {};
@@ -3792,7 +2991,7 @@ export default function OinkSoccerCalc() {
           <div>
             <div className="text-[10px] font-bold uppercase tracking-[0.14em] text-[#6b7a94]">{headlineProjection.label}</div>
             <div className="font-['Barlow_Condensed'] text-[32px] font-black leading-none text-[#00e676] lg:text-[36px]">{displayedWin}</div>
-            <div className="text-[11px] text-[#6b7a94]">{headlineProjection.source === 'engine' ? `Based on ${headlineProjection.trials.toLocaleString()} simulated matches; goals are match averages.` : 'Quick estimate; run simulations for game-engine results.'}</div>
+            <div className="text-[11px] text-[#6b7a94]">{headlineProjection.source === 'engine' ? `Based on ${headlineProjection.trials.toLocaleString()} simulated matches; goals are match averages.` : 'Waiting for the match simulation.'}</div>
           </div>
 
           <div className="grid grid-cols-[1fr_auto_1fr] items-end gap-2">
@@ -3809,15 +3008,15 @@ export default function OinkSoccerCalc() {
 
           <div className="hidden items-end gap-5 sm:flex">
             <div className="text-center">
-              <div className="font-['Barlow_Condensed'] text-lg font-bold text-[#00e676] lg:text-xl">{displayedForecastWin.toFixed(1)}%</div>
+              <div className="font-['Barlow_Condensed'] text-lg font-bold text-[#00e676] lg:text-xl">{hasLineups ? `${displayedForecastWin.toFixed(1)}%` : '—'}</div>
               <div className="text-[9px] uppercase tracking-[0.12em] text-[#6b7a94]">Win</div>
             </div>
             <div className="text-center">
-              <div className="font-['Barlow_Condensed'] text-lg font-bold text-[#9aa5bb] lg:text-xl">{displayedForecastDraw.toFixed(1)}%</div>
+              <div className="font-['Barlow_Condensed'] text-lg font-bold text-[#9aa5bb] lg:text-xl">{hasLineups ? `${displayedForecastDraw.toFixed(1)}%` : '—'}</div>
               <div className="text-[9px] uppercase tracking-[0.12em] text-[#6b7a94]">Draw</div>
             </div>
             <div className="text-center">
-              <div className="font-['Barlow_Condensed'] text-lg font-bold text-[#ff4444] lg:text-xl">{displayedForecastLoss.toFixed(1)}%</div>
+              <div className="font-['Barlow_Condensed'] text-lg font-bold text-[#ff4444] lg:text-xl">{hasLineups ? `${displayedForecastLoss.toFixed(1)}%` : '—'}</div>
               <div className="text-[9px] uppercase tracking-[0.12em] text-[#6b7a94]">Loss</div>
             </div>
           </div>
@@ -4168,7 +3367,7 @@ export default function OinkSoccerCalc() {
                     const item = getHeldPerformanceItems(heldItems).find((entry) => entry.boostKey === result.key);
                     return <div key={result.key} className="mt-2 rounded-md bg-[#111620] p-2.5"><div className="font-semibold text-[#e8edf5]">{index === 0 ? 'Current boost state' : item?.label || result.key}</div><div className="mt-1">Win {formatNumber(win)}% · Draw {formatNumber(draw)}% · Win or draw {formatNumber(point)}%{index > 0 ? ` (${point >= basePoint ? '+' : ''}${formatNumber(point - basePoint)} percentage points)` : ''}</div></div>;
                   })}
-                  {currentEngineSimulation.status === 'done' && <p className="mt-2 text-[#aebbd0]">These simulation results replace the quick matchup estimate above. Sample estimates use a fixed seed. Future lineup changes, unknown boosts and item expiry are not predicted; effectiveness is based on current data (100% assumed if unavailable).</p>}
+                  {currentEngineSimulation.status === 'done' && <p className="mt-2 text-[#aebbd0]">A 5,000-match sample has up to about 1.4 percentage points of sampling uncertainty; results vary with the seed. Future lineup changes, unknown boosts and item expiry are not predicted; effectiveness is based on current data (100% assumed if unavailable).</p>}
                 </div>}
               </div>
 
@@ -4177,6 +3376,8 @@ export default function OinkSoccerCalc() {
                   <div className="grid gap-4 lg:min-h-0 lg:grid-cols-2 lg:h-full lg:gap-3">
                     <BestSetupCard
                       suggestion={topSuggestion}
+                      error={autoError}
+                      progress={autoProgress}
                       liveSetup={selectedOwnedTeamId ? ownedTeamModels[selectedOwnedTeamId] : null}
                       analyzing={autoAnalyzing || importingTeamUrl}
                       syncing={walletSyncing}
@@ -4213,21 +3414,21 @@ export default function OinkSoccerCalc() {
                     {selectedLeagueName || 'Select a league'}
                   </div>
                   <div className="mt-1 text-xs text-[#6b7a94]">
-                    {seasonForecast.optimizedFixtureCount > 0 ? 'Optimized scenario uses actual results and selects a setup for each remaining opponent. ' : 'Live lineup scenario; connect a complete squad for fixture-by-fixture optimization. '}Known active boosts are included when their expiry covers the fixture; future item use is unknown. Results are estimates.
+                    Actual results and 1,000 engine simulations per remaining fixture, using current lineups. Sampling uncertainty can exceed 3 percentage points. Known boosts are included when their expiry covers the fixture; future changes are unknown. Rankings compare expected points, not top-five probabilities.
                   </div>
                 </div>
                 <div className="rounded-md border border-[#253040] bg-[#111620] px-3 py-2 text-xs text-[#9aa5bb]">
-                    {seasonPredictionLoading
-                      ? 'Loading season...'
+                    {seasonPredictionLoading || seasonEngine.status === 'running'
+                      ? `Simulating season... ${seasonEngine.progress}/${seasonEngine.total}`
                       : seasonForecast.optimizedFixtureCount > 0
                       ? `${seasonForecast.optimizedFixtureCount}/${seasonForecast.ownedProjectedFixtureCount} optimized · ${seasonForecast.optimizedPointsGain >= 0 ? '+' : ''}${formatNumber(seasonForecast.optimizedPointsGain, 1)} pts vs live`
                       : `${seasonForecast.projectedFixtures.length} projected · live snapshot`}
                 </div>
               </div>
 
-              {seasonPredictionError && (
+              {(seasonPredictionError || seasonEngine.error) && (
                 <div className="mt-3 rounded-md border border-[#ff4444]/50 bg-[#ff4444]/10 px-3 py-2 text-xs text-[#ff9e9e]">
-                  {seasonPredictionError}
+                  {seasonPredictionError || seasonEngine.error}
                 </div>
               )}
 
@@ -4255,19 +3456,19 @@ export default function OinkSoccerCalc() {
                   {seasonDecisionContext.needed !== null && <div className="mt-2 text-xs">{seasonDecisionContext.needed} more points needed from {seasonDecisionContext.remaining} remaining league games{seasonDecisionContext.remaining ? ` (${formatNumber(seasonDecisionContext.needed / seasonDecisionContext.remaining, 2)} per game)` : ''}. A target is a benchmark, not a guaranteed finish.</div>}
                 </div>
               )}
-              <SeasonPredictionTable rows={seasonForecast.rows} loading={seasonPredictionLoading} myTeamIds={detectedMyTeamIds} />
+              <SeasonPredictionTable rows={seasonForecast.rows} loading={seasonPredictionLoading || seasonEngine.status === 'running'} myTeamIds={detectedMyTeamIds} />
             </div>
 
             <div className="rounded-[10px] border border-[#1e2a3a] bg-[#161c28] p-4">
               <h2 className="text-sm font-semibold text-[#e8edf5]">Upcoming match levers</h2>
-              <p className="mt-1 text-xs text-[#aebbd0]">Expected goals are approximate. Item comparisons use current effectiveness; future opponent activations and later decay are unknown. Swap comparisons test one eligible player at a time.</p>
+              <p className="mt-1 text-xs text-[#aebbd0]">Each fixture uses 1,000 engine simulations. Current effectiveness is used where available; future opponent activations are unknown.</p>
               {matchupLevers.length === 0 && <p className="mt-3 text-xs text-[#aebbd0]">Connect a team and load its lineup and fixtures to compare options.</p>}
               {matchupLevers.map((match) => <div key={match.fixture.game_key} className="mt-3 border-t border-[#253040] pt-3 text-xs text-[#c7d0df]">
                 <div className="font-semibold text-[#e8edf5]">{match.name}{match.rank ? ` · ${formatOrdinal(match.rank)} now` : ''} · {formatFixtureTime(match.fixture.game_time)}</div>
-                {match.unavailable ? <p className="mt-1">Opponent lineup unavailable.</p> : <>
-                  <p className="mt-1">Current setup: {formatNumber(match.base.myxG, 2)}–{formatNumber(match.base.oppxG, 2)} expected goals.</p>
-                  {match.items.length > 0 && <p className="mt-1">Held item scenarios: {match.items.map((item) => `${item.label} ${formatNumber(item.projection.myxG, 2)}–${formatNumber(item.projection.oppxG, 2)}`).join(' · ')}. Scenarios replace any current boost and do not check availability at kickoff.</p>}
-                  {match.swap && <p className="mt-1">Test {match.swap.candidate.name} for {match.swap.out.name}: {formatNumber(match.swap.projection.myxG, 2)}–{formatNumber(match.swap.projection.oppxG, 2)} expected goals. Confirm availability and roles.</p>}
+                {match.unavailable ? <p className="mt-1">{seasonEngine.status === 'running' ? 'Simulating fixture…' : 'Simulation unavailable; check fixture lineups.'}</p> : <>
+                  <p className="mt-1">Current setup: {formatNumber(match.base.win + match.base.draw)}% win or draw · {formatNumber(match.base.myxG, 2)}–{formatNumber(match.base.oppxG, 2)} average goals.</p>
+                  {match.items.length > 0 && <p className="mt-1">Held item scenarios: {match.items.map((item) => `${item.label} ${formatNumber(item.projection.win + item.projection.draw)}% win or draw`).join(' · ')}. Scenarios replace any current boost and do not check availability at kickoff.</p>}
+                  {match.swap && <p className="mt-1">Test {match.swap.candidate} for {match.swap.out}: {formatNumber(match.swap.projection.win + match.swap.projection.draw)}% win or draw. The swap is ranked by expected points; confirm roles in game.</p>}
                   <p className="mt-1">Item history: {seasonItemHistory === null ? 'unavailable' : !match.history ? 'team not found in league history' : Object.entries(match.history.items_used || {}).filter(([, count]) => Number(count) > 0).map(([key, count]) => `${({ SOCCER_ITEM_GOLDEN_TRUFFLE: 'Golden Truffle', SOCCER_ITEM_TRUFFLE: 'Magic Truffle', SOCCER_ITEM_IRIDIUM_TRUFFLE: 'Iridium Truffle', SOCCER_ITEM_HALF_TIME_ORANGE: 'Half-Time Orange' })[key] || key}: ${count} games`).join(' · ') || 'no recorded item use'}.</p>
                 </>}
               </div>)}
@@ -4276,7 +3477,7 @@ export default function OinkSoccerCalc() {
             <div className="rounded-[10px] border border-[#1e2a3a] bg-[#161c28] p-4">
               <div className="text-[11px] font-bold uppercase tracking-[0.14em] text-[#ffab00]">Item Timing</div>
               <div className="mt-1 text-xs text-[#6b7a94]">
-                Planned using held items, active windows, cooldowns, direct-rival leverage, and diminishing effectiveness. Uses are kept when they improve final place or improve or protect the top-five position.
+                Engine simulations compare held items and fixture windows. The first item uses current effectiveness; later uses are rounded down to the nearest 25%. Future lineups and item use remain uncertain.
               </div>
               <div className="mt-2 inline-flex rounded-md border border-[#253040] bg-[#111620] px-2 py-1 text-xs text-[#9aa5bb]">
                 Detected {heldPerformanceUseCount} performance item use{heldPerformanceUseCount === 1 ? '' : 's'}
@@ -4348,14 +3549,16 @@ export default function OinkSoccerCalc() {
               )}
 
               <div className="mt-3 space-y-2">
-                {seasonPredictionLoading && (
-                  <div className="rounded-md border border-[#1e2a3a] bg-[#111620] p-3 text-xs text-[#9aa5bb]">Checking item windows...</div>
+                {(seasonPredictionLoading || seasonEngine.status === 'running') && (
+                  <div className="rounded-md border border-[#1e2a3a] bg-[#111620] p-3 text-xs text-[#9aa5bb]">Simulating item windows...</div>
                 )}
-                {!seasonPredictionLoading && itemSuggestions.length === 0 && (
+                {!seasonPredictionLoading && seasonEngine.status !== 'running' && itemSuggestions.length === 0 && (
                   <div className="rounded-md border border-[#1e2a3a] bg-[#111620] p-3 text-xs text-[#9aa5bb]">
                     {heldPerformanceUseCount === 0
                       ? 'No performance boosts detected in the connected wallet. Sync wallet assets, then check again.'
-                      : 'No efficient held performance item window found after cooldown and coverage checks.'}
+                      : seasonEngine.error || seasonForecast.rows.some((row) => row.unavailable > 0)
+                        ? 'Item planning needs all league fixture simulations. Check the season error and unavailable lineups.'
+                        : 'No efficient held performance item window found after cooldown and coverage checks.'}
                   </div>
                 )}
                 {!seasonPredictionLoading && itemSuggestions.map((item) => (
@@ -4374,18 +3577,18 @@ export default function OinkSoccerCalc() {
                       </div>
                       <div className="text-right">
                         <div className="font-['Barlow_Condensed'] text-[22px] font-black text-[#00e676]">
-                          +{formatNumber(item.seasonDelta)} pp
+                          {item.expectedPointsDelta >= 0 ? '+' : ''}{formatNumber(item.expectedPointsDelta, 2)} pts
                         </div>
                         <div className="mt-1 text-xs text-[#7f8aa3]">
                           {item.planBasePosition && item.planProjectedPosition
                             ? `Plan ${formatOrdinal(item.planBasePosition)} → ${formatOrdinal(item.planProjectedPosition)}`
-                            : 'Plan impact pending'}
+                            : 'Expected points'}
                         </div>
                       </div>
                     </div>
                     <div className="mt-2 text-xs text-[#c7d0df]">Start no earlier than {formatFixtureTime(Math.max(Date.UTC(new Date(item.startTime).getUTCFullYear(), new Date(item.startTime).getUTCMonth(), new Date(item.startTime).getUTCDate()), currentTime, itemCooldownEndTime || 0))} and before kickoff to preserve this UTC-day coverage. Confirm expiry in game.</div>
                     <div className="mt-1 text-xs text-[#9aa5bb]">
-                      Covered fixtures (minimum duration): {sortFixturesByRoundAndTime((teamSeasonFixtures.length ? teamSeasonFixtures : seasonFixtures).filter((fixture) => !fixture.game_result && !fixture.cup_bye && getFixtureTimeValue(fixture) >= item.startTime && getFixtureTimeValue(fixture) <= getUtcDayExpiryTime(item.startTime, item.minDays) && (detectedMyTeamIds.includes(fixture.home_team_id) || detectedMyTeamIds.includes(fixture.away_team_id)))).map((fixture) => detectedMyTeamIds.includes(fixture.home_team_id) ? fixture.away_team_name : fixture.home_team_name).join(', ') || item.opponentName}. First match estimated win: {formatNumber(item.baseWin)}% to {formatNumber(item.boostedWin)}%. Expected coverage {formatNumber(item.windowCount)} fixture-equivalents ({item.guaranteedWindowCount}-{item.maxWindowCount} possible over {item.minDays}-{item.maxDays} days) at {formatNumber(item.effectivenessPct)}% current effectiveness. Expected-point gain: {formatNumber(item.expectedPointsDelta, 2)}.
+                      Covered fixtures (minimum duration): {sortFixturesByRoundAndTime((teamSeasonFixtures.length ? teamSeasonFixtures : seasonFixtures).filter((fixture) => !fixture.game_result && !fixture.cup_bye && getFixtureTimeValue(fixture) >= item.startTime && getFixtureTimeValue(fixture) <= getUtcDayExpiryTime(item.startTime, item.minDays) && (detectedMyTeamIds.includes(fixture.home_team_id) || detectedMyTeamIds.includes(fixture.away_team_id)))).map((fixture) => detectedMyTeamIds.includes(fixture.home_team_id) ? fixture.away_team_name : fixture.home_team_name).join(', ') || item.opponentName}. First match estimated win: {formatNumber(item.baseWin)}% to {formatNumber(item.boostedWin)}%. Expected coverage {formatNumber(item.windowCount)} fixture-equivalents ({item.guaranteedWindowCount}-{item.maxWindowCount} possible over {item.minDays}-{item.maxDays} days) at {formatNumber(item.effectivenessPct)}% assumed effectiveness. Expected-point gain: {formatNumber(item.expectedPointsDelta, 2)}.
                       {Number(item.rivalCoverage) > 0 ? (
                         <> Rival leverage {formatNumber(item.rivalCoverage)}.</>
                       ) : null}
@@ -4689,7 +3892,8 @@ function SeasonPredictionTable({ rows, loading, myTeamIds }) {
       {!loading && rows.length === 0 && (
         <div className="p-3 text-xs text-[#9aa5bb]">Open this tab after selecting a league to generate the season prediction.</div>
       )}
-      {!loading && rows.slice(0, 24).map((row, index) => (
+      {!loading && rows.some((row) => row.unavailable > 0) && <div className="p-3 text-xs text-[#ffcf66]">Some fixtures could not be simulated. The projected table is unavailable until every lineup is loaded.</div>}
+      {!loading && !rows.some((row) => row.unavailable > 0) && rows.slice(0, 24).map((row, index) => (
         <div
           key={row.teamId}
           className={`grid grid-cols-[30px_minmax(0,1fr)_48px_52px_86px] gap-2 border-b border-[#1e2a3a] px-2 py-2 text-xs last:border-b-0 ${myTeams.has(row.teamId) ? 'bg-[#0f2a1b] text-[#d7ffe9]' : 'text-[#d0d7e5]'}`}
@@ -4707,7 +3911,8 @@ function SeasonPredictionTable({ rows, loading, myTeamIds }) {
   );
 }
 
-function BestSetupCard({ suggestion, liveSetup, analyzing, syncing = false, fallbackLabel = '', syncError = '', canAnalyze, lineupGaps = [], onInjuryOpen }) {
+function BestSetupCard({ suggestion, liveSetup, analyzing, syncing = false, fallbackLabel = '', syncError = '', canAnalyze, lineupGaps = [], onInjuryOpen, error = '', progress = '' }) {
+  if (error) return <section role="alert" className="mb-4 rounded-[10px] border border-[#ff4444]/50 bg-[#111620] p-4 text-sm text-[#ff9e9e]">{error}</section>;
   if (!canAnalyze) {
     return (
       <section className="mb-4 rounded-[10px] border border-[#1e2a3a] bg-[#111620] p-4">
@@ -4736,7 +3941,7 @@ function BestSetupCard({ suggestion, liveSetup, analyzing, syncing = false, fall
       <section className="mb-4 rounded-[10px] border border-[#1e2a3a] bg-[#111620] p-4">
         <div className="flex items-center gap-2 text-sm font-semibold text-[#e8edf5]">
           <Loader2 size={14} className="animate-spin text-[#00e676]" />
-          Calculating best setup...
+          {progress || 'Simulating setups…'}
         </div>
       </section>
     );
@@ -4773,6 +3978,7 @@ function BestSetupCard({ suggestion, liveSetup, analyzing, syncing = false, fall
               </div>
             )}
           </div>
+          <p className="mt-1 text-xs text-[#aebbd0]">The engine screens a limited set of lineups and tactics, then simulates finalists 5,000 times. The recommendation maximizes expected points; it is not an exhaustive search.</p>
           <div className="mt-1 font-['Barlow_Condensed'] text-[20px] font-black leading-none text-[#e8edf5]">
             {details.formation}{formationChanged && <span className="ml-2 rounded bg-[#ffcf66] px-1.5 py-0.5 align-middle font-sans text-[10px] font-bold text-[#241900]">CHANGE FORMATION</span>}
           </div>

@@ -8,8 +8,8 @@ test('completed matching simulation controls the headline and goals', () => {
   assert.equal(display.source, 'engine'); assert.equal(display.win, '14.4'); assert.equal(display.draw, '15.9');
   assert.equal(display.myxG, '1.04'); assert.equal(display.oppxG, '2.50');
 });
-test('stale, pending, missing or off-tab simulation never replaces the estimate', () => {
+test('stale, pending, missing or off-tab simulation never displays a quick estimate', () => {
   for (const [state, key, tab] of [[run,'match-b','matchup'], [{...run,status:'running'},'match-a','matchup'], [run,'match-a','season'], [{...run,results:[]},'match-a','matchup'], [{...run,results:[{key:'baseline',trials:5000}]},'match-a','matchup']]) {
-    assert.equal(selectMatchupDisplay(estimate,state,key,tab).source, 'estimate');
+    assert.equal(selectMatchupDisplay(estimate,state,key,tab).source, 'pending');
   }
 });
