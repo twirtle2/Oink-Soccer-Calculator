@@ -196,7 +196,7 @@ const main = () => {
         press: {
           low: { label: 'Low', controlFactor: 1.02, injuryFactor: 0.95, fatigueFactor: 1 },
           medium: { label: 'Medium', controlFactor: 1, injuryFactor: 1, fatigueFactor: 1 },
-          high: { label: 'High', controlFactor: 0.94, injuryFactor: 1.10, fatigueFactor: 0.94 },
+          high: { label: 'High', controlFactor: 0.94, injuryFactor: 1.10, fatigueFactor: 0.769033033 },
         },
         tempo: {
           slow: { label: 'Slow', chanceFactor: 0.92, qualityFactor: 1.05 },

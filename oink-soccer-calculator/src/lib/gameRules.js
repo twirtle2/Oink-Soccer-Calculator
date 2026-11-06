@@ -68,7 +68,9 @@ export const TACTICS = {
   press: {
     low: { label: 'Low', controlFactor: 1.02, injuryFactor: 0.95, fatigueFactor: 1.0 },
     medium: { label: 'Medium', controlFactor: 1.0, injuryFactor: 1.0, fatigueFactor: 1.0 },
-    high: { label: 'High', controlFactor: 0.94, injuryFactor: 1.10, fatigueFactor: 0.94 },
+    // The engine applies late-match fatigue by minute. This is the expectation
+    // over the official weighted minute distribution, not a flat 76th-minute value.
+    high: { label: 'High', controlFactor: 0.94, injuryFactor: 1.10, fatigueFactor: 0.769033033 },
   },
   tempo: {
     slow: { label: 'Slow', chanceFactor: 0.92, qualityFactor: 1.05 },
@@ -154,6 +156,32 @@ export const DR_DECAY = 0.97;
 export const DR_MIN = 0.35;
 export const DEFENSE_BIAS_MULTIPLIER = 1.05;
 export const OUT_OF_POSITION_SCALE = 0.85;
+
+// Chance types cannot repeat immediately. A plain normalized base-weight table
+// therefore over-represents Open Play. These are the stationary weights of the
+// engine's no-repeat Markov chain.
+const deriveChanceTypeWeights = () => {
+  const types = Object.keys(CHANCE_TYPES);
+  const totalBaseWeight = types.reduce((sum, type) => sum + CHANCE_TYPES[type].baseWeight, 0);
+  let weights = Object.fromEntries(types.map((type) => [type, 1 / types.length]));
+
+  for (let iteration = 0; iteration < 128; iteration += 1) {
+    const next = Object.fromEntries(types.map((type) => [type, 0]));
+    for (const current of types) {
+      const remainingWeight = totalBaseWeight - CHANCE_TYPES[current].baseWeight;
+      for (const nextType of types) {
+        if (nextType === current) continue;
+        next[nextType] += weights[current] * (CHANCE_TYPES[nextType].baseWeight / remainingWeight);
+      }
+    }
+    weights = next;
+  }
+
+  const total = types.reduce((sum, type) => sum + weights[type], 0);
+  return Object.fromEntries(types.map((type) => [type, weights[type] / total]));
+};
+
+export const CHANCE_TYPE_WEIGHTS = deriveChanceTypeWeights();
 
 const normalizeRangeMap = (ranges) =>
   Object.fromEntries(

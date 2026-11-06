@@ -4,13 +4,15 @@ Static, wallet-aware Oink Soccer calculator hosted on GitHub Pages.
 
 ## Features
 
-- Connect Pera, Defly, and Kibisis wallets via `@txnlab/use-wallet-react`.
+- Connect Pera, Defly, and Kibisis wallets via the `@txnlab/use-wallet` v5 adapters.
 - Sync playable assets from connected MainNet wallets.
 - Import opponent lineup from Lost Pigs opponent team URL.
 - Run formation/boost simulation with local persistent state (`oink-soccer-calc:v2`).
 - Display active season dynamically from catalog metadata.
 
 ## Local Development
+
+Requires Node.js 22 or newer.
 
 ```bash
 npm install
