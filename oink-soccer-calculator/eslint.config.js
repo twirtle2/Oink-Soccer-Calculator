@@ -5,7 +5,7 @@ import reactRefresh from 'eslint-plugin-react-refresh';
 
 export default [
   {
-    ignores: ['dist'],
+    ignores: ['dist', 'public/engine/wasm_exec.js'],
   },
   {
     ...js.configs.recommended,

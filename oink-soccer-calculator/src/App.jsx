@@ -1,3 +1,4 @@
+import { engineBoosts, engineLineup } from './lib/engineSimulation.js';
 import { compareOutcomes } from './lib/itemComparison.js';
 import { getFixtureBoostState } from './lib/fixtureBoosts.js';
 import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
@@ -2674,6 +2675,50 @@ export default function OinkSoccerCalc() {
     return { baseline, items, effectiveness, knownEffectiveness };
   }, [selectedFixture, effectiveMyTeam, opponentTeam, importingTeamUrl, autoAnalyzing, topSuggestion, myForm, myTactics, oppStats, oppForm, oppTactics, homeAdvantage, mySimulationBoostContext, myBoostState, heldItems]);
 
+  const simulationWorkerRef = useRef(null);
+  const [engineSimulation, setEngineSimulation] = useState({ status: 'idle', fingerprint: '', results: [], error: '' });
+  useEffect(() => () => simulationWorkerRef.current?.terminate(), []);
+
+  const engineRequest = useMemo(() => {
+    if (!selectedFixture || selectedFixture.game_result || effectiveMyTeam.length < 5 || opponentTeam.length < 5 || importingTeamUrl || autoAnalyzing) return null;
+    const formation = topSuggestion?.formation || myForm;
+    const tactics = topSuggestion?.tactics || myTactics;
+    const myPlayers = assignLineupPositions(topSuggestion?.lineup || effectiveMyTeam, FORMATIONS[formation].structure);
+    const opponents = assignLineupPositions(opponentTeam, FORMATIONS[oppForm].structure);
+    const myBoosts = engineBoosts(mySimulationBoostContext, DR_DECAY, DR_MIN);
+    const opponentBoosts = engineBoosts(oppBoostContext, DR_DECAY, DR_MIN);
+    const myLineup = engineLineup(myPlayers, formation, tactics, myBoosts);
+    const opponentLineup = engineLineup(opponents, oppForm, oppTactics, opponentBoosts);
+    const myHome = homeAdvantage === 'home';
+    const effectiveness = myBoostState.source === 'live' && myBoostState.effectivenessPct != null && Number.isFinite(Number(myBoostState.effectivenessPct)) ? Number(myBoostState.effectivenessPct) : 100;
+    const scenarios = [{ key: 'baseline', boosts: myBoosts }, ...getHeldPerformanceItems(heldItems).map((item) => ({
+      key: item.boostKey, boosts: engineBoosts(createPlannedItemBoostState({ boostKey: item.boostKey, effectivenessPct: effectiveness }), DR_DECAY, DR_MIN),
+    }))];
+    return { home: myHome ? myLineup : opponentLineup, away: myHome ? opponentLineup : myLineup, myHome, trials: 5000, seed: 1729, scenarios };
+  }, [selectedFixture, effectiveMyTeam, opponentTeam, importingTeamUrl, autoAnalyzing, topSuggestion, myForm, myTactics, mySimulationBoostContext, oppBoostContext, oppForm, oppTactics, homeAdvantage, myBoostState, heldItems]);
+  const engineFingerprint = engineRequest ? JSON.stringify(engineRequest) : '';
+  const runEngineSimulation = () => {
+    if (!engineRequest) return;
+    simulationWorkerRef.current?.terminate();
+    const worker = new Worker(new URL('./lib/simulationWorker.js', import.meta.url), { type: 'module' });
+    simulationWorkerRef.current = worker;
+    setEngineSimulation({ status: 'running', fingerprint: engineFingerprint, results: [], error: '' });
+    worker.onmessage = ({ data }) => {
+      if (simulationWorkerRef.current !== worker) return;
+      setEngineSimulation({ status: data.error ? 'error' : 'done', fingerprint: engineFingerprint, results: data.results || [], error: data.error || '' });
+      worker.terminate();
+      simulationWorkerRef.current = null;
+    };
+    worker.onerror = () => {
+      if (simulationWorkerRef.current !== worker) return;
+      setEngineSimulation({ status: 'error', fingerprint: engineFingerprint, results: [], error: 'Could not run the game engine. Try again.' });
+      worker.terminate();
+      simulationWorkerRef.current = null;
+    };
+    worker.postMessage({ baseUrl: new URL(import.meta.env.BASE_URL, window.location.href).href, request: engineRequest });
+  };
+  const currentEngineSimulation = engineSimulation.fingerprint === engineFingerprint ? engineSimulation : { status: 'idle', results: [], error: '' };
+
   const opponentPitchSuggestion = useMemo(() => {
     if (opponentTeam.length === 0 || !FORMATIONS[oppForm]) return null;
     return {
@@ -4122,6 +4167,24 @@ export default function OinkSoccerCalc() {
                 )}
                 {importedOpponentTeamId && oppBoostState.fetchError && <p className="mt-2 text-xs text-[#ffcf66]">Opponent item check failed; the matchup assumes no boost. Refresh the fixture to retry.</p>}
                 {importedOpponentTeamId && oppBoostState.source === 'live' && selectedFixture && <p className="mt-2 text-xs text-[#aebbd0]">Opponent: {oppBoostState.boosts.length} active boost(s), {formatNumber(oppBoostState.effectivenessPct)}% current effectiveness; {oppBoostContext.boosts.length} confirmed to cover this fixture. Unknown expiry times are excluded.</p>}
+                {selectedFixture && !selectedFixture.game_result && <div className="mt-3 border-t border-[#253040] pt-3 text-xs text-[#c7d0df]">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div className="font-semibold text-[#e8edf5]">Game engine simulations</div>
+                    <button type="button" onClick={runEngineSimulation} disabled={!engineRequest || currentEngineSimulation.status === 'running'} className="rounded border border-[#00e676]/50 px-3 py-2 font-semibold text-[#9af7cb] disabled:cursor-not-allowed disabled:opacity-50">{currentEngineSimulation.status === 'running' ? 'Simulating…' : 'Run 5,000 matches'}</button>
+                  </div>
+                  <p className="mt-1 text-[#aebbd0]">Runs the pinned public v2 engine on your device using {topSuggestion ? 'the recommended setup' : 'the current setup'}, current injuries and known fixture boosts. Each held item replaces your current boost for comparison.</p>
+                  {currentEngineSimulation.status === 'error' && <p role="alert" className="mt-2 text-[#ff9e9e]">{currentEngineSimulation.error}</p>}
+                  {currentEngineSimulation.status === 'done' && currentEngineSimulation.results.map((result, index, rows) => {
+                    const base = rows[0];
+                    const win = 100 * result.wins / result.trials;
+                    const draw = 100 * result.draws / result.trials;
+                    const point = win + draw;
+                    const basePoint = 100 * (base.wins + base.draws) / base.trials;
+                    const item = getHeldPerformanceItems(heldItems).find((entry) => entry.boostKey === result.key);
+                    return <div key={result.key} className="mt-2 rounded-md bg-[#111620] p-2.5"><div className="font-semibold text-[#e8edf5]">{index === 0 ? 'Current boost state' : item?.label || result.key}</div><div className="mt-1">Win {formatNumber(win)}% · Draw {formatNumber(draw)}% · Win or draw {formatNumber(point)}%{index > 0 ? ` (${point >= basePoint ? '+' : ''}${formatNumber(point - basePoint)} percentage points)` : ''}</div></div>;
+                  })}
+                  {currentEngineSimulation.status === 'done' && <p className="mt-2 text-[#aebbd0]">Sample estimates use a fixed seed. Future lineup changes, unknown boosts and item expiry are not predicted; effectiveness is based on current data (100% assumed if unavailable).</p>}
+                </div>}
                 {matchupItemComparisons?.items.length > 0 && <div className="mt-3 border-t border-[#253040] pt-3 text-xs text-[#c7d0df]">
                   <div className="font-semibold text-[#e8edf5]">Held item impact · {topSuggestion ? 'recommended setup' : 'current setup'}</div>
                   {matchupItemComparisons.items.map((item) => {
