@@ -1,6 +1,6 @@
 import { compareSetup } from './lib/setupChanges.js';
 import { engineBoosts, engineLineup } from './lib/engineSimulation.js';
-import { compareOutcomes } from './lib/itemComparison.js';
+import { selectMatchupDisplay } from './lib/simulationDisplay.js';
 import { getFixtureBoostState } from './lib/fixtureBoosts.js';
 import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { Plus, Trash2, Users, Zap, Activity, Pencil, Save, RotateCcw, Loader2, Bandage, X, TrendingUp, ChevronDown, ChevronUp, ChevronLeft, ChevronRight, RefreshCw, Info } from 'lucide-react';
@@ -2618,66 +2618,6 @@ export default function OinkSoccerCalc() {
 
   const catalogOutOfDate = Boolean(gameCounter?.season && catalogSeason && Number(gameCounter.season) !== Number(catalogSeason));
 
-  const headlineProjection = topSuggestion
-    ? {
-      label: 'Best setup · estimated win',
-      win: formatNumber(topSuggestion.win),
-      draw: formatNumber(topSuggestion.draw),
-      loss: formatNumber(topSuggestion.loss),
-      myxG: formatNumber(topSuggestion.myxG, 2),
-      oppxG: formatNumber(topSuggestion.oppxG, 2),
-    }
-    : {
-      label: 'Current setup · estimated win',
-      win: simulation.win,
-      draw: simulation.draw,
-      loss: simulation.loss,
-      myxG: simulation.myxG,
-      oppxG: simulation.oppxG,
-    };
-
-  const winPct = Number.parseFloat(headlineProjection.win) || 0;
-  const fallbackOutcome = getPoissonOutcomePercentages(
-    Number(headlineProjection.myxG),
-    Number(headlineProjection.oppxG),
-  );
-  const forecastWin = Number(Number.isFinite(winPct) ? winPct : fallbackOutcome.win);
-  const forecastDraw = Number(
-    Number.isFinite(Number.parseFloat(headlineProjection.draw))
-      ? headlineProjection.draw
-      : fallbackOutcome.draw,
-  );
-  const forecastLoss = Number(
-    Number.isFinite(Number.parseFloat(headlineProjection.loss))
-      ? headlineProjection.loss
-      : fallbackOutcome.loss,
-  );
-  const hasLineups = effectiveMyTeam.length > 0 && opponentTeam.length > 0;
-  const displayedWin = hasLineups ? `${headlineProjection.win}%` : '--';
-  const displayedForecastWin = hasLineups ? forecastWin : 0;
-  const displayedForecastDraw = hasLineups ? forecastDraw : 0;
-  const displayedForecastLoss = hasLineups ? forecastLoss : 0;
-
-  const matchupItemComparisons = useMemo(() => {
-    if (!selectedFixture || selectedFixture.game_result || effectiveMyTeam.length < 5 || opponentTeam.length < 5 || importingTeamUrl || autoAnalyzing) return null;
-    const lineup = topSuggestion?.lineup || effectiveMyTeam;
-    const formation = topSuggestion?.formation || myForm;
-    const tactics = topSuggestion?.tactics || myTactics;
-    const project = (boost) => projectMatch({
-      myStats: calculateTeamScores(lineup, formation, boost, tactics), myForm: formation, myTactics: tactics,
-      oppStats, oppForm, oppTactics, homeAdvantage,
-    });
-    const baseline = project(mySimulationBoostContext);
-    const knownEffectiveness = myBoostState.source === 'live' && Number.isFinite(Number(myBoostState.effectivenessPct));
-    const effectiveness = knownEffectiveness ? Number(myBoostState.effectivenessPct) : 100;
-    const items = getHeldPerformanceItems(heldItems).map((item) => ({
-      ...item,
-      outcome: project(createPlannedItemBoostState({ boostKey: item.boostKey, effectivenessPct: effectiveness })),
-    }));
-    items.sort((a, b) => (a.boostKey === 'GoldenTruffle' ? -1 : 0) - (b.boostKey === 'GoldenTruffle' ? -1 : 0));
-    return { baseline, items, effectiveness, knownEffectiveness };
-  }, [selectedFixture, effectiveMyTeam, opponentTeam, importingTeamUrl, autoAnalyzing, topSuggestion, myForm, myTactics, oppStats, oppForm, oppTactics, homeAdvantage, mySimulationBoostContext, myBoostState, heldItems]);
-
   const simulationWorkerRef = useRef(null);
   const [engineSimulation, setEngineSimulation] = useState({ status: 'idle', fingerprint: '', results: [], error: '' });
   useEffect(() => () => simulationWorkerRef.current?.terminate(), []);
@@ -2721,6 +2661,48 @@ export default function OinkSoccerCalc() {
     worker.postMessage({ baseUrl: new URL(import.meta.env.BASE_URL, window.location.href).href, request: engineRequest });
   };
   const currentEngineSimulation = engineSimulation.fingerprint === engineFingerprint ? engineSimulation : { status: 'idle', results: [], error: '' };
+
+  const quickHeadlineProjection = topSuggestion
+    ? {
+      label: 'Best setup · estimated win',
+      win: formatNumber(topSuggestion.win),
+      draw: formatNumber(topSuggestion.draw),
+      loss: formatNumber(topSuggestion.loss),
+      myxG: formatNumber(topSuggestion.myxG, 2),
+      oppxG: formatNumber(topSuggestion.oppxG, 2),
+    }
+    : {
+      label: 'Current setup · estimated win',
+      win: simulation.win,
+      draw: simulation.draw,
+      loss: simulation.loss,
+      myxG: simulation.myxG,
+      oppxG: simulation.oppxG,
+    };
+
+  const headlineProjection = selectMatchupDisplay(quickHeadlineProjection, currentEngineSimulation, engineFingerprint, activeTab);
+  const winPct = Number.parseFloat(headlineProjection.win) || 0;
+  const fallbackOutcome = getPoissonOutcomePercentages(
+    Number(headlineProjection.myxG),
+    Number(headlineProjection.oppxG),
+  );
+  const forecastWin = Number(Number.isFinite(winPct) ? winPct : fallbackOutcome.win);
+  const forecastDraw = Number(
+    Number.isFinite(Number.parseFloat(headlineProjection.draw))
+      ? headlineProjection.draw
+      : fallbackOutcome.draw,
+  );
+  const forecastLoss = Number(
+    Number.isFinite(Number.parseFloat(headlineProjection.loss))
+      ? headlineProjection.loss
+      : fallbackOutcome.loss,
+  );
+  const hasLineups = effectiveMyTeam.length > 0 && opponentTeam.length > 0;
+  const displayedWin = hasLineups ? `${headlineProjection.win}%` : '--';
+  const displayedForecastWin = hasLineups ? forecastWin : 0;
+  const displayedForecastDraw = hasLineups ? forecastDraw : 0;
+  const displayedForecastLoss = hasLineups ? forecastLoss : 0;
+
 
   const opponentPitchSuggestion = useMemo(() => {
     if (opponentTeam.length === 0 || !FORMATIONS[oppForm]) return null;
@@ -3810,7 +3792,7 @@ export default function OinkSoccerCalc() {
           <div>
             <div className="text-[10px] font-bold uppercase tracking-[0.14em] text-[#6b7a94]">{headlineProjection.label}</div>
             <div className="font-['Barlow_Condensed'] text-[32px] font-black leading-none text-[#00e676] lg:text-[36px]">{displayedWin}</div>
-            <div className="text-[11px] text-[#6b7a94]">Model estimate from {(Number(headlineProjection.myxG) + Number(headlineProjection.oppxG)).toFixed(2)} expected goals; not an engine simulation</div>
+            <div className="text-[11px] text-[#6b7a94]">{headlineProjection.source === 'engine' ? `Based on ${headlineProjection.trials.toLocaleString()} simulated matches; goals are match averages.` : 'Quick estimate; run simulations for game-engine results.'}</div>
           </div>
 
           <div className="grid grid-cols-[1fr_auto_1fr] items-end gap-2">
@@ -4186,22 +4168,7 @@ export default function OinkSoccerCalc() {
                     const item = getHeldPerformanceItems(heldItems).find((entry) => entry.boostKey === result.key);
                     return <div key={result.key} className="mt-2 rounded-md bg-[#111620] p-2.5"><div className="font-semibold text-[#e8edf5]">{index === 0 ? 'Current boost state' : item?.label || result.key}</div><div className="mt-1">Win {formatNumber(win)}% · Draw {formatNumber(draw)}% · Win or draw {formatNumber(point)}%{index > 0 ? ` (${point >= basePoint ? '+' : ''}${formatNumber(point - basePoint)} percentage points)` : ''}</div></div>;
                   })}
-                  {currentEngineSimulation.status === 'done' && <p className="mt-2 text-[#aebbd0]">Sample estimates use a fixed seed. Future lineup changes, unknown boosts and item expiry are not predicted; effectiveness is based on current data (100% assumed if unavailable).</p>}
-                </div>}
-                {matchupItemComparisons?.items.length > 0 && <div className="mt-3 border-t border-[#253040] pt-3 text-xs text-[#c7d0df]">
-                  <div className="font-semibold text-[#e8edf5]">Quick item estimate · {topSuggestion ? 'recommended setup' : 'current setup'}</div>
-                  {matchupItemComparisons.items.map((item) => {
-                    const before = matchupItemComparisons.baseline;
-                    const after = item.outcome;
-                    const comparison = compareOutcomes(before, after);
-                    return <div key={item.key} className="mt-2 rounded-md bg-[#111620] p-2.5">
-                      <div className="font-semibold text-[#ffcf66]">{item.label} · {item.count} held</div>
-                      <div className="mt-1">Win {formatNumber(before.win)}% → {formatNumber(after.win)}% ({comparison.winDelta >= 0 ? '+' : ''}{formatNumber(comparison.winDelta)} pp) · Draw {formatNumber(before.draw)}% → {formatNumber(after.draw)}% ({comparison.drawDelta >= 0 ? '+' : ''}{formatNumber(comparison.drawDelta)} pp)</div>
-                      <div className="mt-1 font-semibold text-[#9af7cb]">Win or draw {formatNumber(comparison.pointBefore)}% → {formatNumber(comparison.pointAfter)}% ({comparison.pointDelta >= 0 ? '+' : ''}{formatNumber(comparison.pointDelta)} percentage points)</div>
-                    </div>;
-                  })}
-                  <p className="mt-2 text-[#aebbd0]">Estimated from the current lineup and opponent boost, using {formatNumber(matchupItemComparisons.effectiveness)}% {matchupItemComparisons.knownEffectiveness ? 'current' : 'assumed'} effectiveness. Item scenario replaces any current boost; it assumes the item covers kickoff. This quick estimate remains an approximation; use the game-engine simulation above for the item comparison.</p>
-                  {itemCooldownEndTime && <p className="mt-1 text-[#ffcf66]">Item cooldown ends {formatFixtureTime(itemCooldownEndTime)}; check timing before use.</p>}
+                  {currentEngineSimulation.status === 'done' && <p className="mt-2 text-[#aebbd0]">These simulation results replace the quick matchup estimate above. Sample estimates use a fixed seed. Future lineup changes, unknown boosts and item expiry are not predicted; effectiveness is based on current data (100% assumed if unavailable).</p>}
                 </div>}
               </div>
 
