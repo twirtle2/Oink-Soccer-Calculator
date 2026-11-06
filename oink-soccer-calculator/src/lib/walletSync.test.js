@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { applyLiveLineupInjuries } from './walletSync.js';
+import { applyLiveLineupInjuries, applyLivePlayerDetails } from './walletSync.js';
 
 test('applyLiveLineupInjuries overlays live injuries onto matching wallet players', () => {
   const squad = [
@@ -67,4 +67,14 @@ test('applyLiveLineupInjuries preserves the original array when nothing changes'
   ]);
 
   assert.equal(nextSquad, squad);
+});
+
+test('live current-season bench details replace stale wallet ratings and eligible positions', () => {
+  const old = [{ id: 'asset:459490430', source: 'wallet', assetId: '459490430', pos: 'MF', positions: ['MF'], stats: { ATT: 82 }, role: 'target_man' }];
+  const live = [{ assetId: '459490430', name: 'M. Depay', pos: 'MF', positions: ['MF', 'FW'], stats: { ATT: 83 }, ovr: 85 }];
+  const updated = applyLivePlayerDetails(old, live);
+  assert.deepEqual(updated[0].positions, ['MF', 'FW']);
+  assert.equal(updated[0].stats.ATT, 83);
+  assert.equal(updated[0].role, 'target_man');
+  assert.equal(updated[0].id, 'asset:459490430');
 });

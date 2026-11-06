@@ -204,7 +204,7 @@ const mapTeamPayloadToPlayers = (teamId, payload) => {
     .filter(([, value]) => value && value.player_attributes)
     .sort((a, b) => Number(a[0]) - Number(b[0]));
 
-  const players = slotEntries.map(([slotKey, slot], index) => {
+  const mapPlayer = ([slotKey, slot], index) => {
     const attrs = slot.player_attributes || {};
     const stats = {
       SPD: clampStat(attrs.speed_rating, 50),
@@ -260,7 +260,11 @@ const mapTeamPayloadToPlayers = (teamId, payload) => {
         ? attrs.positions.map(p => getPositionKey(p, stats))
         : [pos],
     };
-  });
+  };
+  const players = slotEntries.map(mapPlayer);
+  const bench = (Array.isArray(payload?.team_selection?.not_selected) ? payload.team_selection.not_selected : [])
+    .filter((slot) => slot?.player_attributes)
+    .map((slot, index) => mapPlayer([`bench-${index}`, slot], index));
 
   const teamLabel = payload?.team?.custom_name || payload?.team?.id || teamId;
   const lineupPlayers = players.length > 0
@@ -276,7 +280,14 @@ const mapTeamPayloadToPlayers = (teamId, payload) => {
     formationLabel,
     formationKey,
     isDefaultLineup,
+    tactics: payload?.team?.tactics ? {
+      press: String(payload.team.tactics.Press || 'medium').toLowerCase(),
+      tempo: String(payload.team.tactics.Tempo || 'normal').toLowerCase(),
+      lineHeight: String(payload.team.tactics.LineHeight || 'normal').toLowerCase(),
+      setPieceTaker: lineupPlayers.find((player) => player.assetKey === payload.team.tactics.SetPieceTaker)?.id || '',
+    } : null,
     players: lineupPlayers,
+    availablePlayers: [...lineupPlayers, ...bench],
   };
 };
 
@@ -698,6 +709,16 @@ export const fetchTeamSeasonFixtures = async ({ teamId, leagueId, season }) => {
     });
 
   return annotateCupByesAfterElimination(fixtures, normalizedTeamId);
+};
+
+export const fetchLeagueSeasonStats = async (leagueId, season) => {
+  const payload = await fetchJsonOrThrow(`/soccer/league/${encodeURIComponent(String(leagueId))}/season/${encodeURIComponent(String(season))}/team-stats`);
+  return Array.isArray(payload?.stats) ? payload.stats : [];
+};
+
+export const fetchHistoricalLeagueTable = async (leagueId, season) => {
+  const payload = await fetchJsonOrThrow(`/soccer/league/${encodeURIComponent(String(leagueId))}/season/${encodeURIComponent(String(season))}/table`);
+  return Array.isArray(payload?.rows) ? payload.rows : [];
 };
 
 export const fetchLeagueTableTeams = async (leagueId) => {

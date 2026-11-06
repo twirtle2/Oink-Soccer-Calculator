@@ -126,3 +126,18 @@ export const applyLiveLineupInjuries = (players, liveLineupPlayers = []) => {
 
   return changed ? nextPlayers : players;
 };
+
+// Prefer the current team API's assigned attributes over reconstructed CSV data.
+export const applyLivePlayerDetails = (players, livePlayers = []) => {
+  const liveByAssetId = new Map(livePlayers.map((player) => [getPlayerAssetId(player), player]).filter(([id]) => id));
+  let changed = false;
+  const result = players.map((player) => {
+    const live = liveByAssetId.get(getPlayerAssetId(player));
+    if (!live || player.source !== 'wallet') return player;
+    const details = { stats: live.stats, pos: live.pos, positions: live.positions, ovr: live.ovr, playerName: live.name, injury: live.injury || null, injuryDetails: live.injuryDetails || null };
+    if (Object.keys(details).every((key) => JSON.stringify(player[key] ?? null) === JSON.stringify(details[key] ?? null))) return player;
+    changed = true;
+    return { ...player, ...details };
+  });
+  return changed ? result : players;
+};

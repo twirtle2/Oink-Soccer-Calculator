@@ -97,9 +97,9 @@ const toInt = (value, fallback = 0) => {
 const avgInt = (values, fallback = 0) => {
   const parsed = values
     .map((value) => toInt(value, Number.NaN))
-    .filter((value) => Number.isFinite(value));
+    .filter((value) => Number.isFinite(value) && value > 0);
   if (parsed.length === 0) return fallback;
-  return Math.round(parsed.reduce((sum, value) => sum + value, 0) / parsed.length);
+  return Math.floor(parsed.reduce((sum, value) => sum + value, 0) / parsed.length);
 };
 
 const mapPosition = (value) => {
@@ -200,6 +200,8 @@ const main = () => {
     }
 
     const pos = getPreferredPosition(fifaRow);
+    const positions = [...new Set([fifaRow.club_position, ...(fifaRow.player_positions || '').split(',')].map(mapPosition).filter(Boolean))];
+    if (positions.length === 0) positions.push(pos);
     const stats = getStats(fifaRow, pos);
     const ovr = getOvr(fifaRow, stats, pos);
 
@@ -210,6 +212,7 @@ const main = () => {
       fifaPlayerId,
       playerName: row.player_name || fifaRow.short_name,
       pos,
+      positions,
       stats,
       ovr,
       season,

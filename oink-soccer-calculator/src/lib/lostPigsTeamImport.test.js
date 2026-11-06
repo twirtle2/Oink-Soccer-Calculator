@@ -6,6 +6,8 @@ import {
   fetchGameCounter,
   fetchLeagueRoundFixtures,
   fetchLeagueSeasonFixtures,
+  fetchLeagueSeasonStats,
+  fetchHistoricalLeagueTable,
   fetchSeasonTournamentFixtures,
   fetchTeamSeasonFixtures,
   fetchTeamLineup,
@@ -689,5 +691,42 @@ test('fetchTeamBoostState combines active boosts with effectiveness', async () =
     assert.equal(state.boosts.length, 1);
     assert.equal(state.fetchError, null);
     assert.equal(calls.length, 3);
+  });
+});
+
+test('fetches item history and historical league tables from season endpoints', async () => {
+  await withMockedFetch(async (url) => {
+    if (String(url).endsWith('/team-stats')) return okResponse({ stats: [{ team_id: 'team', items_used: { SOCCER_ITEM_GOLDEN_TRUFFLE: 4 } }] });
+    assert.match(String(url), /\/soccer\/league\/1\/season\/17\/table$/);
+    return okResponse({ rows: [{ points: 68 }] });
+  }, async () => {
+    assert.equal((await fetchLeagueSeasonStats(1, 18))[0].items_used.SOCCER_ITEM_GOLDEN_TRUFFLE, 4);
+    assert.equal((await fetchHistoricalLeagueTable(1, 17))[0].points, 68);
+  });
+});
+
+test('imports opponent tactics and resolves the set-piece player', async () => {
+  await withMockedFetch(async () => okResponse({
+    team: { id: 'AlgorandAsset:123', formation: 'The Pyramid', tactics: { Press: 'high', Tempo: 'slow', LineHeight: 'deep', SetPieceTaker: 'Algorand:456' } },
+    team_selection: { slots: { 1: { asset: { id: 'Algorand:456', name: 'Taker' }, player_attributes: { position: 'Midfield', control_rating: 80 } } } },
+  }), async () => {
+    const result = await fetchTeamLineup('AlgorandAsset:123');
+    assert.equal(result.tactics.press, 'high');
+    assert.equal(result.tactics.tempo, 'slow');
+    assert.equal(result.tactics.lineHeight, 'deep');
+    assert.equal(result.tactics.setPieceTaker, result.players[0].id);
+  });
+});
+
+test('team import exposes eligible bench players without adding them to the selected lineup', async () => {
+  await withMockedFetch(async () => okResponse({ team: { id: 'AlgorandAsset:123', formation: 'The Pyramid' }, team_selection: {
+    slots: { 1: { asset: { id: 'Algorand:1' }, player_attributes: { position: 'Goalkeeper' } } },
+    not_selected: [{ asset: { id: 'Algorand:459490430' }, player_attributes: { position: 'Midfield', positions: ['Midfield', 'Attack'], attack_rating: 83 } }],
+  } }), async () => {
+    const result = await fetchTeamLineup('AlgorandAsset:123');
+    assert.equal(result.players.length, 1);
+    assert.equal(result.availablePlayers.length, 2);
+    assert.deepEqual(result.availablePlayers[1].positions, ['MF', 'FW']);
+    assert.equal(result.availablePlayers[1].stats.ATT, 83);
   });
 });
