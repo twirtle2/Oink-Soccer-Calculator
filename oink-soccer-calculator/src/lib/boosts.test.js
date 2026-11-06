@@ -5,6 +5,7 @@ import { DR_DECAY, DR_MIN } from './gameRules.js';
 import {
   createManualFallbackBoostState,
   getBoostMultipliersFromState,
+  getScoreBoostMultipliers,
 } from './boosts.js';
 
 const teamBoostEntry = (minBoost, maxBoost, applications = 0) => ({
@@ -111,4 +112,22 @@ test('manual fallback maps legacy boost keys into normalized boost entries', () 
 
   assert.equal(truffle.boosts[0].boost.boost_type, 'Team Boost');
   assert.equal(truffle.boosts[0].boost.applications, 2);
+});
+
+test('engine score multipliers separate team and position effects after player scoring', () => {
+  const state = { source: 'live', effectivenessPct: 100, boosts: [teamBoostEntry(1.05, 1.05), positionBoostEntry('Midfield', 1.07, 1.07)] };
+  const multipliers = getScoreBoostMultipliers(state);
+  assert.equal(multipliers.team, 1.05);
+  assert.equal(multipliers.positions.MF, 1.07);
+  assert.equal(multipliers.positions.FW, 1);
+});
+
+
+test('positional effects target a position without altering other positions', () => {
+  const state = { source: 'live', effectivenessPct: 50, boosts: [positionBoostEntry('Midfield', 1.10, 1.10), positionBoostEntry('Defense', 1.04, 1.04)] };
+  const scores = getScoreBoostMultipliers(state);
+  assert.equal(scores.team, 1);
+  assert.equal(scores.positions.MF, 1.05);
+  assert.equal(scores.positions.DF, 1.02);
+  assert.equal(scores.positions.FW, 1);
 });

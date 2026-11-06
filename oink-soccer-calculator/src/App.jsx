@@ -32,7 +32,7 @@ import {
 import {
   createEmptyTeamBoostState,
   createManualFallbackBoostState,
-  getBoostMultipliersFromState,
+  getScoreBoostMultipliers,
 } from './lib/boosts';
 import {
   getExpectedPointsFromOutcomePercentages,
@@ -317,7 +317,7 @@ const cornerDeliveryFactor = (assignedPlayers, tacticsInput) => {
   return Math.max(0.80, Math.min(1.20, 1 + ((technique - 60) / 100) * 0.40));
 };
 
-const expectedChanceAttack = (assignedPlayers, tacticsInput) => {
+const expectedChanceAttack = (assignedPlayers, tacticsInput, positionBoosts = {}) => {
   const tactics = normalizeTactics(tacticsInput);
   const byChanceType = {};
   let totalWeightedAttack = 0;
@@ -342,7 +342,7 @@ const expectedChanceAttack = (assignedPlayers, tacticsInput) => {
       const score = getAttackScoreForChance(player.stats, chanceType, injuryMod * positionMod * selfMod);
       const roleWeight = player.role === PLAYER_ROLES.targetMan.value && ['Corner', 'Cross'].includes(chanceType) ? 2 : 1;
       const weight = posWeight * Math.max(1, score) * roleWeight;
-      attackerScore += score * weight;
+      attackerScore += score * (positionBoosts[player.selectedPosition || player.pos] || 1) * weight;
       attackerWeight += weight;
     }
 
@@ -375,7 +375,7 @@ const calculateTeamScores = (
     defSolidity: 1,
   };
   const tactics = normalizeTactics(tacticsInput);
-  const boostMults = getBoostMultipliersFromState(boostContext);
+  const scoreBoosts = getScoreBoostMultipliers(boostContext);
 
   const stats = {
     Control: 0, Defense: 0, Attack: 0,
@@ -398,29 +398,31 @@ const calculateTeamScores = (
   const rawControl = rolePositionAverage(
     assignedPlayers,
     POSITION_WEIGHTS.control,
-    (player) => getControlScore(player.stats, player.selectedPosition, getPlayerMod(player), boostMults, tactics),
+    (player) => getControlScore(player.stats, player.selectedPosition, getPlayerMod(player), {}, tactics) * (scoreBoosts.positions[player.selectedPosition] || 1),
     { [PLAYER_ROLES.playmaker.value]: 2 },
   );
 
   const rawDefense = rolePositionAverage(
     assignedPlayers,
     POSITION_WEIGHTS.defense,
-    (player) => getDefenseScore(player.stats, player.selectedPosition, getPlayerMod(player), boostMults, tactics),
+    (player) => getDefenseScore(player.stats, player.selectedPosition, getPlayerMod(player), {}, tactics) * (scoreBoosts.positions[player.selectedPosition] || 1),
     { [PLAYER_ROLES.ballWinner.value]: 2 },
   );
 
   stats.Control = rawControl
+    * scoreBoosts.team
     * profile.possession
     * teamCaptainBoost;
 
   stats.Defense = rawDefense
+    * scoreBoosts.team
     * profile.defSolidity
     * (TACTICS.lineHeight[tactics.lineHeight]?.defenseFactor || 1)
     * teamCaptainBoost
     * DEFENSE_BIAS_MULTIPLIER;
 
-  const chanceAttack = expectedChanceAttack(assignedPlayers, tactics);
-  const attackModifiers = profile.chanceCreation
+  const chanceAttack = expectedChanceAttack(assignedPlayers, tactics, scoreBoosts.positions);
+  const attackModifiers = scoreBoosts.team * profile.chanceCreation
     * profile.chanceQuality
     * (TACTICS.tempo[tactics.tempo]?.qualityFactor || 1)
     * (TACTICS.press[tactics.press]?.fatigueFactor || 1);
@@ -634,12 +636,12 @@ const getSelectionFitSummary = ({
   if (!player) return '';
 
   const stats = player.stats || {};
-  const boostMults = getBoostMultipliersFromState(boostContext);
+  const scoreBoosts = getScoreBoostMultipliers(boostContext);
   const pressLabel = TACTICS.press[normalizeTactics(tactics).press]?.label || 'Current';
   const workRate = Math.round(getStat(stats, 'WRT', 'SPD'));
-  const controlRaw = getRawControlScore(stats, boostMults, tactics);
+  const controlRaw = getRawControlScore(stats, {}, tactics);
   const alternativeControlRaw = strongestAlternativePlayer
-    ? getRawControlScore(strongestAlternativePlayer.stats, boostMults, tactics)
+    ? getRawControlScore(strongestAlternativePlayer.stats, {}, tactics)
     : null;
   const controlComparison = strongestAlternativePlayer
     ? ` vs ${alternativeControlRaw} for ${strongestAlternativePlayer.name}`
@@ -660,7 +662,7 @@ const getSelectionFitSummary = ({
   if (player.role === PLAYER_ROLES.ballWinner.value) {
     const defense = Math.round(getStat(stats, 'DEF', 'CTL'));
     const tackling = Math.round(getStat(stats, 'TCK', 'DEF'));
-    const defenseScore = formatNumber(getDefenseScore(stats, selectedPosition, 1, boostMults, tactics), 1);
+    const defenseScore = formatNumber(getDefenseScore(stats, selectedPosition, 1, {}, tactics) * scoreBoosts.team * (scoreBoosts.positions[selectedPosition] || 1), 1);
     return `Ball Winner fit: DEF ${defense}, TCK ${tackling}; defense score ${defenseScore}.`;
   }
 
@@ -4187,7 +4189,7 @@ export default function OinkSoccerCalc() {
                   {currentEngineSimulation.status === 'done' && <p className="mt-2 text-[#aebbd0]">Sample estimates use a fixed seed. Future lineup changes, unknown boosts and item expiry are not predicted; effectiveness is based on current data (100% assumed if unavailable).</p>}
                 </div>}
                 {matchupItemComparisons?.items.length > 0 && <div className="mt-3 border-t border-[#253040] pt-3 text-xs text-[#c7d0df]">
-                  <div className="font-semibold text-[#e8edf5]">Held item impact · {topSuggestion ? 'recommended setup' : 'current setup'}</div>
+                  <div className="font-semibold text-[#e8edf5]">Quick item estimate · {topSuggestion ? 'recommended setup' : 'current setup'}</div>
                   {matchupItemComparisons.items.map((item) => {
                     const before = matchupItemComparisons.baseline;
                     const after = item.outcome;
@@ -4198,7 +4200,7 @@ export default function OinkSoccerCalc() {
                       <div className="mt-1 font-semibold text-[#9af7cb]">Win or draw {formatNumber(comparison.pointBefore)}% → {formatNumber(comparison.pointAfter)}% ({comparison.pointDelta >= 0 ? '+' : ''}{formatNumber(comparison.pointDelta)} percentage points)</div>
                     </div>;
                   })}
-                  <p className="mt-2 text-[#aebbd0]">Estimated from the current lineup and opponent boost, using {formatNumber(matchupItemComparisons.effectiveness)}% {matchupItemComparisons.knownEffectiveness ? 'current' : 'assumed'} effectiveness. Item scenario replaces any current boost; it assumes the item covers kickoff. These are model estimates, not game-engine simulations.</p>
+                  <p className="mt-2 text-[#aebbd0]">Estimated from the current lineup and opponent boost, using {formatNumber(matchupItemComparisons.effectiveness)}% {matchupItemComparisons.knownEffectiveness ? 'current' : 'assumed'} effectiveness. Item scenario replaces any current boost; it assumes the item covers kickoff. This quick estimate remains an approximation; use the game-engine simulation above for the item comparison.</p>
                   {itemCooldownEndTime && <p className="mt-1 text-[#ffcf66]">Item cooldown ends {formatFixtureTime(itemCooldownEndTime)}; check timing before use.</p>}
                 </div>}
               </div>

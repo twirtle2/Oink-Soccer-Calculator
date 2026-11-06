@@ -119,6 +119,28 @@ export const getBoostMultipliersFromState = (teamBoostState) => {
   return multipliers;
 };
 
+
+// The game applies team and positional item multipliers to scored contributions,
+// after its nonlinear skill curve, rather than to raw player attributes.
+export const getScoreBoostMultipliers = (teamBoostState) => {
+  const result = { team: 1, positions: { GK: 1, DF: 1, MF: 1, FW: 1 } };
+  const positions = { Goalkeeper: 'GK', Defense: 'DF', Midfield: 'MF', Attack: 'FW' };
+  const raw = teamBoostState?.source === 'live' ? toFiniteNumber(teamBoostState?.effectivenessPct, 100) : 100;
+  const effect = clamp(raw, 0, 100) / 100;
+  for (const entry of teamBoostState?.boosts || []) {
+    const boost = getEntryBoost(entry);
+    if (!boost) continue;
+    const min = toFiniteNumber(boost.min_boost, 1);
+    const max = toFiniteNumber(boost.max_boost, min);
+    const applications = Math.max(0, Math.floor(toFiniteNumber(boost.applications, 0)));
+    const multiplier = 1 + (((min + max) / 2 - 1) * effect * Math.max(DR_MIN, Math.pow(DR_DECAY, applications)));
+    if (!Number.isFinite(multiplier) || multiplier <= 0) continue;
+    if (boost.boost_type === TEAM_BOOST) result.team *= multiplier;
+    else if (boost.boost_type === POSITION_BOOST && positions[boost.boost_position]) result.positions[positions[boost.boost_position]] *= multiplier;
+  }
+  return result;
+};
+
 export const formatBoostEffectRange = (entry) => {
   const boost = getEntryBoost(entry);
   if (!boost) return 'N/A';
