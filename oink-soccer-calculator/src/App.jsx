@@ -1,3 +1,4 @@
+import { compareSetup } from './lib/setupChanges.js';
 import { engineBoosts, engineLineup } from './lib/engineSimulation.js';
 import { compareOutcomes } from './lib/itemComparison.js';
 import { getFixtureBoostState } from './lib/fixtureBoosts.js';
@@ -4207,6 +4208,7 @@ export default function OinkSoccerCalc() {
                   <div className="grid gap-4 lg:min-h-0 lg:grid-cols-2 lg:h-full lg:gap-3">
                     <BestSetupCard
                       suggestion={topSuggestion}
+                      liveSetup={selectedOwnedTeamId ? ownedTeamModels[selectedOwnedTeamId] : null}
                       analyzing={autoAnalyzing || importingTeamUrl}
                       syncing={walletSyncing}
                       fallbackLabel={setupFallbackLabel}
@@ -4736,7 +4738,7 @@ function SeasonPredictionTable({ rows, loading, myTeamIds }) {
   );
 }
 
-function BestSetupCard({ suggestion, analyzing, syncing = false, fallbackLabel = '', syncError = '', canAnalyze, lineupGaps = [], onInjuryOpen }) {
+function BestSetupCard({ suggestion, liveSetup, analyzing, syncing = false, fallbackLabel = '', syncError = '', canAnalyze, lineupGaps = [], onInjuryOpen }) {
   if (!canAnalyze) {
     return (
       <section className="mb-4 rounded-[10px] border border-[#1e2a3a] bg-[#111620] p-4">
@@ -4786,6 +4788,8 @@ function BestSetupCard({ suggestion, analyzing, syncing = false, fallbackLabel =
   }
 
   const details = getSuggestionDetails(suggestion);
+  const comparison = compareSetup(liveSetup, suggestion);
+  const formationChanged = comparison?.changes.some((change) => change.type === 'formation');
 
   return (
     <section aria-busy={analyzing} className="flex min-h-0 flex-col overflow-hidden rounded-[10px] border border-[rgba(0,230,118,0.28)] bg-[#111620]">
@@ -4801,7 +4805,7 @@ function BestSetupCard({ suggestion, analyzing, syncing = false, fallbackLabel =
             )}
           </div>
           <div className="mt-1 font-['Barlow_Condensed'] text-[20px] font-black leading-none text-[#e8edf5]">
-            {details.formation}
+            {details.formation}{formationChanged && <span className="ml-2 rounded bg-[#ffcf66] px-1.5 py-0.5 align-middle font-sans text-[10px] font-bold text-[#241900]">CHANGE FORMATION</span>}
           </div>
           <TacticsSummaryChips
             tactics={suggestion.tactics}
@@ -4810,6 +4814,11 @@ function BestSetupCard({ suggestion, analyzing, syncing = false, fallbackLabel =
             recommendation
             className="mt-2"
           />
+          <div className="mt-3 max-h-36 overflow-y-auto rounded-md border border-[#42536a] bg-[#161c28] p-2 text-xs text-[#d0d7e5]" aria-live="polite">
+            <div className="font-semibold text-[#e8edf5]">Changes to make in game</div>
+            {!comparison ? <p className="mt-1 text-[#b8c4d6]">Live team selection unavailable. Refresh the fixture to compare.</p> : comparison.changes.length === 0 ? <p className="mt-1 text-[#9af7cb]">{comparison.tacticsAvailable && comparison.positionsAvailable ? 'Your live setup matches this recommendation.' : 'Players match; some live positions or tactics are unavailable.'}</p> : <ul className="mt-1 list-disc space-y-0.5 pl-4">{comparison.changes.map((change, index) => <li key={`${change.type}-${index}`}>{change.text}</li>)}</ul>}
+            {comparison && (!comparison.tacticsAvailable || !comparison.positionsAvailable) && comparison.changes.length > 0 && <p className="mt-1 text-[#ffcf66]">Some live positions, tactics or set-piece details are unavailable.</p>}
+          </div>
           {fallbackLabel && (
             <div className="mt-2 text-[10px] font-semibold uppercase tracking-[0.08em] text-[#9aa5bb]">
               {fallbackLabel} · wallet collection {syncError ? 'unavailable' : 'syncing'}
@@ -4821,13 +4830,13 @@ function BestSetupCard({ suggestion, analyzing, syncing = false, fallbackLabel =
         </div>
       </div>
       <div className="min-h-0 flex-1">
-        <FormationPitch suggestion={suggestion} details={details} onInjuryOpen={onInjuryOpen} />
+        <FormationPitch suggestion={suggestion} details={details} onInjuryOpen={onInjuryOpen} comparison={comparison} />
       </div>
     </section>
   );
 }
 
-function FormationPitch({ suggestion, details, onInjuryOpen }) {
+function FormationPitch({ suggestion, details, onInjuryOpen, comparison = null }) {
   const rows = details.rows;
   const pitchStyle = {
     backgroundColor: '#49b83f',
@@ -4866,6 +4875,7 @@ function FormationPitch({ suggestion, details, onInjuryOpen }) {
                     <FormationPlayerCard
                       player={player}
                       setPieceTaker={suggestion.tactics?.setPieceTaker}
+                      changes={comparison?.playerChanges[comparison.playerKey(player)] || []}
                       onInjuryOpen={onInjuryOpen}
                     />
                   </div>
@@ -4879,7 +4889,7 @@ function FormationPitch({ suggestion, details, onInjuryOpen }) {
   );
 }
 
-function FormationPlayerCard({ player, setPieceTaker, onInjuryOpen }) {
+function FormationPlayerCard({ player, setPieceTaker, onInjuryOpen, changes = [] }) {
   const [reasonOpen, setReasonOpen] = useState(false);
   const [reasonPosition, setReasonPosition] = useState({ left: 0, top: 0, width: 288 });
   const role = player.role
@@ -4919,7 +4929,8 @@ function FormationPlayerCard({ player, setPieceTaker, onInjuryOpen }) {
   }, [reasonOpen]);
 
   return (
-    <div className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden rounded-[8px] border border-[#142315] bg-[#d8c22f] shadow-[4px_5px_0_rgba(7,17,12,0.35)]">
+    <div className={`flex h-full min-h-0 min-w-0 flex-col overflow-hidden rounded-[8px] border bg-[#d8c22f] shadow-[4px_5px_0_rgba(7,17,12,0.35)] ${changes.length ? 'border-[#ffb300] ring-2 ring-[#ffb300]' : 'border-[#142315]'}`}>
+      {changes.length > 0 && <div className="shrink-0 bg-[#ffcf66] px-1 py-0.5 text-center text-[9px] font-bold uppercase text-[#241900]" aria-label={`Changes: ${changes.join(', ')}`}>{changes.join(' · ')}</div>}
       <div className="flex min-h-[30px] shrink-0 items-start justify-between gap-1 bg-[#d9bd2b] px-1.5 py-1">
         <div className="min-w-0 flex-1 self-center truncate font-['Barlow_Condensed'] text-[11px] font-black uppercase leading-[0.95] tracking-[0.02em] text-[#2a2713]">
           {player.name}

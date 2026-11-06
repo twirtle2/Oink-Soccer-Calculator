@@ -274,6 +274,8 @@ const mapTeamPayloadToPlayers = (teamId, payload) => {
     return {
       id: `teamurl:${teamId}:${slotKey}`,
       name,
+      assetName: slot.asset?.name || '',
+      selectedPosition: DEFAULT_FORMATION_POSITIONS[formationKey]?.[Number(slotKey) - 1] || null,
       pos,
       stats,
       ovr,

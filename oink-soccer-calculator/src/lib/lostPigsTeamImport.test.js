@@ -767,3 +767,11 @@ test('team import exposes eligible bench players without adding them to the sele
     assert.equal(result.availablePlayers[1].stats.ATT, 83);
   });
 });
+
+test('imports the game formation slot rather than treating primary position as the selected position', async () => {
+  await withMockedFetch(async () => okResponse({ team: { id: 'AlgorandAsset:123', formation: 'The Pyramid' }, team_selection: { slots: { 5: { asset: { id: 'Algorand:456', name: 'Cassandra' }, player_attributes: { position: 'Midfield', positions: ['Midfield', 'Attack'] } } } } }), async () => {
+    const result = await fetchTeamLineup('AlgorandAsset:123');
+    assert.equal(result.players[0].pos, 'MF');
+    assert.equal(result.players[0].selectedPosition, 'FW');
+  });
+});
