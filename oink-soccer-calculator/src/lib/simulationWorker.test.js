@@ -36,6 +36,9 @@ test('worker runs a batch and reports individual failures without discarding suc
   assert.equal(batch[0].results[0].trials, 20);
   assert.match(batch[1].error, /invalid simulation count/);
   assert.deepEqual(messages.slice(0, 2).map((m) => m.progress), [1, 2]);
+  assert.equal(messages[0].completed.key, 'good');
+  assert.equal(messages[0].completed.results[0].trials, 20);
+  assert.match(messages[1].completed.error, /invalid simulation count/);
 });
 
 test('season batch item scenarios agree with a standalone selected-match simulation', async () => {
@@ -53,4 +56,24 @@ test('season batch item scenarios agree with a standalone selected-match simulat
   await globalThis.onmessage({ data: { baseUrl, jobs: [{ key: 'own:fixture:0', request }] } });
   assert.deepEqual(messages.at(-1).batchResults[0].results, standalone);
   for (const row of standalone) assert.equal(row.wins + row.draws + row.losses, 200);
+});
+
+test('interrupted batch resumes remaining jobs and produces the same deterministic results', async () => {
+  const { pendingSimulationJobs } = await import('./simulationCache.js');
+  const messages = [];
+  globalThis.postMessage = (value) => messages.push(value);
+  const positions = ['Goalkeeper', 'Defense', 'Defense', 'Midfield', 'Attack'];
+  const players = positions.map((position, i) => ({ id: String(i), position, attributes: { position, positions: [position], goalkeeper_rating: 75, defense_rating: 75, speed_rating: 75, control_rating: 75, attack_rating: 75 } }));
+  const lineup = { team: { formation: 'The Pyramid' }, players };
+  const request = { home: lineup, away: lineup, myHome: true, trials: 40, seed: 1729, scenarios: [{ key: 'baseline', boosts: [] }] };
+  const jobs = [{ key: '0', request }, { key: '1', request }, { key: '2', request }];
+  const baseUrl = new URL('../../public/', import.meta.url).href;
+  await globalThis.onmessage({ data: { baseUrl, jobs } });
+  const expected = messages.at(-1).batchResults;
+  const completed = { 0: messages[0].completed };
+  messages.length = 0;
+  const remaining = pendingSimulationJobs(jobs, completed);
+  assert.deepEqual(remaining.map((job) => job.key), ['1', '2']);
+  await globalThis.onmessage({ data: { baseUrl, jobs: remaining } });
+  assert.deepEqual([completed[0], ...messages.at(-1).batchResults], expected);
 });

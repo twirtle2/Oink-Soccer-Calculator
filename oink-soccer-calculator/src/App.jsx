@@ -1,3 +1,4 @@
+import { createSimulationCache, pendingSimulationJobs, validSimulationJob } from './lib/simulationCache.js';
 import { indexOwnResults, fixtureProjection, blendProjections, playedPoints } from './lib/simulationPlanning.js';
 import { compareSetup } from './lib/setupChanges.js';
 import { engineBoosts, engineLineup } from './lib/engineSimulation.js';
@@ -1860,55 +1861,90 @@ export default function OinkSoccerCalc() {
     return candidates;
   }, [effectiveMySquad, getCombinations]);
 
+  const setupCacheRef = useRef(createSimulationCache());
   useEffect(() => {
     if (activeTab !== 'matchup' || effectiveMySquad.length < 5 || opponentTeam.length < 5 || !selectedFixture || selectedFixture.game_result || importingTeamUrl) {
       setAutoSuggestions({}); setAutoAnalyzing(false); return undefined;
     }
+    const opponentPlayers = opponentTeam.every((player) => player.selectedPosition) ? opponentTeam : assignLineupPositions(opponentTeam, FORMATIONS[oppForm].structure);
+    const opponent = engineLineup(opponentPlayers, oppForm, oppTactics, engineBoosts(oppBoostContext, DR_DECAY, DR_MIN));
+    const myHome = homeAdvantage === 'home';
+    const boosts = engineBoosts(mySimulationBoostContext, DR_DECAY, DR_MIN);
+    const cacheKey = JSON.stringify({ version: 1, fixture: selectedFixture.game_key, time: selectedFixture.game_time, squad: effectiveMySquad, opponent, myHome, boosts });
+    let entry = setupCacheRef.current.get(cacheKey);
+    if (!entry) {
+      entry = { screening: {}, finalists: {}, suggestions: null };
+      setupCacheRef.current.set(cacheKey, entry);
+    }
+    setAutoError('');
+    if (entry.suggestions) {
+      setAutoSuggestions(entry.suggestions); setAutoProgress(''); setAutoAnalyzing(false);
+      return undefined;
+    }
     let worker;
-    setAutoSuggestions({}); setAutoError(''); setAutoProgress('Preparing candidates…'); setAutoAnalyzing(true);
+    setAutoSuggestions({}); setAutoProgress('Preparing candidates…'); setAutoAnalyzing(true);
     const timeoutId = window.setTimeout(() => {
       const candidates = buildSettingsCandidates();
-      const opponentPlayers = opponentTeam.every((player) => player.selectedPosition) ? opponentTeam : assignLineupPositions(opponentTeam, FORMATIONS[oppForm].structure);
-      const opponent = engineLineup(opponentPlayers, oppForm, oppTactics, engineBoosts(oppBoostContext, DR_DECAY, DR_MIN));
-      const myHome = homeAdvantage === 'home';
-      const boosts = engineBoosts(mySimulationBoostContext, DR_DECAY, DR_MIN);
       if (!candidates.length) { setAutoAnalyzing(false); return; }
       const makeJob = (candidate, key, trials, seed) => {
         const own = engineLineup(candidate.lineup, candidate.formation, candidate.tactics, boosts);
         return { key: String(key), request: { home: myHome ? own : opponent, away: myHome ? opponent : own, myHome, trials, seed, scenarios: [{ key: 'baseline', boosts }] } };
       };
       worker = new Worker(new URL('./lib/simulationWorker.js', import.meta.url), { type: 'module' });
-      let screening = true;
-      worker.onmessage = ({ data }) => {
-        if (data.error) { setAutoError(data.error); setAutoAnalyzing(false); worker.terminate(); return; }
-        if (!data.batchResults) { if (data.progress === data.total || data.progress % 20 === 0) setAutoProgress(`${screening ? 'Screening' : 'Checking finalists'} ${data.progress}/${data.total}`); return; }
-        if (data.batchResults.some((job) => job.error)) { setAutoError('A candidate simulation failed; try selecting the fixture again.'); setAutoAnalyzing(false); worker.terminate(); return; }
-        const scored = data.batchResults.flatMap(({ key, results: rows, error }) => {
-          const row = rows[0];
-          const candidate = candidates[Number(key)];
-          return !error && row?.trials && candidate ? [{ key, candidate, row, value: (3 * row.wins + row.draws) / row.trials }] : [];
-        }).sort((a, b) => b.value - a.value);
-        if (screening) {
-          screening = false;
-          setAutoProgress('Checking finalists…');
+      let stage = 'screening';
+      let jobs = candidates.map((candidate, index) => makeJob(candidate, index, 200, 8119));
+      const scoreJobs = (records) => Object.values(records).flatMap(({ key, results: rows }) => {
+        const row = rows[0];
+        const candidate = candidates[Number(key)];
+        return row?.trials && candidate ? [{ key, candidate, row, value: (3 * row.wins + row.draws) / row.trials }] : [];
+      }).sort((a, b) => b.value - a.value);
+      const fail = (message) => { setAutoError(message); setAutoAnalyzing(false); worker.terminate(); };
+      const dispatch = () => {
+        const records = entry[stage];
+        const pending = pendingSimulationJobs(jobs, records);
+        if (pending.length) {
+          setAutoProgress(`${stage === 'screening' ? 'Screening' : 'Checking finalists'} ${jobs.length - pending.length}/${jobs.length}`);
+          worker.postMessage({ baseUrl: new URL(import.meta.env.BASE_URL, window.location.href).href, jobs: pending });
+          return;
+        }
+        if (stage === 'screening') {
           const counts = {};
-          const finalists = scored.filter(({ candidate }) => { counts[candidate.formation] = (counts[candidate.formation] || 0) + 1; return counts[candidate.formation] <= 3; });
-          if (!finalists.length) { setAutoAnalyzing(false); worker.terminate(); return; }
-          worker.postMessage({ baseUrl: new URL(import.meta.env.BASE_URL, window.location.href).href, jobs: finalists.map(({ candidate, key }) => makeJob(candidate, key, 5000, 1729)) });
+          const finalists = scoreJobs(entry.screening).filter(({ candidate }) => { counts[candidate.formation] = (counts[candidate.formation] || 0) + 1; return counts[candidate.formation] <= 3; });
+          if (!finalists.length) { fail('No valid setup simulations were returned.'); return; }
+          stage = 'finalists';
+          jobs = finalists.map(({ candidate, key }) => makeJob(candidate, key, 5000, 1729));
+          dispatch();
           return;
         }
         const results = {};
-        scored.forEach(({ candidate, row }) => {
+        scoreJobs(entry.finalists).forEach(({ candidate, row }) => {
           if (results[candidate.formation]) return;
           results[candidate.formation] = { ...candidate, win: 100 * row.wins / row.trials, draw: 100 * row.draws / row.trials, loss: 100 * row.losses / row.trials, myxG: row.goalsFor / row.trials, oppxG: row.goalsAgainst / row.trials };
         });
+        entry.suggestions = results;
+        setupCacheRef.current.set(cacheKey, entry);
         setAutoSuggestions(results); setAutoAnalyzing(false); worker.terminate();
       };
-      worker.onerror = () => { setAutoError('Setup simulation failed; try selecting the fixture again.'); setAutoAnalyzing(false); worker.terminate(); };
-      worker.postMessage({ baseUrl: new URL(import.meta.env.BASE_URL, window.location.href).href, jobs: candidates.map((candidate, index) => makeJob(candidate, index, 200, 8119)) });
+      worker.onmessage = ({ data }) => {
+        if (data.error) { fail(data.error); return; }
+        if (data.completed && validSimulationJob(data.completed)) {
+          entry[stage][data.completed.key] = data.completed;
+          setupCacheRef.current.set(cacheKey, entry);
+        }
+        if (!data.batchResults) {
+          if (data.progress === data.total || data.progress % 20 === 0) setAutoProgress(`${stage === 'screening' ? 'Screening' : 'Checking finalists'} ${Object.keys(entry[stage]).length}/${jobs.length}`);
+          return;
+        }
+        if (data.batchResults.some((job) => !validSimulationJob(job))) { fail('A candidate simulation failed; try selecting the fixture again.'); return; }
+        data.batchResults.forEach((job) => { entry[stage][job.key] = job; });
+        setupCacheRef.current.set(cacheKey, entry);
+        dispatch();
+      };
+      worker.onerror = () => fail('Setup simulation failed; try selecting the fixture again.');
+      dispatch();
     }, 120);
     return () => { window.clearTimeout(timeoutId); worker?.terminate(); };
-  }, [activeTab, buildSettingsCandidates, effectiveMySquad.length, opponentTeam, selectedFixture, importingTeamUrl, oppForm, oppTactics, oppBoostContext, homeAdvantage, mySimulationBoostContext]);
+  }, [activeTab, buildSettingsCandidates, effectiveMySquad, opponentTeam, selectedFixture, importingTeamUrl, oppForm, oppTactics, oppBoostContext, homeAdvantage, mySimulationBoostContext]);
 
   const tabItems = useMemo(() => ([
     { key: 'upcoming', icon: '📅', label: 'Upcoming' },
@@ -2044,6 +2080,7 @@ export default function OinkSoccerCalc() {
   const catalogOutOfDate = Boolean(gameCounter?.season && catalogSeason && Number(gameCounter.season) !== Number(catalogSeason));
 
   const simulationWorkerRef = useRef(null);
+  const matchupCacheRef = useRef(createSimulationCache());
   const [engineSimulation, setEngineSimulation] = useState({ status: 'idle', fingerprint: '', results: [], error: '' });
   useEffect(() => () => simulationWorkerRef.current?.terminate(), []);
 
@@ -2066,14 +2103,19 @@ export default function OinkSoccerCalc() {
     return { home: myHome ? myLineup : opponentLineup, away: myHome ? opponentLineup : myLineup, myHome, trials: 5000, seed: 424242, scenarios };
   }, [selectedFixture, effectiveMyTeam, opponentTeam, importingTeamUrl, autoAnalyzing, topSuggestion, myForm, myTactics, mySimulationBoostContext, oppBoostContext, oppForm, oppTactics, homeAdvantage, myBoostState, heldItems]);
   const engineFingerprint = engineRequest ? JSON.stringify(engineRequest) : '';
-  const runEngineSimulation = useCallback(() => {
+  const runEngineSimulation = useCallback((useCache = false) => {
     if (!engineRequest) return;
+    if (useCache) {
+      const cached = matchupCacheRef.current.get(engineFingerprint);
+      if (cached) { setEngineSimulation({ status: 'done', fingerprint: engineFingerprint, results: cached, error: '' }); return; }
+    }
     simulationWorkerRef.current?.terminate();
     const worker = new Worker(new URL('./lib/simulationWorker.js', import.meta.url), { type: 'module' });
     simulationWorkerRef.current = worker;
     setEngineSimulation({ status: 'running', fingerprint: engineFingerprint, results: [], error: '' });
     worker.onmessage = ({ data }) => {
       if (simulationWorkerRef.current !== worker) return;
+      if (!data.error && data.results?.length && data.results.every((result) => validSimulationJob({ results: [result] }))) matchupCacheRef.current.set(engineFingerprint, data.results);
       setEngineSimulation({ status: data.error ? 'error' : 'done', fingerprint: engineFingerprint, results: data.results || [], error: data.error || '' });
       worker.terminate();
       simulationWorkerRef.current = null;
@@ -2088,7 +2130,7 @@ export default function OinkSoccerCalc() {
   }, [engineRequest, engineFingerprint]);
   useEffect(() => {
     if (activeTab !== 'matchup' || !engineRequest) return undefined;
-    runEngineSimulation();
+    runEngineSimulation(true);
     return () => {
       simulationWorkerRef.current?.terminate();
       simulationWorkerRef.current = null;
@@ -3354,7 +3396,7 @@ export default function OinkSoccerCalc() {
                 {selectedFixture && !selectedFixture.game_result && <div className="mt-3 border-t border-[#253040] pt-3 text-xs text-[#c7d0df]">
                   <div className="flex flex-wrap items-center justify-between gap-2">
                     <div className="font-semibold text-[#e8edf5]">Game engine simulations</div>
-                    <button type="button" onClick={runEngineSimulation} disabled={!engineRequest || currentEngineSimulation.status === 'running'} className="rounded border border-[#00e676]/50 px-3 py-2 font-semibold text-[#9af7cb] disabled:cursor-not-allowed disabled:opacity-50">{currentEngineSimulation.status === 'running' ? 'Simulating…' : 'Run 5,000 matches'}</button>
+                    <button type="button" onClick={() => runEngineSimulation(false)} disabled={!engineRequest || currentEngineSimulation.status === 'running'} className="rounded border border-[#00e676]/50 px-3 py-2 font-semibold text-[#9af7cb] disabled:cursor-not-allowed disabled:opacity-50">{currentEngineSimulation.status === 'running' ? 'Simulating…' : 'Run 5,000 matches'}</button>
                   </div>
                   <p className="mt-1 text-[#aebbd0]">Runs the pinned public v2 engine on your device using {topSuggestion ? 'the recommended setup' : 'the current setup'}, current injuries and known fixture boosts. Each held item replaces your current boost for comparison.</p>
                   {currentEngineSimulation.status === 'error' && <p role="alert" className="mt-2 text-[#ff9e9e]">{currentEngineSimulation.error}</p>}

@@ -19,8 +19,9 @@ self.onmessage = async (event) => {
       const results = [];
       for (const job of event.data.jobs) {
         const response = JSON.parse(globalThis.runOinkMatches(JSON.stringify(job.request)));
-        results.push({ key: job.key, results: response.results || [], error: response.error || '' });
-        self.postMessage({ progress: results.length, total: event.data.jobs.length });
+        const completed = { key: job.key, results: response.results || [], error: response.error || '' };
+        results.push(completed);
+        self.postMessage({ progress: results.length, total: event.data.jobs.length, completed });
       }
       self.postMessage({ batchResults: results });
     } else {
