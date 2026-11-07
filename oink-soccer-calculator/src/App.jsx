@@ -1,4 +1,6 @@
-import { createSimulationCache, pendingSimulationJobs, validSimulationJob } from './lib/simulationCache.js';
+import { shouldRunSetupAnalysis } from './lib/simulationReadiness.js';
+
+import { createSimulationCache, pendingSimulationJobs, validSimulationJob, setupSimulationKey } from './lib/simulationCache.js';
 import { indexOwnResults, fixtureProjection, blendProjections, playedPoints } from './lib/simulationPlanning.js';
 import { compareSetup } from './lib/setupChanges.js';
 import { engineBoosts, engineLineup } from './lib/engineSimulation.js';
@@ -49,6 +51,11 @@ import {
   SKILL_CURVE,
   TACTICS,
 } from './lib/gameRules';
+
+
+const getSimulationSessionStorage = () => {
+  try { return window.sessionStorage; } catch { return null; }
+};
 
 // --- Game Constants ---
 const POSITIONS = {
@@ -773,6 +780,7 @@ export default function OinkSoccerCalc() {
   const [itemCooldownUntil, setItemCooldownUntil] = useState(persistedState.itemCooldownUntil || null);
   const [myBoostState, setMyBoostState] = useState(createManualFallbackBoostState(persistedState.myBoost || 'None', persistedState.myBoostApps || 1));
   const [oppBoostState, setOppBoostState] = useState(TEAM_BOOST_STATE_EMPTY);
+  const [boostOpponentId, setBoostOpponentId] = useState(null);
   const [homeAdvantage, setHomeAdvantage] = useState(persistedState.homeAdvantage || 'home'); // 'home' or 'away'
   const [walletSyncMeta, setWalletSyncMeta] = useState(
     persistedState.walletSyncMeta || {
@@ -1400,6 +1408,7 @@ export default function OinkSoccerCalc() {
         if (!cancelled) {
           setMyBoostState(myFallback);
           setOppBoostState(oppFallback);
+          setBoostOpponentId(opponentTeamIdForBoosts);
         }
         return;
       }
@@ -1427,11 +1436,13 @@ export default function OinkSoccerCalc() {
         if (cancelled) return;
         setMyBoostState(nextMyBoostState);
         setOppBoostState(nextOppBoostState);
+        setBoostOpponentId(opponentTeamIdForBoosts);
       } catch (error) {
         if (cancelled) return;
         const message = getErrorMessage(error);
         setMyBoostState(createManualFallbackBoostState(myBoost, myBoostApps, message));
         setOppBoostState(createEmptyTeamBoostState(message));
+        setBoostOpponentId(opponentTeamIdForBoosts);
       }
     };
 
@@ -1861,16 +1872,22 @@ export default function OinkSoccerCalc() {
     return candidates;
   }, [effectiveMySquad, getCombinations]);
 
-  const setupCacheRef = useRef(createSimulationCache());
+  const setupCacheRef = useRef(null);
+  if (!setupCacheRef.current) setupCacheRef.current = createSimulationCache(16, {
+    storage: getSimulationSessionStorage(), storageKey: 'oink-setup-sim-v2',
+    shouldPersist: (entry) => Boolean(entry.suggestions),
+    serialize: (entry) => ({ screening: {}, finalists: {}, suggestions: entry.suggestions }),
+  });
+  const setupReady = shouldRunSetupAnalysis({ activeTab, squadCount: effectiveMySquad.length, opponentCount: opponentTeam.length, fixture: selectedFixture, importing: importingTeamUrl, ownedTeamIds: detectedMyTeamIds, importedOpponentId: importedOpponentTeamId, boostOpponentId });
   useEffect(() => {
-    if (activeTab !== 'matchup' || effectiveMySquad.length < 5 || opponentTeam.length < 5 || !selectedFixture || selectedFixture.game_result || importingTeamUrl) {
-      setAutoSuggestions({}); setAutoAnalyzing(false); return undefined;
+    if (!setupReady) {
+      setAutoSuggestions({}); setAutoProgress('Loading opponent lineup and boost state…'); setAutoAnalyzing(activeTab === 'matchup' && Boolean(selectedFixture) && !selectedFixture.game_result); return undefined;
     }
     const opponentPlayers = opponentTeam.every((player) => player.selectedPosition) ? opponentTeam : assignLineupPositions(opponentTeam, FORMATIONS[oppForm].structure);
     const opponent = engineLineup(opponentPlayers, oppForm, oppTactics, engineBoosts(oppBoostContext, DR_DECAY, DR_MIN));
     const myHome = homeAdvantage === 'home';
     const boosts = engineBoosts(mySimulationBoostContext, DR_DECAY, DR_MIN);
-    const cacheKey = JSON.stringify({ version: 1, fixture: selectedFixture.game_key, time: selectedFixture.game_time, squad: effectiveMySquad, opponent, myHome, boosts });
+    const cacheKey = setupSimulationKey({ squad: effectiveMySquad, opponent, myHome, boosts });
     let entry = setupCacheRef.current.get(cacheKey);
     if (!entry) {
       entry = { screening: {}, finalists: {}, suggestions: null };
@@ -1922,7 +1939,7 @@ export default function OinkSoccerCalc() {
           results[candidate.formation] = { ...candidate, win: 100 * row.wins / row.trials, draw: 100 * row.draws / row.trials, loss: 100 * row.losses / row.trials, myxG: row.goalsFor / row.trials, oppxG: row.goalsAgainst / row.trials };
         });
         entry.suggestions = results;
-        setupCacheRef.current.set(cacheKey, entry);
+        setupCacheRef.current.set(cacheKey, entry, { persist: true });
         setAutoSuggestions(results); setAutoAnalyzing(false); worker.terminate();
       };
       worker.onmessage = ({ data }) => {
@@ -1944,7 +1961,7 @@ export default function OinkSoccerCalc() {
       dispatch();
     }, 120);
     return () => { window.clearTimeout(timeoutId); worker?.terminate(); };
-  }, [activeTab, buildSettingsCandidates, effectiveMySquad, opponentTeam, selectedFixture, importingTeamUrl, oppForm, oppTactics, oppBoostContext, homeAdvantage, mySimulationBoostContext]);
+  }, [activeTab, setupReady, buildSettingsCandidates, effectiveMySquad, opponentTeam, selectedFixture, oppForm, oppTactics, oppBoostContext, homeAdvantage, mySimulationBoostContext]);
 
   const tabItems = useMemo(() => ([
     { key: 'upcoming', icon: '📅', label: 'Upcoming' },
@@ -2080,12 +2097,13 @@ export default function OinkSoccerCalc() {
   const catalogOutOfDate = Boolean(gameCounter?.season && catalogSeason && Number(gameCounter.season) !== Number(catalogSeason));
 
   const simulationWorkerRef = useRef(null);
-  const matchupCacheRef = useRef(createSimulationCache());
+  const matchupCacheRef = useRef(null);
+  if (!matchupCacheRef.current) matchupCacheRef.current = createSimulationCache(16, { storage: getSimulationSessionStorage(), storageKey: 'oink-matchup-sim-v2' });
   const [engineSimulation, setEngineSimulation] = useState({ status: 'idle', fingerprint: '', results: [], error: '' });
   useEffect(() => () => simulationWorkerRef.current?.terminate(), []);
 
   const engineRequest = useMemo(() => {
-    if (!selectedFixture || selectedFixture.game_result || effectiveMyTeam.length < 5 || opponentTeam.length < 5 || importingTeamUrl || autoAnalyzing) return null;
+    if (!setupReady || !selectedFixture || selectedFixture.game_result || effectiveMyTeam.length < 5 || opponentTeam.length < 5 || importingTeamUrl || autoAnalyzing) return null;
     const formation = topSuggestion?.formation || myForm;
     const tactics = topSuggestion?.tactics || myTactics;
     const ownPlayers = topSuggestion?.lineup || effectiveMyTeam;
@@ -2101,7 +2119,7 @@ export default function OinkSoccerCalc() {
       key: item.boostKey, boosts: engineBoosts(createPlannedItemBoostState({ boostKey: item.boostKey, effectivenessPct: effectiveness }), DR_DECAY, DR_MIN),
     }))];
     return { home: myHome ? myLineup : opponentLineup, away: myHome ? opponentLineup : myLineup, myHome, trials: 5000, seed: 424242, scenarios };
-  }, [selectedFixture, effectiveMyTeam, opponentTeam, importingTeamUrl, autoAnalyzing, topSuggestion, myForm, myTactics, mySimulationBoostContext, oppBoostContext, oppForm, oppTactics, homeAdvantage, myBoostState, heldItems]);
+  }, [setupReady, selectedFixture, effectiveMyTeam, opponentTeam, importingTeamUrl, autoAnalyzing, topSuggestion, myForm, myTactics, mySimulationBoostContext, oppBoostContext, oppForm, oppTactics, homeAdvantage, myBoostState, heldItems]);
   const engineFingerprint = engineRequest ? JSON.stringify(engineRequest) : '';
   const runEngineSimulation = useCallback((useCache = false) => {
     if (!engineRequest) return;
@@ -2115,7 +2133,7 @@ export default function OinkSoccerCalc() {
     setEngineSimulation({ status: 'running', fingerprint: engineFingerprint, results: [], error: '' });
     worker.onmessage = ({ data }) => {
       if (simulationWorkerRef.current !== worker) return;
-      if (!data.error && data.results?.length && data.results.every((result) => validSimulationJob({ results: [result] }))) matchupCacheRef.current.set(engineFingerprint, data.results);
+      if (!data.error && data.results?.length && data.results.every((result) => validSimulationJob({ results: [result] }))) matchupCacheRef.current.set(engineFingerprint, data.results, { persist: true });
       setEngineSimulation({ status: data.error ? 'error' : 'done', fingerprint: engineFingerprint, results: data.results || [], error: data.error || '' });
       worker.terminate();
       simulationWorkerRef.current = null;
@@ -3985,6 +4003,7 @@ function BestSetupCard({ suggestion, liveSetup, analyzing, syncing = false, fall
           <Loader2 size={14} className="animate-spin text-[#00e676]" />
           {progress || 'Simulating setups…'}
         </div>
+        <p className="mt-1 text-xs text-[#9aa5bb]">New matchups need their own simulations. Completed results are saved in this tab.</p>
       </section>
     );
   }
